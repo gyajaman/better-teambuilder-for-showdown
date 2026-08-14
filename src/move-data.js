@@ -220,6 +220,18 @@ window.CF_MOVE_CATEGORIES = {
 		moves: [],
 	},
 
+	nevermiss: {
+		id: 'nevermiss',
+		label: 'Never Miss',
+		description: {
+			pokemon: 'Has a move that ignores accuracy checks.',
+			move: 'Ignores accuracy checks.',
+		},
+		searchTypes: ['pokemon', 'move'],
+		dynamic: true,
+		moves: [],
+	},
+
 	sharpness: {
 		id: 'sharpness',
 		label: 'Sharpness',

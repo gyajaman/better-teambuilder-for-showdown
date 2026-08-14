@@ -6,7 +6,7 @@ A Chrome/Firefox extension that adds custom search filters and a Speed stat comp
 
 ### Pokémon & Move search
 
-Priority, Redirection, Spread, Wind, Sound, Speed Control, Pivoting, Hazard, Hazard Removal
+Priority, Redirection, Spread, Wind, Sound, Never Miss, Speed Control, Pivoting, Hazard, Hazard Removal
 
 ### Move search only
 

@@ -58,13 +58,13 @@
 		'priority', 'redirection', 'spread',
 		'wind', 'sound', 'sharpness', 'recoil', 'sheerforce', 'speedcontrol',
 		'pivoting', 'contact', 'punching', 'biting', 'ballbomb', 'pulse', 'hazard', 'hazardremoval',
-		'negatesintimidate', 'weathersetter', 'terrainsetter',
+		'nevermiss', 'negatesintimidate', 'weathersetter', 'terrainsetter',
 	];
 	/** Categories whose move list is computed from BattleMovedex rather than fully
 	 *  hand-curated — see move-data.js's module doc comment for how each one is scanned. */
 	const DYNAMIC_CATEGORIES = [
 		'spread', 'wind', 'sound', 'sharpness', 'recoil', 'sheerforce', 'speedcontrol',
-		'contact', 'punching', 'biting', 'ballbomb', 'pulse',
+		'contact', 'punching', 'biting', 'ballbomb', 'pulse', 'nevermiss',
 	];
 
 	const CF = {
@@ -102,7 +102,7 @@
 	function buildDynamicMoveLists() {
 		const lists = {
 			spread: [], wind: [], sound: [], sharpness: [], recoil: [], sheerforce: [], speedcontrol: [],
-			contact: [], punching: [], biting: [], ballbomb: [], pulse: [],
+			contact: [], punching: [], biting: [], ballbomb: [], pulse: [], nevermiss: [],
 		};
 		const overrides = {
 			spread: buildOverridesMap('spread'),
@@ -116,6 +116,7 @@
 			biting: buildOverridesMap('biting'),
 			ballbomb: buildOverridesMap('ballbomb'),
 			pulse: buildOverridesMap('pulse'),
+			nevermiss: buildOverridesMap('nevermiss'),
 		};
 
 		// speedcontrol's curated entries (Trick Room, Tailwind, etc — see move-data.js)
@@ -148,6 +149,7 @@
 			if (move.flags && move.flags.bite) lists.biting.push(moveEntry(id, move, overrides.biting));
 			if (move.flags && move.flags.bullet) lists.ballbomb.push(moveEntry(id, move, overrides.ballbomb));
 			if (move.flags && move.flags.pulse) lists.pulse.push(moveEntry(id, move, overrides.pulse));
+			if (move.accuracy === true && move.category !== 'Status') lists.nevermiss.push(moveEntry(id, move, overrides.nevermiss));
 
 			if (!speedControlSeen.has(id)) {
 				let chance = null;
