@@ -86,6 +86,97 @@ a[data-entry^="custom|"] .movedesccol {
 	text-decoration: line-through;
 }
 
+/* The Speed filter row (content.js renderSpeedFilterRow): a single rounded-rect pill,
+ * not a full colored row — deliberately NOT reusing `.sortrow`'s background this time.
+ * Border-radius matches the native Pokémon textbox (3px). Unselected is the default
+ * look for both buttons (flat gray, same resting tone as the native `.filter` chip);
+ * tier-header blue (`#DAE5F0` — Showdown's own `.utilichart h3` background) is reserved
+ * for whichever button is actually engaged, via `.active`, so a partly-set filter (say
+ * op='>' with "=" not toggled) shows exactly one blue button and one gray one — "off"
+ * is just what an unselected button already looks like, not a separate state to draw. */
+.cf-speedrow {
+	padding: 3px 0;
+}
+/* Width is the sum of the native sort row's own column widths (.numsortcol 80 +
+ * .pnamesortcol 127 + .typesortcol 70 + .abilitysortcol 172 + .statsortcol × 6 or 7 ×
+ * 24, set inline per-render in content.js since the column count depends on gen) — the
+ * `.utilichart li` row itself is wider than that sum, so right-aligning within this
+ * narrower box instead of the full row lines the pill's right edge up with the BST
+ * column above it, rather than straying out into the row's empty right margin.
+ *
+ * This box itself must NOT be pushed right (no flex/justify-content on .cf-speedrow
+ * above) — it needs to sit flush at the row's own LEFT edge, same starting point the
+ * native sort columns use, so that its own right edge — colsWidth in from the left —
+ * lands under BST. Right-aligning it too would just push its already-narrower box
+ * flush against the row's far right edge, landing the pill right back where it
+ * started (this was the actual bug: both flex-ends stacked and canceled the effect). */
+.cf-speedrow-align {
+	display: flex;
+	justify-content: flex-end;
+}
+.cf-pill {
+	display: inline-flex;
+	align-items: stretch;
+	height: 16px;
+	border: 1px solid #aaaaaa;
+	border-radius: 3px;
+	overflow: hidden;
+	background: #f8fbfd;
+	font-family: Verdana, Geneva, sans-serif;
+}
+.cf-pill button {
+	appearance: none;
+	border: none;
+	border-right: 1px solid #c7c7c7;
+	background: #e4e4e4;
+	color: #666666;
+	font-family: inherit;
+	font-size: 8pt;
+	width: 16px;
+	padding: 0;
+	cursor: pointer;
+	line-height: 1;
+}
+.cf-pill button:hover {
+	filter: brightness(0.96);
+}
+.cf-pill button.active {
+	background: #dae5f0;
+	color: black;
+	font-weight: bold;
+	border-right-color: #aaaaaa;
+}
+.dark .cf-pill button.active {
+	/* Showdown's own .dark .utilichart h3 override — the tier-header blue turns into
+	 * this gray-blue in dark mode, so the active button follows it here too. */
+	background: #636363;
+	color: #f1f1f1;
+}
+.cf-pill input {
+	appearance: none;
+	border: none;
+	background: transparent;
+	width: 30px;
+	font-family: inherit;
+	font-size: 8pt;
+	text-align: right;
+	padding: 0 5px 0 3px;
+	color: black;
+}
+.cf-pill input::placeholder {
+	color: #9aa0a6;
+}
+.dark .cf-pill {
+	background: #2a2d30;
+}
+.dark .cf-pill button {
+	background: #4a4d50;
+	color: #b8bcc0;
+}
+.dark .cf-pill input {
+	color: #e0e0e0;
+}
+
 #cf-tooltipwrapper {
 	position: fixed;
 	z-index: 70;

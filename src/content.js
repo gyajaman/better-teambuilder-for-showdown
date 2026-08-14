@@ -44,6 +44,11 @@
  *  - The hover tooltip is the one piece of UI we render ourselves — an
  *    independent floating element appended to document.body and positioned via
  *    getBoundingClientRect(), never inserted into the search results DOM.
+ *  - The Speed filter (below) is a different shape of feature entirely: not a typed
+ *    category but a small persistent widget — an operator toggle (>/</-), an "=" toggle,
+ *    and a number input — docked directly under the native "Sort: ..." row
+ *    (BattleSearch.prototype.renderPokemonSortRow) in Pokémon search, comparing each
+ *    result's base Speed stat. See the "Speed filter" section below for the mechanism.
  */
 (function () {
 	if (window.__CF_MOVEPOOL_FILTERS_LOADED) return;
@@ -290,6 +295,9 @@
 		if (!BattleSearch || BattleSearch.prototype.__cfRowPatched) return;
 		const origRenderRow = BattleSearch.prototype.renderRow;
 		BattleSearch.prototype.renderRow = function (id, type, matchStart, matchLength, errorMessage, attrs) {
+			if (type === 'cf-speedrow') {
+				return renderSpeedFilterRow(this.engine);
+			}
 			if (type === 'customfilter') {
 				const cat = window.CF_MOVE_CATEGORIES[id];
 				if (!cat) return '<li class="result">Unknown filter</li>';
@@ -455,11 +463,97 @@
 		return rawId;
 	}
 
+	// ---------------------------------------------------------------------
+	// Speed filter: a small persistent widget docked under the native
+	// "Sort: ..." row in Pokémon search, comparing each result's base Speed
+	// stat against a number the user types in. Not a typed category — there's
+	// nothing to type into the search box for this one, it's just always
+	// there (like the sort row itself) whenever a sort row is.
+	//
+	// State lives on the engine as `__cfSpeedFilter = { op, orEqual, value }`:
+	//  - `op`: '>' | '<' | null (null = the "-" state — op-wise inactive)
+	//  - `orEqual`: boolean, toggled independently by the "=" button
+	//  - `value`: number | null (null = nothing typed yet)
+	// The two buttons combine into five active comparisons plus one fully-off
+	// state, matching what was asked for (> < = >= <=):
+	//   op='-' (null), eq=off  -> filter OFF entirely
+	//   op='-' (null), eq=on   -> exactly equal
+	//   op='>',        eq=off  -> greater than
+	//   op='>',        eq=on   -> greater than or equal
+	//   op='<',        eq=off  -> less than
+	//   op='<',        eq=on   -> less than or equal
+	// A filter with no number typed yet behaves as OFF regardless of op/eq,
+	// so toggling the buttons before typing a number never hides everything.
+	// ---------------------------------------------------------------------
+
+	function getSpeedFilter(engine) {
+		return engine.__cfSpeedFilter || (engine.__cfSpeedFilter = { op: null, orEqual: false, value: null });
+	}
+
+	function speedFilterActive(sf) {
+		if (sf.value === null || sf.value === undefined || Number.isNaN(sf.value)) return false;
+		return sf.op !== null || sf.orEqual;
+	}
+
+	function passesSpeedFilter(sf, baseSpe) {
+		if (baseSpe === null || baseSpe === undefined) return true;
+		if (sf.op === null) return baseSpe === sf.value; // eq-only ("=")
+		if (sf.op === '>') return sf.orEqual ? baseSpe >= sf.value : baseSpe > sf.value;
+		if (sf.op === '<') return sf.orEqual ? baseSpe <= sf.value : baseSpe < sf.value;
+		return true;
+	}
+
+	function cycleSpeedOp(op) {
+		if (op === '>') return '<';
+		if (op === '<') return null;
+		return '>';
+	}
+
+	/** Renders the widget: a single rounded-rect pill (same border-radius as the native
+	 *  Pokémon textbox) — not a full colored row. Unselected is the default look for both
+	 *  buttons (flat gray); tier-header blue is reserved for whichever button is actually
+	 *  engaged, via `.active` — so e.g. with op='>' and eq off, only the op button is blue.
+	 *  Button labels/state reflect the engine's current __cfSpeedFilter so a re-render
+	 *  (e.g. after clicking a button) shows the new state immediately.
+	 *
+	 *  Alignment: floated flush to the row's own right edge would overshoot past where the
+	 *  native sort columns actually end — `.utilichart li` rows are wider than the sum of
+	 *  the native .numsortcol/.pnamesortcol/.typesortcol/.abilitysortcol/.statsortcol
+	 *  widths, so there's real empty space to their right. colsWidth reproduces that same
+	 *  sum (see the matching widths in style.css's comment) so the pill's right edge lines
+	 *  up with the BST column above it instead of straying further right. statCols drops
+	 *  from 7 to 6 in Gen 1, matching renderPokemonSortRow's own SpA/SpD → single "Spc"
+	 *  column collapse. */
+	function renderSpeedFilterRow(engine) {
+		const sf = getSpeedFilter(engine);
+		const opLabel = sf.op === '>' ? '&gt;' : sf.op === '<' ? '&lt;' : '−';
+		const opActiveCls = sf.op !== null ? ' active' : '';
+		const eqActiveCls = sf.orEqual ? ' active' : '';
+		const valStr = (sf.value === null || sf.value === undefined) ? '' : String(sf.value);
+		const gen = engine.dex && engine.dex.gen;
+		const statCols = (gen && gen < 2) ? 6 : 7;
+		const colsWidth = 80 + 127 + 70 + 172 + statCols * 24;
+		return `<li class="result"><div class="cf-speedrow">` +
+			`<div class="cf-speedrow-align" style="width:${colsWidth}px">` +
+			`<span class="cf-pill">` +
+			`<button type="button" class="cf-speedop-btn${opActiveCls}" data-cf-role="op">${opLabel}</button>` +
+			`<button type="button" class="cf-speedeq-btn${eqActiveCls}" data-cf-role="eq">=</button>` +
+			`<input type="text" inputmode="numeric" autocomplete="off" class="cf-speedval-input" ` +
+			`data-cf-role="val" placeholder="Spe" value="${escapeHTML(valStr)}" />` +
+			`</span>` +
+			`</div>` +
+			`</div></li>`;
+	}
+
 	/** Post-filters an already-computed engine.results in place, mirroring the header
 	 *  dedup/trim behavior of BattleTypedSearch.getResults()'s own filter pass so the
 	 *  narrowed list still reads naturally (no dangling/duplicate headers). Handles both
 	 *  Pokémon search (row = ['pokemon', speciesId]) and move search
-	 *  (row = ['move', moveId]) — see the two compute*Matches functions above.
+	 *  (row = ['move', moveId]) — see the two compute*Matches functions above. Also
+	 *  injects the Speed filter row (see above) right after any native sort row, and
+	 *  applies it to Pokémon rows — this runs unconditionally now (no more bailing out
+	 *  when no typed category filter is active), since the Speed row needs to appear
+	 *  any time there's a sort row to dock under, filters or not.
 	 *
 	 *  A `negative: true` category (currently only ballbomb) inverts the pass condition: the
 	 *  row passes when it did NOT match. `matches` still stores the raw (un-inverted)
@@ -468,27 +562,40 @@
 	 *  was kept for the *absence* of a match), which the tooltip already skips like any other
 	 *  empty result. */
 	function applyCustomFilters(engine) {
-		const active = engine.__cfFilters;
+		const active = engine.__cfFilters || [];
 		const matches = new Map();
 		engine.__cfMatches = matches;
-		if (!active || !active.length || !engine.results) return;
+		if (!engine.results) return;
 
+		const sf = getSpeedFilter(engine);
+		const sfActive = speedFilterActive(sf);
 		const typedSearch = engine.typedSearch;
 		const filtered = [];
 		for (const row of engine.results) {
 			const type = row[0];
-			if (type === 'pokemon' || type === 'move') {
+			if (type === 'sortpokemon') {
+				filtered.push(row);
+				filtered.push(['cf-speedrow']);
+			} else if (type === 'pokemon' || type === 'move') {
 				const rowId = type === 'move' ? normalizeMoveRowId(row[1]) : row[1];
-				const rowMatches = (type === 'pokemon')
-					? computeCategoryMatches(typedSearch, rowId, active)
-					: computeMoveCategoryMatches(rowId, active);
-				const allMatch = active.every(catId => {
-					const cat = window.CF_MOVE_CATEGORIES[catId];
-					const matched = !!(rowMatches[catId] && rowMatches[catId].length);
-					return (cat && cat.negative) ? !matched : matched;
-				});
+				let allMatch = true;
+				if (active.length) {
+					const rowMatches = (type === 'pokemon')
+						? computeCategoryMatches(typedSearch, rowId, active)
+						: computeMoveCategoryMatches(rowId, active);
+					allMatch = active.every(catId => {
+						const cat = window.CF_MOVE_CATEGORIES[catId];
+						const matched = !!(rowMatches[catId] && rowMatches[catId].length);
+						return (cat && cat.negative) ? !matched : matched;
+					});
+					if (allMatch) matches.set(rowId, rowMatches);
+				}
+				if (allMatch && type === 'pokemon' && sfActive) {
+					const species = window.Dex.species.get(rowId);
+					const baseSpe = species && species.baseStats ? species.baseStats.spe : null;
+					allMatch = passesSpeedFilter(sf, baseSpe);
+				}
 				if (!allMatch) continue;
-				matches.set(rowId, rowMatches);
 				filtered.push(row);
 			} else if (type === 'header' || type === 'html') {
 				if (filtered.length && filtered[filtered.length - 1][0] === 'header') {
@@ -512,6 +619,7 @@
 			if (searchType !== (this.typedSearch && this.typedSearch.searchType)) {
 				this.__cfFilters = null;
 				this.__cfMatches = null;
+				this.__cfSpeedFilter = null;
 			}
 			return origSetType.call(this, searchType, format, speciesOrSet);
 		};
@@ -640,6 +748,62 @@
 		Tooltip.hide();
 	}
 
+	/** Forces a full re-filter + redraw of whatever search box is currently active, the
+	 *  same way applying/removing a typed filter chip already does elsewhere in this file
+	 *  (patchLegacyFilterChips's removeFilter, DexSearch.prototype.addFilter): null out
+	 *  engine.results first so DexSearch.prototype.find()'s own "nothing changed" guard
+	 *  (`this.query === query && this.results`) can't short-circuit and skip recomputing,
+	 *  then re-run find() with whatever query text is already in the box so it's preserved
+	 *  rather than cleared. */
+	function refreshSearch() {
+		const s = window.search;
+		if (!s || !s.engine) return;
+		s.engine.results = null;
+		s.find(s.q || '');
+	}
+
+	/** The Speed filter's buttons/input aren't native `<a data-entry>` links, so they need
+	 *  their own delegated handlers rather than riding the site's existing chartClick chain.
+	 *  Every state change forces a full redraw (see refreshSearch) — which, since the
+	 *  renderer rebuilds these `<li>` rows from scratch each time (no DOM diffing), destroys
+	 *  and recreates the <input> on every keystroke. Without restoring focus/cursor after
+	 *  that rebuild, the number field would lose focus after each character typed. */
+	function onSpeedFilterClick(ev) {
+		const opBtn = ev.target.closest('.cf-speedop-btn');
+		const eqBtn = ev.target.closest('.cf-speedeq-btn');
+		if (!opBtn && !eqBtn) return;
+		ev.preventDefault();
+		const s = window.search;
+		if (!s || !s.engine) return;
+		const sf = getSpeedFilter(s.engine);
+		if (opBtn) {
+			sf.op = cycleSpeedOp(sf.op);
+		} else {
+			sf.orEqual = !sf.orEqual;
+		}
+		refreshSearch();
+	}
+
+	function onSpeedFilterInput(ev) {
+		const input = ev.target.closest('.cf-speedval-input');
+		if (!input) return;
+		const s = window.search;
+		if (!s || !s.engine) return;
+		const sf = getSpeedFilter(s.engine);
+		const raw = input.value.trim();
+		const parsed = raw === '' ? null : Number(raw);
+		sf.value = (parsed === null || Number.isNaN(parsed)) ? null : parsed;
+
+		const cursorPos = input.selectionStart;
+		refreshSearch();
+		const newInput = document.querySelector('.cf-speedval-input');
+		if (newInput) {
+			newInput.focus();
+			const pos = Math.min(cursorPos, newInput.value.length);
+			newInput.setSelectionRange(pos, pos);
+		}
+	}
+
 	function waitForGlobals(cb) {
 		if (window.DexSearch && window.BattleMovedex && window.BattleTeambuilderTable && window.BattlePokedex &&
 			window.toID && window.Dex && window.CF_MOVE_CATEGORIES && window.BattleSearch) {
@@ -656,5 +820,7 @@
 		patchLegacyFilterChips();
 		document.addEventListener('mouseover', onMouseOver, true);
 		document.addEventListener('mouseout', onMouseOut, true);
+		document.addEventListener('click', onSpeedFilterClick, true);
+		document.addEventListener('input', onSpeedFilterInput, true);
 	});
 })();
