@@ -393,6 +393,26 @@ window.CF_MOVE_CATEGORIES = {
 		],
 	},
 
+	hazardremoval: {
+		id: 'hazardremoval',
+		label: 'Hazard Removal',
+		description: {
+			pokemon: 'Has a move that removes entry hazards.',
+			move: 'Removes entry hazards.',
+		},
+		searchTypes: ['pokemon', 'move'],
+		moves: [
+			{ id: 'rapidspin', name: 'Rapid Spin', conditional: false },
+			{ id: 'defog', name: 'Defog', conditional: false },
+			{ id: 'mortalspin', name: 'Mortal Spin', conditional: false },
+			{ id: 'tidyup', name: 'Tidy Up', conditional: false },
+			{
+				id: 'courtchange', name: 'Court Change', conditional: true,
+				reason: "Swaps hazards and screens between sides rather than removing them",
+			},
+		],
+	},
+
 	negatesintimidate: {
 		id: 'negatesintimidate',
 		label: 'Negates Intimidate',

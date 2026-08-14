@@ -57,7 +57,7 @@
 	const CATEGORY_ORDER = [
 		'priority', 'redirection', 'spread',
 		'wind', 'sound', 'sharpness', 'recoil', 'sheerforce', 'speedcontrol',
-		'pivoting', 'contact', 'punching', 'biting', 'ballbomb', 'pulse', 'hazard',
+		'pivoting', 'contact', 'punching', 'biting', 'ballbomb', 'pulse', 'hazard', 'hazardremoval',
 		'negatesintimidate', 'weathersetter', 'terrainsetter',
 	];
 	/** Categories whose move list is computed from BattleMovedex rather than fully
