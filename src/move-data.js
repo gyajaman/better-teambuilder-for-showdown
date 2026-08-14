@@ -387,10 +387,9 @@ window.CF_MOVE_CATEGORIES = {
 				id: 'stoneaxe', name: 'Stone Axe', conditional: true,
 				reason: "Sets Stealth Rock only if the attack hits and it isn't already active",
 			},
-			{
-				id: 'gmaxsteelsurge', name: 'G-Max Steelsurge', conditional: true,
-				reason: "Only usable while Gigantamaxed, and only by Copperajah",
-			},
+			// G-Max Steelsurge was removed — the client's BattleMovedex doesn't include G-Max
+			// moves in standard learnsets, so typedSearch.canLearn('copperajah', 'gmaxsteelsurge')
+			// always returns false and Copperajah would never match the Hazard filter through it.
 		],
 	},
 
@@ -419,6 +418,10 @@ window.CF_MOVE_CATEGORIES = {
 			{ id: 'competitive', name: 'Competitive', conditional: false },
 			{ id: 'guarddog', name: 'Guard Dog', conditional: false },
 			{ id: 'mirrorarmor', name: 'Mirror Armor', conditional: false },
+			{
+				id: 'neutralizinggas', name: 'Neutralizing Gas', conditional: true,
+				reason: "Suppresses all abilities on the field (including the holder's own) — blocks Intimidate entirely, but at the cost of also disabling the holder's other ability effects",
+			},
 		],
 	},
 

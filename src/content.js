@@ -784,6 +784,7 @@
 		refreshSearch();
 	}
 
+	let _speedInputTimer = null;
 	function onSpeedFilterInput(ev) {
 		const input = ev.target.closest('.cf-speedval-input');
 		if (!input) return;
@@ -794,30 +795,51 @@
 		const parsed = raw === '' ? null : Number(raw);
 		sf.value = (parsed === null || Number.isNaN(parsed)) ? null : parsed;
 
+		// Debounce: avoid a full filter recomputation + DOM rebuild on every
+		// keystroke while the user is typing a multi-digit number.
 		const cursorPos = input.selectionStart;
-		refreshSearch();
-		const newInput = document.querySelector('.cf-speedval-input');
-		if (newInput) {
-			newInput.focus();
-			const pos = Math.min(cursorPos, newInput.value.length);
-			newInput.setSelectionRange(pos, pos);
-		}
+		if (_speedInputTimer) clearTimeout(_speedInputTimer);
+		_speedInputTimer = setTimeout(() => {
+			_speedInputTimer = null;
+			refreshSearch();
+			const newInput = document.querySelector('.cf-speedval-input');
+			if (newInput) {
+				newInput.focus();
+				const pos = Math.min(cursorPos, newInput.value.length);
+				newInput.setSelectionRange(pos, pos);
+			}
+		}, 80);
 	}
 
-	function waitForGlobals(cb) {
+	// 4g: bounded retry — give up after ~15 seconds (~900 frames at 60fps)
+	// instead of looping forever if Showdown renames/removes a required global.
+	const WAIT_MAX_RETRIES = 900;
+	function waitForGlobals(cb, retries) {
+		if (retries === undefined) retries = 0;
 		if (window.DexSearch && window.BattleMovedex && window.BattleTeambuilderTable && window.BattlePokedex &&
 			window.toID && window.Dex && window.CF_MOVE_CATEGORIES && window.BattleSearch) {
 			cb();
+		} else if (retries >= WAIT_MAX_RETRIES) {
+			console.warn('[Better Teambuilder] Gave up waiting for Showdown globals after ~15 s. ' +
+				'The extension will not activate — the site may have changed its bundle layout.');
 		} else {
-			requestAnimationFrame(() => waitForGlobals(cb));
+			requestAnimationFrame(() => waitForGlobals(cb, retries + 1));
 		}
 	}
 
 	waitForGlobals(() => {
 		CF.dynamicMoveLists = buildDynamicMoveLists();
-		patchDexSearch();
-		patchLegacyRenderRow();
-		patchLegacyFilterChips();
+		// 4a: wrap each monkey-patch in try/catch so one failure doesn't prevent
+		// the rest of the extension from loading.
+		try { patchDexSearch(); } catch (e) {
+			console.error('[Better Teambuilder] patchDexSearch failed:', e);
+		}
+		try { patchLegacyRenderRow(); } catch (e) {
+			console.error('[Better Teambuilder] patchLegacyRenderRow failed:', e);
+		}
+		try { patchLegacyFilterChips(); } catch (e) {
+			console.error('[Better Teambuilder] patchLegacyFilterChips failed:', e);
+		}
 		document.addEventListener('mouseover', onMouseOver, true);
 		document.addEventListener('mouseout', onMouseOut, true);
 		document.addEventListener('click', onSpeedFilterClick, true);
