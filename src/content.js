@@ -1,0 +1,660 @@
+/**
+ * Better Teambuilder for Showdown! — content script.
+ *
+ * Runs in the page's MAIN world (see manifest.json) so it can see and patch the
+ * same DexSearch/BattleMovedex/BattlePokedex/BattleTeambuilderTable globals the
+ * site's own bundle defines — an isolated-world content script would not see them.
+ *
+ * IMPORTANT: the teambuilder's Pokémon search, as actually served in production,
+ * is rendered by the legacy jQuery-based `BattleSearch` (play.pokemonshowdown.com/
+ * src/oldclient/search.js + client-teambuilder.js), producing `<ul class="utilichart">`
+ * rows inside `.teambuilder-results` — NOT the newer Preact `PSSearchResults`
+ * (`.dexlist`) component. Both wrap the exact same `DexSearch` model class
+ * (`window.DexSearch`), confirmed live: `window.search.engine instanceof DexSearch`.
+ * So the filtering mechanism below (patching DexSearch.prototype) is renderer-
+ * agnostic and correct either way; the small amount of UI glue (typed-filter row
+ * rendering, filter-chip rendering) is written against the renderer actually
+ * observed on the live site. See README for how this was determined.
+ *
+ * UX: there is no separate toolbar. A custom category is typed into the same
+ * Pokémon search box as any move/ability/type — typing "priority" (or a prefix)
+ * surfaces a clickable suggestion row, and once applied it appears as a normal
+ * removable chip in the native "Filters: ..." row, indistinguishable in behavior
+ * from a native type/move/ability filter chip.
+ *
+ * Mechanism:
+ *  - DexSearch.prototype.addFilter/setType/find are wrapped (not modified) to add
+ *    a parallel ['custom', categoryId] filter type that the native whitelist would
+ *    otherwise reject. Native filtering/sorting/ranking is untouched; we only
+ *    post-filter the already-computed `search.results` array. Custom filters live
+ *    in their own `engine.__cfFilters` array, never in the native `engine.filters`.
+ *  - Legality of a move for a species+format is decided by calling
+ *    typedSearch.canLearn(speciesId, moveId) — the exact same learnset walk
+ *    (prevo/battle-only chains, gen-appropriate learnsets, natdex rules, etc.)
+ *    the native moves-tab filter uses. We never reimplement or approximate it.
+ *  - Typing a category name works by injecting a synthetic
+ *    ['customfilter', categoryId] row (native row types can't carry a real link —
+ *    see patchLegacyRenderRow below) that the site's own generic
+ *    'click .utilichart a' -> chartClick -> Search.prototype.addFilter(node) chain
+ *    picks up automatically, same as any other result row.
+ *  - The "Filters: ..." chip row is the site's own existing UI
+ *    (Search.prototype.getFilterText/find/removeFilter); we wrap those three to
+ *    fold custom filters into the same rendered line and remove flow, rather than
+ *    drawing a separate chip UI of our own.
+ *  - The hover tooltip is the one piece of UI we render ourselves — an
+ *    independent floating element appended to document.body and positioned via
+ *    getBoundingClientRect(), never inserted into the search results DOM.
+ */
+(function () {
+	if (window.__CF_MOVEPOOL_FILTERS_LOADED) return;
+	window.__CF_MOVEPOOL_FILTERS_LOADED = true;
+
+	const CATEGORY_ORDER = [
+		'priority', 'redirection', 'spread',
+		'wind', 'sound', 'sharpness', 'recoil', 'sheerforce', 'speedcontrol',
+		'pivoting', 'contact', 'punching', 'biting', 'ballbomb', 'pulse', 'hazard',
+		'negatesintimidate', 'weathersetter', 'terrainsetter',
+	];
+	/** Categories whose move list is computed from BattleMovedex rather than fully
+	 *  hand-curated — see move-data.js's module doc comment for how each one is scanned. */
+	const DYNAMIC_CATEGORIES = [
+		'spread', 'wind', 'sound', 'sharpness', 'recoil', 'sheerforce', 'speedcontrol',
+		'contact', 'punching', 'biting', 'ballbomb', 'pulse',
+	];
+
+	const CF = {
+		/** The most recently active pokemon- or move-search DexSearch instance — single-
+		 *  focus UI, so there's only ever one relevant at a time regardless of which. */
+		lastEngine: null,
+		dynamicMoveLists: {},
+	};
+
+	function escapeHTML(text) {
+		if (text === null || text === undefined) return '';
+		return String(text)
+			.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+	}
+
+	function buildOverridesMap(catId) {
+		const overrides = {};
+		const cat = window.CF_MOVE_CATEGORIES[catId];
+		if (cat) for (const entry of cat.moves) overrides[entry.id] = entry;
+		return overrides;
+	}
+
+	function moveEntry(id, move, overrides) {
+		const override = overrides[id];
+		return {
+			id,
+			name: move.name,
+			conditional: !!(override && override.conditional),
+			reason: override ? override.reason : undefined,
+		};
+	}
+
+	/** Scans BattleMovedex once to build the move list for every dynamic/hybrid category.
+	 *  See move-data.js's module doc comment for exactly what field each one keys off. */
+	function buildDynamicMoveLists() {
+		const lists = {
+			spread: [], wind: [], sound: [], sharpness: [], recoil: [], sheerforce: [], speedcontrol: [],
+			contact: [], punching: [], biting: [], ballbomb: [], pulse: [],
+		};
+		const overrides = {
+			spread: buildOverridesMap('spread'),
+			wind: buildOverridesMap('wind'),
+			sound: buildOverridesMap('sound'),
+			sharpness: buildOverridesMap('sharpness'),
+			recoil: buildOverridesMap('recoil'),
+			sheerforce: buildOverridesMap('sheerforce'),
+			contact: buildOverridesMap('contact'),
+			punching: buildOverridesMap('punching'),
+			biting: buildOverridesMap('biting'),
+			ballbomb: buildOverridesMap('ballbomb'),
+			pulse: buildOverridesMap('pulse'),
+		};
+
+		// speedcontrol's curated entries (Trick Room, Tailwind, etc — see move-data.js)
+		// genuinely extend the list rather than annotate it, since the scan below has no
+		// stat-boost field to find them by. Seed them first so the scan never overwrites one.
+		const speedControlOverrides = buildOverridesMap('speedcontrol');
+		for (const id in speedControlOverrides) {
+			const entry = speedControlOverrides[id];
+			lists.speedcontrol.push({ id, name: entry.name, conditional: !!entry.conditional, reason: entry.reason });
+		}
+		const speedControlSeen = new Set(lists.speedcontrol.map(e => e.id));
+
+		for (const id in window.BattleMovedex) {
+			const move = window.BattleMovedex[id];
+
+			if (move.target === 'allAdjacent' || move.target === 'allAdjacentFoes') {
+				lists.spread.push(moveEntry(id, move, overrides.spread));
+			}
+			if (move.flags && move.flags.wind) lists.wind.push(moveEntry(id, move, overrides.wind));
+			if (move.flags && move.flags.sound) lists.sound.push(moveEntry(id, move, overrides.sound));
+			if (move.flags && move.flags.slicing) lists.sharpness.push(moveEntry(id, move, overrides.sharpness));
+			if (move.recoil || move.mindBlownRecoil) lists.recoil.push(moveEntry(id, move, overrides.recoil));
+			// Matches Sheer Force's own ability text ("attacks with secondary effects");
+			// category !== 'Status' keeps this to damaging moves, same as the ability itself.
+			if (move.category !== 'Status' && (move.secondary || move.secondaries)) {
+				lists.sheerforce.push(moveEntry(id, move, overrides.sheerforce));
+			}
+			if (move.flags && move.flags.contact) lists.contact.push(moveEntry(id, move, overrides.contact));
+			if (move.flags && move.flags.punch) lists.punching.push(moveEntry(id, move, overrides.punching));
+			if (move.flags && move.flags.bite) lists.biting.push(moveEntry(id, move, overrides.biting));
+			if (move.flags && move.flags.bullet) lists.ballbomb.push(moveEntry(id, move, overrides.ballbomb));
+			if (move.flags && move.flags.pulse) lists.pulse.push(moveEntry(id, move, overrides.pulse));
+
+			if (!speedControlSeen.has(id)) {
+				let chance = null;
+
+				// Foe-directed Speed drop only — deliberately excludes any move that raises
+				// the *user's own* Speed (Agility, Dragon Dance, Flame Charge's self-boost,
+				// etc): those are sweeper setup, not "control" over the match the way the
+				// rest of this category is.
+				if (move.target !== 'self' && move.boosts && move.boosts.spe < 0) {
+					chance = 100;
+				} else {
+					const secondaries = move.secondaries || (move.secondary ? [move.secondary] : []);
+					for (const s of secondaries) {
+						if (s.boosts && s.boosts.spe < 0) {
+							chance = (s.chance == null) ? 100 : s.chance;
+							break;
+						}
+					}
+				}
+
+				// Dedicated paralysis — 100%-when-it-connects only (Thunder Wave, Stun Spore,
+				// Glare, Nuzzle, Zap Cannon), not merely "has a chance to paralyze" (excludes
+				// Body Slam 30%, Thunderbolt 10%, etc — a deliberate, narrower scope than
+				// "any paralysis chance" would give). Paralysis halves Speed unconditionally
+				// once inflicted, so this is treated the same as a guaranteed Speed drop.
+				if (chance === null) {
+					if (move.status === 'par') {
+						chance = 100;
+					} else {
+						const secondaries = move.secondaries || (move.secondary ? [move.secondary] : []);
+						for (const s of secondaries) {
+							if (s.status === 'par' && (s.chance == null || s.chance === 100)) {
+								chance = 100;
+								break;
+							}
+						}
+					}
+				}
+
+				if (chance !== null) {
+					const conditional = chance < 100;
+					lists.speedcontrol.push({
+						id,
+						name: move.name,
+						conditional,
+						reason: conditional ? `Only ${chance}% chance to affect Speed` : undefined,
+					});
+					speedControlSeen.add(id);
+				}
+			}
+		}
+		return lists;
+	}
+
+	function getCategoryMoveList(catId) {
+		if (DYNAMIC_CATEGORIES.includes(catId)) return CF.dynamicMoveLists[catId] || [];
+		const cat = window.CF_MOVE_CATEGORIES[catId];
+		return (cat && cat.moves) || [];
+	}
+
+	/** Ability-kind categories (currently only negatesintimidate) match against a species'
+	 *  declarable abilities instead of its movepool — no canLearn() walk, just membership
+	 *  against Dex.species.get(speciesId).abilities (the 0/1/H/S slots). */
+	function computeAbilityMatches(speciesId, catId) {
+		const cat = window.CF_MOVE_CATEGORIES[catId];
+		const species = window.Dex.species.get(speciesId);
+		const abilityIds = new Set(
+			species && species.abilities ? Object.values(species.abilities).map(a => window.toID(a)) : []
+		);
+		return (cat.abilities || []).filter(entry => abilityIds.has(entry.id));
+	}
+
+	/** Lets a custom category be typed into the search box like a move/type/ability,
+	 *  the same way typing "fire" surfaces a clickable Fire-type filter, complete with
+	 *  its own section header — exactly like the "Pokémon" / "Moves" / "Abilities" /
+	 *  "Illegal Pokémon" headers a query like "heat" already produces. We can't reuse
+	 *  BattleSearchIndex (a static generated file) or the native row renderers (their
+	 *  'html' row type HTML-escapes everything except <em>/<strong>, so a real
+	 *  data-entry link can't be smuggled through it) — instead we inject synthetic
+	 *  ['header', 'Custom Filters'] and ['customfilter', categoryId] rows that a patched
+	 *  renderRow() (below) knows how to draw, the header via the native, unmodified
+	 *  'header' case and the row as a real `<a data-entry="custom|categoryId">`.
+	 *  Clicking it is then handled entirely by the site's own existing
+	 *  'click .utilichart a' -> chartClick -> Search.prototype.addFilter(node) chain —
+	 *  no click handler of our own needed.
+	 *
+	 *  Positioning: native textSearch() only ever falls back to a fuzzy pass — the
+	 *  `['html', "No exact match found..."]` notice plus a couple of alphabetically-
+	 *  nearest, functionally irrelevant results (e.g. "prio" → Primeape/Primarina) —
+	 *  when NOTHING in the real index starts with the typed query at all. That means
+	 *  whenever we have a custom-category match and that fallback fired, the query was
+	 *  actually aimed at us; the fuzzy guess is just noise burying the real match, so we
+	 *  drop it and show only our "Custom Filters" section. If the fallback didn't fire
+	 *  (real prefix matches exist), our section is prepended in front of them as usual —
+	 *  the same slot the "Pokémon"/"Moves"/etc. buckets start at. */
+	function injectTypedFilterSuggestions(engine, query) {
+		if (!query) return;
+		const q = window.toID(query);
+		if (!q) return;
+		const searchType = engine.typedSearch && engine.typedSearch.searchType;
+		const active = engine.__cfFilters || [];
+		const suggestions = [];
+		for (const catId of CATEGORY_ORDER) {
+			if (active.includes(catId)) continue;
+			const cat = window.CF_MOVE_CATEGORIES[catId];
+			if (!cat) continue;
+			if (!cat.searchTypes.includes(searchType)) continue;
+			if (catId.startsWith(q) || window.toID(cat.label).startsWith(q)) {
+				// matchStart/matchLength: same [type, id, matchStart, matchLength] shape
+				// native rows use to bold the matched substring of the name (see
+				// renderRow below). Our labels are single plain words, so the toID'd
+				// query always lines up with the same character positions in the
+				// display label — a straight prefix match at position 0.
+				suggestions.push(['customfilter', catId, 0, q.length]);
+			}
+		}
+		if (!suggestions.length) return;
+		const block = [['header', 'Custom Filters'], ...suggestions];
+		const results = engine.results || [];
+		const isFuzzyFallbackOnly = results.length > 0 && results[0][0] === 'html';
+		engine.results = isFuzzyFallbackOnly ? block : [...block, ...results];
+	}
+
+	/** Wraps the legacy renderer (the one actually live, see file header) so it knows how
+	 *  to draw our synthetic 'customfilter' row type. Every other row type — including
+	 *  'header', used for the "Custom Filters" heading above — is delegated to the
+	 *  original, unmodified.
+	 *
+	 *  Row aesthetic: the native renderer already has a pattern for a result whose own
+	 *  type differs from the current search type (e.g. a move suggested while searching
+	 *  Pokémon) — it renders as just the name plus a green-bordered "Filter" pill
+	 *  (`Search.prototype.filterLabel` → `<span class="col filtercol"><em>Filter</em>
+	 *  </span>`, styled by the site's own `.utilichart .filtercol em`; see e.g. typing
+	 *  "reflect" while searching Pokémon: "Reflect [Filter]"). We follow that same
+	 *  pill — same markup, same class — but, unlike a native cross-type row, also keep a
+	 *  description column after it (`.col.movedesccol`, the same class an Egg Group or
+	 *  Tier row uses for its trailing text), since our filters don't have their own
+	 *  dedicated page a user could click through to for more detail. And like every
+	 *  other result row, the substring that was actually typed gets bolded via `<b>`
+	 *  (styled blue+underlined by the site's own `.utilichart b`), using the
+	 *  matchStart/matchLength the row was given — the same two parameters a native
+	 *  row's own name-matching logic reads. */
+	function patchLegacyRenderRow() {
+		const BattleSearch = window.BattleSearch;
+		if (!BattleSearch || BattleSearch.prototype.__cfRowPatched) return;
+		const origRenderRow = BattleSearch.prototype.renderRow;
+		BattleSearch.prototype.renderRow = function (id, type, matchStart, matchLength, errorMessage, attrs) {
+			if (type === 'customfilter') {
+				const cat = window.CF_MOVE_CATEGORIES[id];
+				if (!cat) return '<li class="result">Unknown filter</li>';
+				const label = cat.label;
+				let name;
+				if (matchLength) {
+					name = escapeHTML(label.substr(0, matchStart)) +
+						`<b>${escapeHTML(label.substr(matchStart, matchLength))}</b>` +
+						escapeHTML(label.substr(matchStart + matchLength));
+				} else {
+					name = escapeHTML(label);
+				}
+				// description is keyed by search type ({ pokemon: '...', move: '...' } — see
+				// move-data.js) since the two contexts need different grammar: "Has a move
+				// that..." (subject = the species) only makes sense in Pokémon search, while
+				// Move search is already looking at the move itself.
+				const searchType = this.engine && this.engine.typedSearch && this.engine.typedSearch.searchType;
+				const description = (cat.description && cat.description[searchType]) || '';
+				return `<li class="result"><a href="#" data-entry="custom|${escapeHTML(id)}">` +
+					`<span class="col namecol">${name}</span>` +
+					`<span class="col filtercol"><em>Filter</em></span>` +
+					`<span class="col movedesccol" title="${escapeHTML(description)}">${escapeHTML(description)}</span>` +
+					`</a></li>`;
+			}
+			return origRenderRow.call(this, id, type, matchStart, matchLength, errorMessage, attrs);
+		};
+		BattleSearch.prototype.__cfRowPatched = true;
+	}
+
+	/** Folds custom filters into the site's own "Filters: ..." chip row
+	 *  (Search.prototype.getFilterText/find/removeFilter) so an applied custom filter
+	 *  looks and behaves exactly like a native type/move/ability/tier/egggroup filter
+	 *  chip — same markup, same place, same "click the × to remove" / "backspace to
+	 *  delete last filter" behavior — instead of drawing separate UI of our own. */
+	function patchLegacyFilterChips() {
+		const BattleSearch = window.BattleSearch;
+		if (!BattleSearch || BattleSearch.prototype.__cfChipsPatched) return;
+
+		BattleSearch.prototype.getFilterText = function () {
+			const engine = this.engine;
+			const filters = this.filters || [];
+			let buf = '<p>Filters: ';
+			for (let i = 0; i < filters.length; i++) {
+				let text = filters[i][1];
+				if (filters[i][0] === 'move') text = window.Dex.moves.get(text).name;
+				if (filters[i][0] === 'pokemon') text = window.Dex.species.get(text).name;
+				buf += `<button class="filter" value="${escapeHTML(filters[i].join(':'))}">` +
+					`${escapeHTML(text)} <i class="fa fa-times-circle"></i></button> `;
+			}
+			const custom = engine.__cfFilters || [];
+			for (const catId of custom) {
+				const cat = window.CF_MOVE_CATEGORIES[catId];
+				const label = cat ? cat.label : catId;
+				// Negative categories (currently only ballbomb) are an exclusion, not an
+				// inclusion — flagged red via .cf-negative-filter (style.css) rather than a
+				// text prefix, so it reads as "this is an exclusion" at a glance the same way
+				// a native chip's color/shape would, instead of adding words to parse.
+				const cls = cat && cat.negative ? ' cf-negative-filter' : '';
+				buf += `<button class="filter${cls}" value="${escapeHTML(`custom:${catId}`)}">` +
+					`${escapeHTML(label)} <i class="fa fa-times-circle"></i></button> `;
+			}
+			buf += '<small style="color: #888">(backspace = delete filter)</small>';
+			return buf + '</p>';
+		};
+
+		// Native find() only prepends the "Filters: ..." row when this.filters (native
+		// filters) is truthy. If only custom filters are active, that check is false, so
+		// the row (now custom-inclusive, per the patch above) would never appear without
+		// this: replicate the same prepend+redraw for the custom-only case.
+		const origFind = BattleSearch.prototype.find;
+		BattleSearch.prototype.find = function (query, firstElem) {
+			const ret = origFind.call(this, query, firstElem);
+			if (ret === true && !this.filters && this.engine.__cfFilters && this.engine.__cfFilters.length) {
+				this.resultSet = [['html', this.getFilterText()]].concat(this.resultSet);
+				this.renderedIndex = 0;
+				this.renderingDone = false;
+				this.updateScroll();
+			}
+			return ret;
+		};
+
+		const origRemoveFilter = BattleSearch.prototype.removeFilter;
+		BattleSearch.prototype.removeFilter = function (e) {
+			const engine = this.engine;
+			if (e) {
+				const parts = e.currentTarget.value.split(':');
+				if (parts[0] === 'custom') {
+					const idx = (engine.__cfFilters || []).indexOf(parts[1]);
+					if (idx >= 0) engine.__cfFilters.splice(idx, 1);
+					engine.results = null;
+					this.filters = engine.filters;
+					this.find('');
+					return true;
+				}
+				return origRemoveFilter.call(this, e);
+			}
+			// No-arg call: box is empty and the user hit backspace/esc to delete the
+			// last filter. Prefer native behavior (pop the last native filter) when one
+			// exists; otherwise fall back to popping the last custom filter, so backspace
+			// still works when only custom filters are active.
+			if (this.filters && this.filters.length) {
+				return origRemoveFilter.call(this, e);
+			}
+			if (engine.__cfFilters && engine.__cfFilters.length) {
+				engine.__cfFilters.pop();
+				engine.results = null;
+				this.filters = engine.filters;
+				this.find('');
+				return true;
+			}
+			return origRemoveFilter.call(this, e);
+		};
+
+		BattleSearch.prototype.__cfChipsPatched = true;
+	}
+
+	/** Pokémon search: for each active category, which of its moves can this species
+	 *  actually learn (via the real canLearn() walk)? Same shape computeMoveCategoryMatches
+	 *  below produces (category -> array of matched moveDefs), so both feed the same
+	 *  Tooltip.show() unmodified. Ability-kind categories (see move-data.js's `kind` note)
+	 *  skip canLearn() entirely and defer to computeAbilityMatches instead. */
+	function computeCategoryMatches(typedSearch, speciesId, activeCats) {
+		const result = {};
+		for (const catId of activeCats) {
+			const cat = window.CF_MOVE_CATEGORIES[catId];
+			if (cat && cat.kind === 'ability') {
+				result[catId] = computeAbilityMatches(speciesId, catId);
+				continue;
+			}
+			const matched = [];
+			for (const moveDef of getCategoryMoveList(catId)) {
+				if (typedSearch.canLearn(speciesId, moveDef.id)) matched.push(moveDef);
+			}
+			result[catId] = matched;
+		}
+		return result;
+	}
+
+	/** Move search: for each active category, is this specific move tagged with it? No
+	 *  canLearn() involved here — a move row only appears at all if the native engine
+	 *  already considers it legal for the set's species, so this is a plain membership
+	 *  check against the category's move list. Wrapped in a 0-or-1-element array so the
+	 *  result has the exact same shape as computeCategoryMatches above. */
+	function computeMoveCategoryMatches(moveId, activeCats) {
+		const result = {};
+		for (const catId of activeCats) {
+			const found = getCategoryMoveList(catId).find(m => m.id === moveId);
+			result[catId] = found ? [found] : [];
+		}
+		return result;
+	}
+
+	/** A move row's id is normally the plain move id ('quickattack'), but the row
+	 *  representing a set's *currently filled* move slot can appear as '_SLOT_moveid'
+	 *  (see DexSearch.getResultName's own handling of the same prefix) — strip that down
+	 *  to the real move id so both the category-membership check and the __cfMatches map
+	 *  key (which the tooltip looks up by plain move id) line up correctly. */
+	function normalizeMoveRowId(rawId) {
+		if (rawId.charAt(0) === '_') {
+			const parts = rawId.slice(1).split('_');
+			return parts[1] || '';
+		}
+		return rawId;
+	}
+
+	/** Post-filters an already-computed engine.results in place, mirroring the header
+	 *  dedup/trim behavior of BattleTypedSearch.getResults()'s own filter pass so the
+	 *  narrowed list still reads naturally (no dangling/duplicate headers). Handles both
+	 *  Pokémon search (row = ['pokemon', speciesId]) and move search
+	 *  (row = ['move', moveId]) — see the two compute*Matches functions above.
+	 *
+	 *  A `negative: true` category (currently only ballbomb) inverts the pass condition: the
+	 *  row passes when it did NOT match. `matches` still stores the raw (un-inverted)
+	 *  per-category result either way, since that's what the tooltip reads — for a negative
+	 *  category on a passing row, that's always an empty array (nothing to explain: the row
+	 *  was kept for the *absence* of a match), which the tooltip already skips like any other
+	 *  empty result. */
+	function applyCustomFilters(engine) {
+		const active = engine.__cfFilters;
+		const matches = new Map();
+		engine.__cfMatches = matches;
+		if (!active || !active.length || !engine.results) return;
+
+		const typedSearch = engine.typedSearch;
+		const filtered = [];
+		for (const row of engine.results) {
+			const type = row[0];
+			if (type === 'pokemon' || type === 'move') {
+				const rowId = type === 'move' ? normalizeMoveRowId(row[1]) : row[1];
+				const rowMatches = (type === 'pokemon')
+					? computeCategoryMatches(typedSearch, rowId, active)
+					: computeMoveCategoryMatches(rowId, active);
+				const allMatch = active.every(catId => {
+					const cat = window.CF_MOVE_CATEGORIES[catId];
+					const matched = !!(rowMatches[catId] && rowMatches[catId].length);
+					return (cat && cat.negative) ? !matched : matched;
+				});
+				if (!allMatch) continue;
+				matches.set(rowId, rowMatches);
+				filtered.push(row);
+			} else if (type === 'header' || type === 'html') {
+				if (filtered.length && filtered[filtered.length - 1][0] === 'header') {
+					filtered[filtered.length - 1] = row;
+				} else {
+					filtered.push(row);
+				}
+			} else {
+				filtered.push(row);
+			}
+		}
+		if (filtered.length && filtered[filtered.length - 1][0] === 'header') filtered.pop();
+		engine.results = filtered;
+	}
+
+	function patchDexSearch() {
+		const DexSearch = window.DexSearch;
+
+		const origSetType = DexSearch.prototype.setType;
+		DexSearch.prototype.setType = function (searchType, format, speciesOrSet) {
+			if (searchType !== (this.typedSearch && this.typedSearch.searchType)) {
+				this.__cfFilters = null;
+				this.__cfMatches = null;
+			}
+			return origSetType.call(this, searchType, format, speciesOrSet);
+		};
+
+		const origAddFilter = DexSearch.prototype.addFilter;
+		DexSearch.prototype.addFilter = function (entry) {
+			const type = entry[0];
+			if (type === 'custom') {
+				const searchType = this.typedSearch && this.typedSearch.searchType;
+				if (searchType !== 'pokemon' && searchType !== 'move') return false;
+				const cat = window.CF_MOVE_CATEGORIES[entry[1]];
+				if (!cat || !cat.searchTypes.includes(searchType)) return false;
+				this.__cfFilters = this.__cfFilters || [];
+				if (!this.__cfFilters.includes(entry[1])) {
+					this.__cfFilters.push(entry[1]);
+					this.results = null;
+				}
+				return true;
+			}
+			return origAddFilter.call(this, entry);
+		};
+
+		const origFind = DexSearch.prototype.find;
+		DexSearch.prototype.find = function (query) {
+			const changed = origFind.call(this, query);
+			const searchType = this.typedSearch && this.typedSearch.searchType;
+			if (searchType === 'pokemon' || searchType === 'move') {
+				CF.lastEngine = this;
+				applyCustomFilters(this);
+				injectTypedFilterSuggestions(this, this.query);
+			}
+			return changed;
+		};
+	}
+
+	// ---------------------------------------------------------------------
+	// Tooltip: explains which custom filter(s) a hovered result matched, and
+	// with which move(s). DOM/CSS mirrors battle-tooltips.ts's #tooltipwrapper
+	// structure but under our own id so it can never collide with the native
+	// singleton's lifecycle (BattleTooltips.isLocked/elem/etc). This is the one
+	// piece of UI we render ourselves, kept as a floating overlay appended to
+	// document.body rather than inserted into the results DOM.
+	// ---------------------------------------------------------------------
+	const Tooltip = {
+		wrapperEl: null,
+
+		show(li, matches) {
+			if (!this.wrapperEl) {
+				this.wrapperEl = document.createElement('div');
+				this.wrapperEl.id = 'cf-tooltipwrapper';
+				document.body.appendChild(this.wrapperEl);
+			}
+			let html = `<div class="cf-tooltip"><h2>Matched custom filters</h2>`;
+			for (const catId of CATEGORY_ORDER) {
+				const moveDefs = matches[catId];
+				if (!moveDefs || !moveDefs.length) continue;
+				const cat = window.CF_MOVE_CATEGORIES[catId];
+				const moveHtml = moveDefs.map(md => {
+					if (md.conditional) {
+						return `${escapeHTML(md.name)}` +
+							`<span class="cf-conditional-tag" title="${escapeHTML(md.reason || 'Conditional')}">conditional</span>`;
+					}
+					return escapeHTML(md.name);
+				}).join(', ');
+				html += `<p class="tooltip-section"><strong>${escapeHTML(cat ? cat.label : catId)}</strong><br />` +
+					`<span class="cf-movelist">${moveHtml}</span></p>`;
+			}
+			html += `</div>`;
+			this.wrapperEl.innerHTML = html;
+			this.wrapperEl.style.display = '';
+			this.position(li);
+		},
+
+		position(li) {
+			const rect = li.getBoundingClientRect();
+			const tooltipEl = this.wrapperEl.querySelector('.cf-tooltip');
+			const width = 300;
+			let left = Math.max(rect.left - 2, 0);
+			left = Math.min(left, window.innerWidth - width - 4);
+			this.wrapperEl.style.left = left + 'px';
+
+			this.wrapperEl.style.visibility = 'hidden';
+			this.wrapperEl.style.top = '0px';
+			const height = tooltipEl.offsetHeight;
+			this.wrapperEl.style.visibility = '';
+
+			let top = rect.top - 5 - height;
+			if (top < 4) top = rect.bottom + 5;
+			top = Math.max(4, Math.min(top, window.innerHeight - height - 4));
+			this.wrapperEl.style.top = top + 'px';
+		},
+
+		hide() {
+			if (this.wrapperEl) this.wrapperEl.style.display = 'none';
+		},
+	};
+
+	function findResultLi(target) {
+		return target.closest ? target.closest('li.result') : null;
+	}
+
+	// Pokémon-search rows only: a species can match a filter through any of several moves in
+	// its pool, so the tooltip is the only way to see *which* one(s) actually qualified. A
+	// move-search row IS a specific move already sitting in a pre-filtered list — hovering it
+	// would just repeat what's already on screen (its own name, next to the active filter
+	// chip), so there's deliberately no tooltip for move rows.
+	function onMouseOver(ev) {
+		const li = findResultLi(ev.target);
+		if (!li) return;
+		const engine = CF.lastEngine;
+		if (!engine || !engine.__cfFilters || !engine.__cfFilters.length) return;
+
+		const pokemonLink = li.querySelector('a[data-entry^="pokemon|"]');
+		if (pokemonLink) {
+			const name = pokemonLink.getAttribute('data-entry').slice('pokemon|'.length);
+			const speciesId = window.toID(name);
+			const matches = engine.__cfMatches && engine.__cfMatches.get(speciesId);
+			if (matches) Tooltip.show(li, matches);
+		}
+	}
+
+	function onMouseOut(ev) {
+		const li = findResultLi(ev.target);
+		if (!li) return;
+		if (ev.relatedTarget && li.contains(ev.relatedTarget)) return;
+		Tooltip.hide();
+	}
+
+	function waitForGlobals(cb) {
+		if (window.DexSearch && window.BattleMovedex && window.BattleTeambuilderTable && window.BattlePokedex &&
+			window.toID && window.Dex && window.CF_MOVE_CATEGORIES && window.BattleSearch) {
+			cb();
+		} else {
+			requestAnimationFrame(() => waitForGlobals(cb));
+		}
+	}
+
+	waitForGlobals(() => {
+		CF.dynamicMoveLists = buildDynamicMoveLists();
+		patchDexSearch();
+		patchLegacyRenderRow();
+		patchLegacyFilterChips();
+		document.addEventListener('mouseover', onMouseOver, true);
+		document.addEventListener('mouseout', onMouseOut, true);
+	});
+})();

@@ -1,0 +1,136 @@
+/* Better Teambuilder for Showdown! — styling for the hover tooltip, plus one small
+ * corrective override for the typed-filter suggestion row (below). Custom
+ * filters are typed into the same search box as any move/ability/type, appear
+ * under their own "Custom Filters" header using the site's own header/row
+ * markup unmodified, and once applied render as ordinary chips in the site's
+ * own native "Filters: ..." row (see content.js patchLegacyRenderRow /
+ * patchLegacyFilterChips — both reuse the site's own markup as-is). The
+ * tooltip is scoped under our own #cf-tooltipwrapper id rather than reusing
+ * Showdown's #tooltipwrapper, so it can never collide with the native
+ * BattleTooltips singleton element/lifecycle. The rule values below are
+ * copied from play.pokemonshowdown.com/style/battle.css so the look matches
+ * natively.
+ */
+
+/* The site auto-marks the very first result row as `.hover` (client-
+ * teambuilder.js's chartChange/updateChart: "if there's a query typed,
+ * whatever's first is what Enter/Tab would select") and styles that
+ * identically to a real mouse :hover (client.css: `.result a:hover,
+ * .result a.hover { background: #F8F8F8; ... }`). Since our suggestion is
+ * deliberately placed first whenever it appears, it always inherits that
+ * look — reading as "stuck highlighted" rather than "this is what Enter would
+ * pick," which isn't an association we can assume a first-time user has.
+ * These two rules cancel that specific look back to a plain, unselected row
+ * — but only when `:not(:hover)`, so real mouse hover is untouched. */
+.teambuilder-results .result a.hover[data-entry^="custom|"]:not(:hover) {
+	background: none;
+	border-color: transparent;
+}
+.dark .teambuilder-results .result a.hover[data-entry^="custom|"]:not(:hover) {
+	background: none;
+	border-color: transparent;
+}
+
+/* The site's `.filtercol` has no set width (it just wraps tightly around the
+ * "Filter" pill) and no native row ever puts another column directly after
+ * it, so there's no existing margin to inherit. Scoped to our row only —
+ * native cross-type filter rows elsewhere (e.g. "Spicy Extract [Filter]")
+ * are untouched. */
+a[data-entry^="custom|"] .filtercol {
+	margin-right: 12px;
+}
+
+/* `.movedesccol`'s native width (284px) is sized for the short trailing
+ * snippet a full move row shows after several other columns (type, power,
+ * accuracy, PP) have already eaten most of the row's width. Our row only has
+ * namecol + filtercol before it, so that same 284px was clipping the
+ * description far earlier than it needed to. Widen it to the space actually
+ * left in the row, and keep it single-line: `.utilichart li` rows are a
+ * fixed height, so letting this wrap would silently overflow the row instead
+ * of growing it. `text-overflow: ellipsis` plus the `title` attribute (set
+ * in patchLegacyRenderRow) are the fallback for any description still too
+ * long for even that width. namecol itself is left at its native width/
+ * wrap behavior — a long label (e.g. "Negates Intimidate") wrapping there is
+ * a native Showdown layout quirk, not something this extension corrects. */
+a[data-entry^="custom|"] .movedesccol {
+	width: calc(100% - 185px);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Negative-filter chips (currently only Ball/Bomb — see move-data.js's `negative` field and
+ * content.js's patchLegacyFilterChips) exclude matches rather than include them, so the chip
+ * is flagged red instead of prefixed with text like "No " — reads as "this is an exclusion"
+ * at a glance, the same way a shape/color difference would on a native control, without
+ * adding words to parse. Reuses the site's own red (`.illegalcol em`'s #AA2222) rather than
+ * inventing a new one. Driven by the `cf-negative-filter` class, applied to any category with
+ * `negative: true` — reusable for future negative filters, not specific to Ball/Bomb. Native
+ * `.filter`/`.filter:hover` styling (utilichart.css) isn't overridden for dark mode, so this
+ * doesn't need a `.dark` variant either. */
+.utilichart .filter.cf-negative-filter,
+.searchboxwrapper .filter.cf-negative-filter {
+	background: #F6E4E4;
+	border-color: #AA2222;
+	color: #AA2222;
+}
+.utilichart .filter.cf-negative-filter i,
+.searchboxwrapper .filter.cf-negative-filter i {
+	color: #AA2222;
+}
+/* Explicit hover rule (not just relying on cascade order) so the native "about to remove"
+ * gray + strikethrough feedback still wins over the red at equal selector specificity. */
+.utilichart .filter.cf-negative-filter:hover,
+.searchboxwrapper .filter.cf-negative-filter:hover {
+	color: #777777;
+	text-decoration: line-through;
+}
+
+#cf-tooltipwrapper {
+	position: fixed;
+	z-index: 70;
+	pointer-events: none;
+}
+#cf-tooltipwrapper .cf-tooltip {
+	width: 300px;
+	border: 1px solid #888888;
+	background: #EEEEEE;
+	background: rgba(240, 240, 240, .97);
+	border-radius: 5px;
+	box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+}
+#cf-tooltipwrapper .cf-tooltip h2 {
+	padding: 2px 4px;
+	margin: 0;
+	border-bottom: 1px solid #888888;
+	font-size: 10pt;
+	color: black;
+}
+#cf-tooltipwrapper .cf-tooltip p {
+	padding: 2px 4px;
+	margin: 0;
+	font-size: 9pt;
+	color: black;
+}
+#cf-tooltipwrapper .cf-tooltip p.tooltip-section {
+	border-top: 1px solid #888888;
+}
+#cf-tooltipwrapper .cf-tooltip .cf-movelist {
+	display: block;
+}
+#cf-tooltipwrapper .cf-tooltip .cf-conditional {
+	color: #A85D00;
+	font-style: italic;
+}
+#cf-tooltipwrapper .cf-tooltip .cf-conditional-tag {
+	display: inline-block;
+	margin-left: 4px;
+	padding: 0 3px;
+	border-radius: 2px;
+	background: #F0C040;
+	color: #3A2900;
+	font-size: 7.5pt;
+	font-weight: bold;
+	font-style: normal;
+	vertical-align: middle;
+}
