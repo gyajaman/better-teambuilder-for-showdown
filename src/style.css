@@ -213,6 +213,30 @@ a[data-entry^="custom|"] .movedesccol {
 	color: #A85D00;
 	font-style: italic;
 }
+/* Showdown's own native tooltip (#tooltipwrapper .tooltip in battle.css) has no
+ * .dark override either — checked live, same legacy gap as .filter/.sortcol. But
+ * this tooltip is UI we built ourselves rather than reused native markup, so unlike
+ * those we give it real dark support rather than matching the native gap — same
+ * choice already made for the Speed pill's own dark colors above. */
+.dark #cf-tooltipwrapper .cf-tooltip {
+	border-color: #888888;
+	background: rgba(42, 45, 48, .97);
+	box-shadow: 0 1px 4px rgba(0, 0, 0, .5);
+}
+.dark #cf-tooltipwrapper .cf-tooltip h2 {
+	border-bottom-color: #5A5D60;
+	color: #E8E8E8;
+}
+.dark #cf-tooltipwrapper .cf-tooltip p {
+	color: #E0E0E0;
+}
+.dark #cf-tooltipwrapper .cf-tooltip p.tooltip-section {
+	border-top-color: #5A5D60;
+}
+.dark #cf-tooltipwrapper .cf-tooltip .cf-conditional {
+	color: #E0A050;
+}
+
 #cf-tooltipwrapper .cf-tooltip .cf-conditional-tag {
 	display: inline-block;
 	margin-left: 4px;
