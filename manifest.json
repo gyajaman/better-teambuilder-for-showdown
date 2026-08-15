@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Better Teambuilder for Showdown!",
   "version": "0.1.0",
-  "description": "Adds movepool- and ability-derived custom search filters to the Pokémon Showdown teambuilder's Pokémon and Move search.",
+  "description": "Adds movepool/ability search filters, a Speed filter, and a click-to-apply Pikalytics stats panel to the Showdown teambuilder.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
