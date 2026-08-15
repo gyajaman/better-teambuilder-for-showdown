@@ -816,18 +816,359 @@
 	// 4g: bounded retry — give up after ~15 seconds (~900 frames at 60fps)
 	// instead of looping forever if Showdown renames/removes a required global.
 	const WAIT_MAX_RETRIES = 900;
-	function waitForGlobals(cb, retries) {
+
+	/** Shared bounded-retry polling shape behind both waitForGlobals and
+	 *  waitForSideRoomSettings below: check condition() every animation frame, call
+	 *  cb(value) with condition()'s own (truthy) return value once it succeeds, or
+	 *  onGiveUp(cb) after WAIT_MAX_RETRIES frames (~15s) with no success — condition
+	 *  itself is re-run on that final frame, so onGiveUp always sees the same "still
+	 *  false" state that triggered it. */
+	function pollUntil(condition, onGiveUp, cb, retries) {
 		if (retries === undefined) retries = 0;
-		if (window.DexSearch && window.BattleMovedex && window.BattleTeambuilderTable && window.BattlePokedex &&
-			window.toID && window.Dex && window.CF_MOVE_CATEGORIES && window.BattleSearch) {
-			cb();
+		const value = condition();
+		if (value) {
+			cb(value);
 		} else if (retries >= WAIT_MAX_RETRIES) {
-			console.warn('[Better Teambuilder] Gave up waiting for Showdown globals after ~15 s. ' +
-				'The extension will not activate — the site may have changed its bundle layout.');
+			onGiveUp(cb);
 		} else {
-			requestAnimationFrame(() => waitForGlobals(cb, retries + 1));
+			requestAnimationFrame(() => pollUntil(condition, onGiveUp, cb, retries + 1));
 		}
 	}
+
+	function waitForGlobals(cb) {
+		pollUntil(
+			() => !!(window.DexSearch && window.BattleMovedex && window.BattleTeambuilderTable &&
+				window.BattlePokedex && window.toID && window.Dex && window.CF_MOVE_CATEGORIES && window.BattleSearch),
+			() => {
+				console.warn('[Better Teambuilder] Gave up waiting for Showdown globals after ~15 s. ' +
+					'The extension will not activate — the site may have changed its bundle layout.');
+			},
+			cb
+		);
+	}
+
+	/** One-time startup tidy: closes whatever side rooms the client restored from the previous
+	 *  session (Showdown reopens them automatically on load) so the layout starts clean. Not
+	 *  hooked to joinRoom and doesn't run again after — this only fires once, right after
+	 *  load, not every time the teambuilder (or anything else) is opened. Gated by the
+	 *  "closeSideRoomsOnLoad" option (see settings-bridge.js/options.html) — on by default,
+	 *  matching prior always-on behavior, but the user can turn it off. */
+	function closeSideRoomsOnLoad() {
+		if (!window.app) return;
+		// 1. Leave any chat rooms that are open on the right side
+		if (window.app.sideRoomList) {
+			const sideRooms = window.app.sideRoomList.slice();
+			for (const room of sideRooms) {
+				if (window.app.leaveRoom) {
+					window.app.leaveRoom(room.id);
+				}
+			}
+		}
+		// 2. Hide the main lobby chat if it is the active side room
+		if (window.app.sideRoom && typeof window.app.sideRoom.closeHide === 'function') {
+			window.app.sideRoom.closeHide();
+		} else {
+			const hideBtn = document.querySelector('button[name="closeHide"]');
+			if (hideBtn) hideBtn.click();
+		}
+	}
+
+	/** Docks a small extension-owned panel to the right of the teambuilder's own content —
+	 *  see style.css's matching comment for the full picture (the !important override that
+	 *  actually shrinks #room-teambuilder itself, and why the sidebar can't just be inserted
+	 *  as a DOM child of it: TeambuilderRoom.update() wipes that whole subtree via $el.html()
+	 *  on nearly every interaction). This function's only job is deciding when
+	 *  body.cf-teambuilder-split should be on: window width large enough, no side room
+	 *  currently docked, AND a specific Pokémon is currently being edited (room.curSet set —
+	 *  same state the room's own template checks to decide whether to render the individual
+	 *  editor, i.e. the `.teamchartbox.individual` markup, vs. the team-overview list; there's
+	 *  nothing useful to split against on the list screen). Checked directly rather than
+	 *  inferred from #room-teambuilder's own rendered width (which the CSS override would
+	 *  make circular: forcing the room to 50% would make it immediately measure as "too
+	 *  narrow," undoing the very state that set it, flip-flopping every frame). Re-evaluated
+	 *  on window resize, and by wrapping four TeambuilderRoom-family methods (via
+	 *  wrapWithSplitUpdate below), each catching a different way curSet can change without the
+	 *  others firing: app.updateLayout (room focus / side-room changes),
+	 *  TeambuilderRoom.prototype.update (in-room navigation, e.g. selecting a Pokémon or
+	 *  backing out to the list), TeambuilderRoom.prototype.updateSetTop (changing the species
+	 *  *within* the current slot via setPokemon() — this one only re-renders .teambar/
+	 *  .teamchart directly, it never calls update() at all, so without this hook the sidebar
+	 *  kept showing the previous species until the user left and re-entered the slot), and
+	 *  TeambuilderRoom.prototype.updatePokemonSprite (the same gap again through a different
+	 *  entry point: AltFormPopup.setForm(), picking an alt cosmetic form from the species-icon
+	 *  popup, mutates curSet.species and calls only updatePokemonSprite() when a set is
+	 *  already being edited, never update()/updateSetTop()) — all four read-only, purely to
+	 *  notice state might have changed, never modifying what they do. Whenever the split turns
+	 *  (or stays) on, it also populates the sidebar with Pikalytics data for the
+	 *  currently-edited species/format — see renderPikalyticsSidebar and pikalytics.js. */
+	function patchTeambuilderSidebar() {
+		if (!window.app || typeof window.app.updateLayout !== 'function' || !window.TeambuilderRoom ||
+			typeof window.TeambuilderRoom.prototype.update !== 'function' ||
+			typeof window.TeambuilderRoom.prototype.updateSetTop !== 'function' ||
+			typeof window.TeambuilderRoom.prototype.updatePokemonSprite !== 'function') return;
+
+		// The set-editor card and movepool list are both built with fixed-pixel CSS (e.g.
+		// teambuilder.css's `.set-form .set-stats { width: 138px; }`) that doesn't reflow
+		// below Room's own default bestWidth (659, unmodified by TeambuilderRoom — the same
+		// number Showdown's own updateLayout() uses to decide a room needs its non-cramped
+		// width) — short of that, buttons/columns clip rather than wrap. There's no graceful
+		// middle ground to degrade into either: Showdown's only narrower alternative is
+		// .tiny-layout, which doesn't reflow this card, it hides it in favor of a separate
+		// full-screen mobile sub-editor. So the split has to switch off *before* either column
+		// would drop under 659, not partway through — 2 x 659 = 1318, rounded up to 1320.
+		const SPLIT_THRESHOLD = 1320;
+
+		function ensureTeambuilderSidebarEl() {
+			let el = document.getElementById('cf-teambuilder-sidebar');
+			if (el) return el;
+			el = document.createElement('div');
+			el.id = 'cf-teambuilder-sidebar';
+			el.innerHTML = '<p class="cf-sidebar-placeholder">Nothing here yet.</p>';
+			document.body.appendChild(el);
+			return el;
+		}
+
+		function pikaSectionHTML(title, rowsHTML) {
+			return `<div class="cf-pika-section"><h3 class="cf-pika-header">${escapeHTML(title)}</h3>` +
+				`<div class="cf-pika-rows">${rowsHTML}</div></div>`;
+		}
+
+		/** "Other" is Pikalytics' bucket for everything below its per-move cutoff — real
+		 *  aggregate data, not a specific move, so it's kept (dropping it would silently
+		 *  understate usage) but has no `type` of its own, hence the blank spacer. */
+		function buildMovesSection(mon) {
+			const moves = mon.moves || [];
+			if (!moves.length) return pikaSectionHTML('Common Moves', '<p class="cf-pika-empty">No move data.</p>');
+			const rows = moves.map((m) => {
+				const icon = m.type ? window.Dex.getTypeIcon(m.type) : '<span class="cf-pika-icon-spacer"></span>';
+				return `<div class="cf-pika-row">${icon}` +
+					`<span class="cf-pika-name">${escapeHTML(m.move)}</span>` +
+					`<span class="cf-pika-pct">${escapeHTML(m.percent)}%</span></div>`;
+			}).join('');
+			return pikaSectionHTML('Common Moves', rows);
+		}
+
+		/** Same shape as buildNaturesSection's own rows ({ability, percent}) — confirmed live
+		 *  via the /api/p/ endpoint. */
+		function buildAbilitiesSection(mon) {
+			const abilities = (mon.abilities || []).filter((a) => (parseFloat(a.percent) || 0) > 0);
+			if (!abilities.length) return pikaSectionHTML('Common Abilities', '<p class="cf-pika-empty">No ability data.</p>');
+			const rows = abilities.map((a) => {
+				return `<div class="cf-pika-row"><span class="cf-pika-name">${escapeHTML(a.ability)}</span>` +
+					`<span class="cf-pika-pct">${escapeHTML(a.percent)}%</span></div>`;
+			}).join('');
+			return pikaSectionHTML('Common Abilities', rows);
+		}
+
+		/** Nature usage is tracked two different ways depending on the format: some give a
+		 *  standalone `natures` array; others (e.g. gen9ou) only bundle a nature into each
+		 *  `spreads` entry, with no separate breakdown — so when `natures` is missing/empty,
+		 *  it's derived here by summing spread percentages per nature instead of showing
+		 *  nothing. */
+		function buildNaturesSection(mon) {
+			let natures = mon.natures;
+			if (!natures || !natures.length) {
+				const byNature = new Map();
+				for (const s of (mon.spreads || [])) {
+					if (!s.nature) continue;
+					byNature.set(s.nature, (byNature.get(s.nature) || 0) + (parseFloat(s.percent) || 0));
+				}
+				natures = Array.from(byNature, ([nature, percent]) => ({ nature, percent }))
+					.sort((a, b) => b.percent - a.percent);
+			}
+			natures = natures.filter((n) => (parseFloat(n.percent) || 0) > 0);
+			if (!natures.length) return pikaSectionHTML('Common Natures', '<p class="cf-pika-empty">No nature data.</p>');
+			const rows = natures.map((n) => {
+				const pct = typeof n.percent === 'number' ? n.percent.toFixed(1) : n.percent;
+				return `<div class="cf-pika-row"><span class="cf-pika-name">${escapeHTML(n.nature)}</span>` +
+					`<span class="cf-pika-pct">${escapeHTML(String(pct))}%</span></div>`;
+			}).join('');
+			return pikaSectionHTML('Common Natures', rows);
+		}
+
+		/** "Other" bucket, same as buildMovesSection — kept, no icon. */
+		function buildItemsSection(mon) {
+			const items = mon.items || [];
+			if (!items.length) return pikaSectionHTML('Common Items', '<p class="cf-pika-empty">No item data.</p>');
+			const rows = items.map((it) => {
+				const iconStyle = (it.item && window.Dex) ? window.Dex.getItemIcon(it.item) : '';
+				const icon = iconStyle ? `<span class="itemicon" style="${escapeHTML(iconStyle)}"></span>` : '<span class="cf-pika-icon-spacer"></span>';
+				return `<div class="cf-pika-row">${icon}` +
+					`<span class="cf-pika-name">${escapeHTML(it.item)}</span>` +
+					`<span class="cf-pika-pct">${escapeHTML(it.percent)}%</span></div>`;
+			}).join('');
+			return pikaSectionHTML('Common Items', rows);
+		}
+
+		function buildSpreadsSection(mon) {
+			const spreads = mon.spreads || [];
+			if (!spreads.length) return pikaSectionHTML('Common Spreads', '<p class="cf-pika-empty">No spread data.</p>');
+			const rows = spreads.map((s) => {
+				const label = s.nature ? `${escapeHTML(s.nature)}: ${escapeHTML(s.ev)}` : escapeHTML(s.ev);
+				return `<div class="cf-pika-row"><span class="cf-pika-name cf-pika-spread">${label}</span>` +
+					`<span class="cf-pika-pct">${escapeHTML(s.percent)}%</span></div>`;
+			}).join('');
+			return pikaSectionHTML('Common Spreads', rows);
+		}
+
+		/** Teammate rows don't consistently carry a usage percent (confirmed live: gen9ou's
+		 *  do, VGC's generally don't) or a `rank` (the reverse can also happen), so this falls
+		 *  back through percent -> explicit rank -> the row's own position in the list — which
+		 *  is itself real rank information, the list is already most- to least-common — rather
+		 *  than ever leaving a row blank. */
+		function buildTeammatesSection(mon) {
+			const team = mon.team || [];
+			if (!team.length) return pikaSectionHTML('Common Teammates', '<p class="cf-pika-empty">No teammate data.</p>');
+			const rows = team.map((t, i) => {
+				const iconStyle = window.Dex ? window.Dex.getPokemonIcon(t.pokemon) : '';
+				let pct;
+				if (t.percent !== undefined && t.percent !== null) pct = `${escapeHTML(String(t.percent))}%`;
+				else if (t.rank !== undefined && t.rank !== null) pct = `#${escapeHTML(String(t.rank))}`;
+				else pct = `#${i + 1}`;
+				return `<div class="cf-pika-row"><span class="picon" style="${escapeHTML(iconStyle)}"></span>` +
+					`<span class="cf-pika-name">${escapeHTML(t.pokemon)}</span>` +
+					`<span class="cf-pika-pct">${pct}</span></div>`;
+			}).join('');
+			return pikaSectionHTML('Common Teammates', rows);
+		}
+
+		function buildPikalyticsSidebarHTML(mon) {
+			return buildMovesSection(mon) + buildAbilitiesSection(mon) + buildItemsSection(mon) +
+				buildNaturesSection(mon) + buildSpreadsSection(mon) + buildTeammatesSection(mon);
+		}
+
+		/** Populates the sidebar with Pikalytics data for whatever species/format is
+		 *  currently being edited. `renderToken` is bumped on every call and captured by the
+		 *  async lookups below; if a slower, older request resolves after a newer one has
+		 *  already started (e.g. the user flips through several Pokémon quickly), its result
+		 *  is discarded on arrival — this is the "format [and species] matches always when
+		 *  showing data" guarantee, since without it a stale response could otherwise land
+		 *  after the UI has already moved on and overwrite what's currently showing with data
+		 *  for a species/format the user isn't even looking at anymore. */
+		let renderToken = 0;
+		let lastRenderKey = null;
+		function renderPikalyticsSidebar(tbRoom) {
+			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
+			const speciesName = tbRoom.curSet && (tbRoom.curSet.species || tbRoom.curSet.name);
+			if (!formatId || !speciesName) return;
+
+			const key = formatId + '|' + speciesName;
+			if (key === lastRenderKey) return;
+			lastRenderKey = key;
+
+			const token = ++renderToken;
+			const sidebarEl = ensureTeambuilderSidebarEl();
+			sidebarEl.innerHTML = '<p class="cf-sidebar-placeholder">Loading Pikalytics data…</p>';
+
+			if (!window.CF_Pikalytics) {
+				sidebarEl.innerHTML = '<p class="cf-sidebar-placeholder">No data for this format.</p>';
+				return;
+			}
+
+			window.CF_Pikalytics.getSpeciesData(formatId, speciesName).then((mon) => {
+				if (token !== renderToken) return; // superseded by a newer request
+				const isEmpty = !mon || (!(mon.moves || []).length && !(mon.abilities || []).length &&
+					!(mon.items || []).length && !(mon.natures || []).length &&
+					!(mon.team || []).length && !(mon.spreads || []).length);
+				if (isEmpty) {
+					sidebarEl.innerHTML = `<p class="cf-sidebar-placeholder">No data for ${escapeHTML(speciesName)} in this format.</p>`;
+					return;
+				}
+				sidebarEl.innerHTML = buildPikalyticsSidebarHTML(mon);
+			}).catch((e) => {
+				if (token !== renderToken) return; // superseded by a newer request
+				console.error('[Better Teambuilder] Pikalytics lookup failed:', e);
+				sidebarEl.innerHTML = '<p class="cf-sidebar-placeholder">Failed to load Pikalytics data.</p>';
+			});
+		}
+
+		function updateSplitState() {
+			const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
+			const editingAPokemon = !!(window.app.curRoom === tbRoom && tbRoom && tbRoom.curSet);
+			const active = editingAPokemon && !window.app.sideRoom && window.innerWidth >= SPLIT_THRESHOLD;
+			if (active) {
+				ensureTeambuilderSidebarEl();
+				try { renderPikalyticsSidebar(tbRoom); } catch (e) {
+					console.error('[Better Teambuilder] renderPikalyticsSidebar failed:', e);
+				}
+			} else {
+				lastRenderKey = null; // force a fresh render next time the sidebar becomes active
+			}
+			document.body.classList.toggle('cf-teambuilder-split', active);
+		}
+
+		/** Wraps obj[methodName] so every call also triggers updateSplitState() afterward,
+		 *  without changing what the original does or returns — the four hooks below only
+		 *  differ in *which* Showdown state-mutating method each is watching. */
+		function wrapWithSplitUpdate(obj, methodName) {
+			const orig = obj[methodName];
+			obj[methodName] = function () {
+				const ret = orig.apply(this, arguments);
+				updateSplitState();
+				return ret;
+			};
+		}
+
+		wrapWithSplitUpdate(window.app, 'updateLayout');
+		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'update');
+
+		// setPokemon() (species field change, e.g. swapping the species within the *same*
+		// slot rather than navigating to a different one) calls only updateSetTop(), not
+		// update() — it re-renders .teambar/.teamchart directly via jQuery .html() without
+		// ever going through update(). Without this hook, changing species in place left the
+		// sidebar showing the previous species' data until the user left and re-entered the
+		// slot (which does go through update(), via selectPokemon()).
+		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'updateSetTop');
+
+		// AltFormPopup.setForm() (picking an alt cosmetic form from the species-icon popup)
+		// mutates curSet.species and calls only updatePokemonSprite() when a set is already
+		// being edited — the same gap as updateSetTop() above, through a different Showdown
+		// entry point that never calls update()/updateSetTop().
+		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'updatePokemonSprite');
+
+		window.addEventListener('resize', updateSplitState);
+
+		// Check on initial load: if the teambuilder is already the active room by the time
+		// this patches in (e.g. extension loaded on an already-open /teambuilder page),
+		// neither hook above will fire again on its own until the next state change.
+		updateSplitState();
+	}
+
+	// Same shape as CF_DEFAULT_SETTINGS in defaults.js — this file can't share that module,
+	// since it runs in the page's own MAIN-world JS realm (see manifest.json) rather than the
+	// isolated world/options page defaults.js is loaded into (see defaults.js's own doc
+	// comment for why the other two files DO share it).
+	const DEFAULT_SETTINGS = { closeSideRoomsOnLoad: true };
+
+	/** settings-bridge.js (isolated world, document_start — see manifest.json) reads
+	 *  chrome.storage.sync, which this MAIN-world script has no access to, and writes it as a
+	 *  JSON attribute on <html> once it resolves — normally within a frame or two, well before
+	 *  this script reaches document_idle. Polled with the same bounded-retry shape (pollUntil,
+	 *  above) as waitForGlobals rather than a one-shot check, and independent of it: the
+	 *  side-room tidy only needs window.app, not DexSearch/BattleMovedex/etc, so it shouldn't
+	 *  be stuck waiting on unrelated bundle globals. Fails open to DEFAULT_SETTINGS (matching
+	 *  the prior always-on behavior) if the bridge script is missing/broken or storage never
+	 *  resolves. */
+	function waitForSideRoomSettings(cb) {
+		pollUntil(
+			() => {
+				if (!window.app) return null;
+				const raw = document.documentElement.getAttribute('data-cf-settings');
+				try { return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+			},
+			(cb2) => {
+				if (window.app) cb2(DEFAULT_SETTINGS);
+			},
+			cb
+		);
+	}
+
+	waitForSideRoomSettings((settings) => {
+		if (!settings.closeSideRoomsOnLoad) return;
+		try { closeSideRoomsOnLoad(); } catch (e) {
+			console.error('[Better Teambuilder] closeSideRoomsOnLoad failed:', e);
+		}
+	});
 
 	waitForGlobals(() => {
 		CF.dynamicMoveLists = buildDynamicMoveLists();
@@ -841,6 +1182,9 @@
 		}
 		try { patchLegacyFilterChips(); } catch (e) {
 			console.error('[Better Teambuilder] patchLegacyFilterChips failed:', e);
+		}
+		try { patchTeambuilderSidebar(); } catch (e) {
+			console.error('[Better Teambuilder] patchTeambuilderSidebar failed:', e);
 		}
 		document.addEventListener('mouseover', onMouseOver, true);
 		document.addEventListener('mouseout', onMouseOut, true);

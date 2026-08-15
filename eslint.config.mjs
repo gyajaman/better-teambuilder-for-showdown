@@ -8,6 +8,7 @@ export default [
 			sourceType: "script",
 			globals: {
 				...globals.browser,
+				...globals.webextensions,
 				// Pokémon Showdown globals accessed by the extension at runtime.
 				// These are defined by the site's own bundle and available because
 				// the content script runs in the MAIN world (manifest.json).
@@ -18,6 +19,8 @@ export default [
 				Dex: "readonly",
 				DexSearch: "readonly",
 				toID: "readonly",
+				// defaults.js's shared global — see its own doc comment.
+				CF_DEFAULT_SETTINGS: "readonly",
 			},
 		},
 		rules: {

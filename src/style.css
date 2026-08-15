@@ -249,3 +249,156 @@ a[data-entry^="custom|"] .movedesccol {
 	font-style: normal;
 	vertical-align: middle;
 }
+
+/* Teambuilder sidebar: when no side room is docked and the window is wide enough, shrinks
+ * the teambuilder room *itself* (#room-teambuilder — the real .ps-room box: background,
+ * border, and scroll area included, not just its inner content) to half width, and docks
+ * #cf-teambuilder-sidebar (content.js patchTeambuilderSidebar) in the freed half — a place
+ * for future extension features to live alongside the editor. Below the threshold, or with
+ * a side room open, neither is attempted: the room stays its normal full width and the
+ * sidebar stays hidden.
+ *
+ * #room-teambuilder's width is normally set by Showdown's own layout engine (App.show(),
+ * called from App.updateLayout on every resize/room-focus change) as a plain, non-important
+ * inline style (`left/width/right`) — see client.js. body.cf-teambuilder-split's rules use
+ * !important specifically to win against that: !important in an external stylesheet beats a
+ * *non*-important inline style, so this stays in effect even as Showdown keeps re-setting
+ * that inline style on every relayout. content.js decides when to add/remove the class —
+ * window width and "is a side room currently docked" are exactly the two conditions asked
+ * for, and neither depends on our own override (unlike measuring #room-teambuilder's own
+ * rendered width would, which would immediately see its *own* forced 50% and thrash).
+ *
+ * The sidebar can't just be inserted as a DOM child of #room-teambuilder: per
+ * client-teambuilder.js, TeambuilderRoom.update() replaces the room's *entire* innerHTML via
+ * $el.html(buf) on nearly every interaction (every search keystroke, every filter click) —
+ * anything inserted inside that subtree would be destroyed on the very next re-render. So it
+ * lives as a DOM *sibling* instead (appended straight to <body> — see
+ * ensureTeambuilderSidebarEl in content.js) and is positioned with `position: fixed` to align
+ * exactly with the room's own (now actually halved) box, rather than floating over content
+ * that never moved. */
+#cf-teambuilder-sidebar {
+	display: none;
+	position: fixed;
+	top: 56px;
+	left: 50%;
+	right: 0;
+	bottom: 0;
+	overflow-y: auto;
+	box-sizing: border-box;
+	padding: 12px 16px;
+	background: rgba(242, 247, 245, .85);
+	border-left: 1px solid #AAAAAA;
+	color: #000000;
+}
+.dark #cf-teambuilder-sidebar {
+	background: rgba(0, 0, 0, .8);
+	color: #DDDDDD;
+	border-left-color: #34373B;
+}
+body.cf-teambuilder-split #room-teambuilder {
+	left: 0 !important;
+	width: 50% !important;
+	right: auto !important;
+}
+body.cf-teambuilder-split #cf-teambuilder-sidebar {
+	display: block;
+}
+.cf-sidebar-placeholder {
+	color: #777777;
+	font-style: italic;
+}
+.dark .cf-sidebar-placeholder {
+	color: #AAAAAA;
+}
+
+/* Pikalytics sidebar content (content.js renderPikalyticsSidebar/build*Section): common
+ * moves/natures/spreads/teammates for the currently-edited Pokémon. Header and row styling
+ * are copied values, not invented ones — .cf-pika-header from Showdown's own
+ * `.utilichart h3` (utilichart.css) and .cf-pika-row's hover from
+ * `.teambuilder-results .result a:hover` (client.css) — so this reads as part of the native
+ * UI rather than a bolted-on panel. */
+.cf-pika-section {
+	margin: 0 0 12px;
+}
+.cf-pika-header {
+	margin: 5px 0 4px -1px;
+	padding: 3px 8px;
+	font-family: Verdana, sans-serif;
+	font-size: 10pt;
+	background: #DAE5F0;
+	color: black;
+	border: 1px solid #AAAAAA;
+	text-shadow: 1px 1px 0 rgba(255, 255, 255, .6);
+	box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .6);
+}
+.dark .cf-pika-header {
+	background: #636363;
+	color: #F1F1F1;
+	border: 1px solid #A9A9A9;
+	text-shadow: 1px 1px 0 rgb(40, 43, 45);
+	box-shadow: inset 0px 1px 0 rgb(49, 49, 49);
+}
+.cf-pika-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 24px;
+	padding: 2px 6px;
+	margin: 0 5px 1px 5px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	font-family: Verdana, sans-serif;
+	font-size: 9pt;
+}
+.cf-pika-row:hover {
+	border-color: #D8D8D8;
+	background: #F8F8F8;
+}
+.dark .cf-pika-row:hover {
+	border-color: #777777;
+	background: rgba(100, 100, 100, .5);
+}
+.cf-pika-row .picon,
+.cf-pika-row .itemicon {
+	flex: 0 0 auto;
+}
+.cf-pika-row img.pixelated {
+	flex: 0 0 auto;
+}
+.cf-pika-icon-spacer {
+	display: inline-block;
+	flex: 0 0 auto;
+	width: 32px;
+	height: 14px;
+}
+.cf-pika-name {
+	flex: 1 1 auto;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: #000000;
+}
+.dark .cf-pika-name {
+	color: #EEEEEE;
+}
+.cf-pika-spread {
+	font-family: Consolas, Monaco, monospace;
+	font-size: 8pt;
+}
+.cf-pika-pct {
+	flex: 0 0 auto;
+	color: #777777;
+	font-size: 8pt;
+}
+.dark .cf-pika-pct {
+	color: #AAAAAA;
+}
+.cf-pika-empty {
+	margin: 0 8px;
+	color: #777777;
+	font-style: italic;
+	font-size: 9pt;
+}
+.dark .cf-pika-empty {
+	color: #AAAAAA;
+}

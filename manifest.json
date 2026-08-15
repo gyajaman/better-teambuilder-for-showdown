@@ -8,10 +8,20 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
+  "permissions": ["storage"],
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": true
+  },
   "content_scripts": [
     {
       "matches": ["https://play.pokemonshowdown.com/*"],
-      "js": ["src/move-data.js", "src/content.js"],
+      "js": ["src/defaults.js", "src/settings-bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://play.pokemonshowdown.com/*"],
+      "js": ["src/move-data.js", "src/pikalytics.js", "src/content.js"],
       "css": ["src/style.css"],
       "world": "MAIN",
       "run_at": "document_idle"
