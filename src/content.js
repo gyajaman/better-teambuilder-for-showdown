@@ -80,6 +80,220 @@
 			.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 	}
 
+	function toIDSafe(s) {
+		return (window.toID || ((x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, '')))(s);
+	}
+
+	/** Shared by both the Pikalytics sidebar's build*Section functions (to decide a row's
+	 *  clickable/disabled/equipped styling) and its click-to-apply handlers (to decide whether
+	 *  a click actually does anything) — see patchTeambuilderSidebar's own doc comment for the
+	 *  full click-to-apply design. A move "slot" is index 0-3 of curSet.moves regardless of the
+	 *  array's actual length (addPokemon starts it at [], client-teambuilder.js's own chartSet
+	 *  leaves gaps as undefined/''), so slot-emptiness is checked by index, not by array length. */
+	function curSetHasMove(set, moveName) {
+		return !!(set && set.moves && set.moves.some((m) => m && toIDSafe(m) === toIDSafe(moveName)));
+	}
+	function curSetMovesFull(set) {
+		if (!set || !set.moves) return false;
+		for (let i = 0; i < 4; i++) if (!set.moves[i]) return false;
+		return true;
+	}
+	/** Mega/Primal species collapse to their base species (Blastoise-Mega -> Blastoise) via
+	 *  pikalytics.js's own resolveQuerySpecies — the same collapsing it already does when
+	 *  querying Pikalytics, since Pikalytics only ever reports Mega usage under the base
+	 *  species name (see pikalytics.js's doc comment), so a teammate suggestion never actually
+	 *  reads "Blastoise-Mega". Without this, a team that already has Mega Blastoise wouldn't
+	 *  grey out a "Blastoise" teammate suggestion, since "blastoisemega" !== "blastoise". */
+	function baseSpeciesID(speciesName) {
+		const resolved = (window.CF_Pikalytics && window.CF_Pikalytics.resolveQuerySpecies)
+			? window.CF_Pikalytics.resolveQuerySpecies(speciesName)
+			: speciesName;
+		return toIDSafe(resolved);
+	}
+	function curTeamHasSpecies(tbRoom, speciesName) {
+		const team = tbRoom.curSetList || [];
+		const target = baseSpeciesID(speciesName);
+		return team.some((s) => s.species && baseSpeciesID(s.species) === target);
+	}
+	function curTeamFull(tbRoom) {
+		const team = tbRoom.curSetList || [];
+		const capacity = (tbRoom.curTeam && tbRoom.curTeam.capacity) || 6;
+		return team.length >= capacity;
+	}
+
+	/** Single source of truth for Showdown's own HP/Atk/Def/SpA/SpD/Spe stat order/labels —
+	 *  STAT_IDS and STAT_LABELS (used by parseEVs below and by buildSpreadsSection/
+	 *  natureModifierHTML further down) are both derived from this one object rather than each
+	 *  being its own hand-typed literal, so the order/spelling can't drift between them. */
+	const STAT_LABEL_BY_ID = { hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe' };
+	const STAT_IDS = Object.keys(STAT_LABEL_BY_ID);
+	const STAT_LABELS = Object.values(STAT_LABEL_BY_ID);
+
+	/** EVs in Champions VGC run 0-32 (not the old 0-252 scale — confirmed live), enforced by
+	 *  every native EV control (statChange/statSlide in client-teambuilder.js both clamp to
+	 *  `usesStatPoints ? 32 : 252`). Pikalytics' own data should already be in range, but this
+	 *  clamps anyway rather than trusting it — cheap insurance against a malformed API value
+	 *  getting written straight into the set with no validation. */
+	function parseEVs(evString) {
+		const parts = String(evString).split('/');
+		const evs = {};
+		STAT_IDS.forEach((id, i) => {
+			const val = parseInt(parts[i], 10) || 0;
+			evs[id] = Math.min(Math.max(val, 0), 32);
+		});
+		return evs;
+	}
+
+	/** Applies a Pikalytics value straight to the currently-edited set/team, the same fields
+	 *  client-teambuilder.js's own chartSet()/addPokemon() write (curSet.moves[i]/.ability/
+	 *  .item/.nature/.evs, curSetList) — not a reimplementation of Showdown's own set-editing
+	 *  logic, just direct field writes followed by the same redraw call our own sidebar-refresh
+	 *  hooks already use (updateSetTop), so the real set editor and our sidebar both reflect
+	 *  the change in one pass without navigating anywhere. Deliberately skips chartSet's
+	 *  companion chooseMove()/unChooseMove() calls (Hidden Power IVs, minAtk/minSpe IV
+	 *  optimization, Gyro Ball's speed-IV reset): the specific minAtk/minSpe optimization block
+	 *  is genuinely dead for `format.includes('champions')` — our only supported formats —
+	 *  since chooseMove early-returns before reaching it. The Hidden Power IV block and the
+	 *  Return/Frustration `happiness` assignment earlier in chooseMove are NOT behind that
+	 *  early-return, so applyMove clicking "Return"/"Frustration" does leave curSet.happiness
+	 *  unset where the native chart-click path would set it to 255/0 — accepted as a real,
+	 *  narrow gap rather than fixed, since happiness-dependent moves are essentially never used
+	 *  in competitive VGC and Hidden Power has had no in-game source since Generation 8, so
+	 *  neither case is reachable through this extension's actual Gen 9 Pikalytics data. Each
+	 *  function no-ops (and does NOT call save()) if there's no room to apply the change —
+	 *  belt-and-suspenders alongside the CSS pointer-events:none on rows already rendered
+	 *  disabled for the same reason. */
+
+	/** updateSetTop() (always called) redraws move1-4/item/ability/pokemon — the .teamchart
+	 *  fields renderSet() covers — from curSet, so those always reflect a click-to-apply change
+	 *  immediately. Two OTHER native views are rendered separately and don't get touched by
+	 *  that call at all, so each needs its own explicit refresh, only when actually open:
+	 *
+	 *  - The move/ability/item/pokemon SEARCH CHART (the dropdown of suggestions under
+	 *    whichever field is focused) has its "already selected" `.cur` markers computed once,
+	 *    when the chart opens (TeambuilderRoom.prototype.updateChart's own `cur` map, built
+	 *    from DOM input values at that moment) — without a refresh, a move applied via our
+	 *    sidebar wouldn't show as selected there until the user focused a different field and
+	 *    back. `updateChart(true)` is the exact call selectPokemon() itself uses to force that
+	 *    rebuild; gated on curChartType being one of the four searchable types
+	 *    (searchChartTypes) so this doesn't poke at chart state that isn't set up for it.
+	 *  - The Stats/EV panel (nature <select>, EV sliders — curChartType === 'stats') is a
+	 *    wholly separate view built by updateStatForm(), which updateChart()'s own 'stats'
+	 *    branch calls but which our updateChart(true) call above never reaches, since 'stats'
+	 *    isn't in searchChartTypes. Without calling it directly too, applying a nature (or a
+	 *    spread's nature+EVs) from the sidebar while the Stats panel is open left its nature
+	 *    dropdown and sliders showing the old values until the user left the panel and back. */
+	function commitApply(tbRoom) {
+		tbRoom.updateSetTop();
+		if (tbRoom.curChartType && tbRoom.searchChartTypes && (tbRoom.curChartType in tbRoom.searchChartTypes)) {
+			if (typeof tbRoom.updateChart === 'function') tbRoom.updateChart(true);
+		} else if (tbRoom.curChartType === 'stats' && typeof tbRoom.updateStatForm === 'function') {
+			tbRoom.updateStatForm();
+		}
+		tbRoom.save();
+	}
+
+	/** Toggle, not just add: clicking a move already on the set removes it (clearing the slot
+	 *  to '', matching the empty-slot convention chartSet itself uses) rather than being a
+	 *  no-op — this is also the one reliable way to clear a move slot at all, since backspacing
+	 *  it out through the native move1-4 text inputs doesn't reliably clear curSet.moves (a
+	 *  separate, native-UI issue this sidesteps rather than fixes). Clicking a move NOT already
+	 *  on the set fills the first empty slot, or no-ops if all 4 are already filled with other
+	 *  moves. */
+	function applyMove(tbRoom, moveName) {
+		const set = tbRoom.curSet;
+		if (!set) return;
+		const moves = set.moves || (set.moves = []);
+		const existingSlot = moves.findIndex((m) => m && toIDSafe(m) === toIDSafe(moveName));
+		if (existingSlot !== -1) {
+			moves[existingSlot] = '';
+			commitApply(tbRoom);
+			return;
+		}
+		let slot = -1;
+		for (let i = 0; i < 4; i++) {
+			if (!moves[i]) { slot = i; break; }
+		}
+		if (slot === -1) return;
+		moves[slot] = moveName;
+		commitApply(tbRoom);
+	}
+	/** Shared by the three single-field apply* calls (ability/item/nature) in onPikaSidebarClick
+	 *  below — each is the same "read curSet, write one field, commitApply" shape, differing
+	 *  only in which field, so one helper takes the field name rather than three near-identical
+	 *  functions. */
+	function applySetField(tbRoom, fieldName, value) {
+		const set = tbRoom.curSet;
+		if (!set) return;
+		set[fieldName] = value;
+		commitApply(tbRoom);
+	}
+	function applySpread(tbRoom, natureName, evString) {
+		const set = tbRoom.curSet;
+		if (!set) return;
+		if (natureName) set.nature = natureName;
+		set.evs = parseEVs(evString);
+		commitApply(tbRoom);
+	}
+	/** Appends a new team slot with just the species (and level) filled in — the same shape
+	 *  addPokemon()'s own template uses ({name:'', item:'', nature:'', evs:{}, ivs:{},
+	 *  moves:[]}) — WITHOUT touching curSet/curSetLoc the way addPokemon() itself does (which
+	 *  navigates the editor to the new blank slot). updateSetTop()'s own renderTeambar() still
+	 *  picks up the new team member's icon in the top bar; the currently-open editor is
+	 *  untouched. Doesn't go through commitApply: adding a teammate never changes the currently
+	 *  open chart's own `cur` map (that's scoped to the set being edited, not curSetList).
+	 *
+	 *  `level: 50` is hardcoded rather than derived the way setPokemon() itself derives it
+	 *  (stripping a `gen9`/`bdsp`/etc. prefix off the format id, then checking the stripped
+	 *  string against `champions`/`battlespot`/`bss`/`vgc`/`battlefestival`) because every
+	 *  format this extension supports (pikalytics.js's FORMAT_SLUG_MAP allowlist) is already a
+	 *  Champions VGC format — level 50 always, not conditionally. Without this, a teammate added
+	 *  through the sidebar had no `level` key at all (defaulting to 100 elsewhere), producing an
+	 *  invalid set for every format this extension actually runs in. */
+	function applyTeammate(tbRoom, speciesName) {
+		if (curTeamFull(tbRoom) || curTeamHasSpecies(tbRoom, speciesName)) return;
+		tbRoom.curSetList.push({ name: '', species: speciesName, item: '', nature: '', evs: {}, ivs: {}, level: 50, moves: [] });
+		tbRoom.updateSetTop();
+		tbRoom.save();
+	}
+
+	/** Clicking a sidebar row while a chart text input (move1-4/ability/item/pokemon) has focus
+	 *  fires that input's native blur handler (chartChange, bound to `blur .chartinput`) BEFORE
+	 *  our own click handler runs — browsers blur the previously-focused element as part of a
+	 *  mousedown's default action, ahead of the click event that follows on mouseup. Since
+	 *  chartChange can itself call into chartSet (now hooked, see patchTeambuilderSidebar's own
+	 *  doc comment), that blur can trigger a sidebar re-render that replaces the very row being
+	 *  clicked before the click event fires, so the first click just defocuses the input and a
+	 *  second click (nothing left to blur) is what actually applies. preventDefault()-on-
+	 *  mousedown would suppress the blur entirely, but that turned out to break other native
+	 *  behavior that depends on the blur actually happening — so instead of fixing the race,
+	 *  this just makes it visible: while any .chartinput is focused, hovering a clickable row
+	 *  drops from `cursor: pointer` to `cursor: default` (cf-pika-blur-pending on <body>,
+	 *  style.css) as a "this click will just refocus — click again" cue — deliberately not
+	 *  `cursor: wait`, which reads as the page being busy/lagging rather than "click again" (see
+	 *  that CSS rule's own comment) — via delegated focusin/focusout (not focus/blur, which
+	 *  don't bubble and so can't be caught with a single document-level listener). */
+	function onPikaSidebarFocusChange(ev) {
+		document.body.classList.toggle('cf-pika-blur-pending', document.activeElement instanceof Element &&
+			document.activeElement.classList.contains('chartinput'));
+	}
+
+	function onPikaSidebarClick(ev) {
+		const el = ev.target.closest('[data-cf-pika-action]');
+		if (!el) return;
+		const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
+		if (!tbRoom || !tbRoom.curSet) return;
+		const value = el.dataset.cfPikaValue;
+		switch (el.dataset.cfPikaAction) {
+			case 'move': applyMove(tbRoom, value); break;
+			case 'ability': applySetField(tbRoom, 'ability', value); break;
+			case 'item': applySetField(tbRoom, 'item', value); break;
+			case 'nature': applySetField(tbRoom, 'nature', value); break;
+			case 'spread': applySpread(tbRoom, el.dataset.cfPikaNature || '', el.dataset.cfPikaEv); break;
+			case 'teammate': applyTeammate(tbRoom, value); break;
+		}
+	}
+
 	function buildOverridesMap(catId) {
 		const overrides = {};
 		const cat = window.CF_MOVE_CATEGORIES[catId];
@@ -886,9 +1100,11 @@
 	 *  inferred from #room-teambuilder's own rendered width (which the CSS override would
 	 *  make circular: forcing the room to 50% would make it immediately measure as "too
 	 *  narrow," undoing the very state that set it, flip-flopping every frame). Re-evaluated
-	 *  on window resize, and by wrapping four TeambuilderRoom-family methods (via
-	 *  wrapWithSplitUpdate below), each catching a different way curSet can change without the
-	 *  others firing: app.updateLayout (room focus / side-room changes),
+	 *  on window resize, and by wrapping six TeambuilderRoom-family methods (via
+	 *  wrapWithSplitUpdate below) in two groups:
+	 *
+	 *  Group 1 — does curSet/the room's focus itself need re-evaluating (species changed, room
+	 *  changed, split should turn on/off)? app.updateLayout (room focus / side-room changes),
 	 *  TeambuilderRoom.prototype.update (in-room navigation, e.g. selecting a Pokémon or
 	 *  backing out to the list), TeambuilderRoom.prototype.updateSetTop (changing the species
 	 *  *within* the current slot via setPokemon() — this one only re-renders .teambar/
@@ -897,15 +1113,43 @@
 	 *  TeambuilderRoom.prototype.updatePokemonSprite (the same gap again through a different
 	 *  entry point: AltFormPopup.setForm(), picking an alt cosmetic form from the species-icon
 	 *  popup, mutates curSet.species and calls only updatePokemonSprite() when a set is
-	 *  already being edited, never update()/updateSetTop()) — all four read-only, purely to
-	 *  notice state might have changed, never modifying what they do. Whenever the split turns
-	 *  (or stays) on, it also populates the sidebar with Pikalytics data for the
-	 *  currently-edited species/format — see renderPikalyticsSidebar and pikalytics.js. */
+	 *  already being edited, never update()/updateSetTop()).
+	 *
+	 *  Group 2 — does the *sidebar's own clickable/disabled/equipped state* need refreshing,
+	 *  because the user edited a move/ability/item/nature directly through the NATIVE
+	 *  teambuilder fields rather than clicking something in our sidebar? None of these write
+	 *  paths go through any Group 1 method (except item, which happens to call
+	 *  updatePokemonSprite already) — without hooking them too, e.g. typing a new move into the
+	 *  native move1 box wouldn't grey/un-grey that move in our own Moves section until
+	 *  something else (switching slots, resizing) happened to trigger a re-render.
+	 *  TeambuilderRoom.prototype.chartSet (the single commit point both chartClick — picking a
+	 *  result from the native search dropdown — and chartChange — typing a value and blurring
+	 *  the field — funnel through, for the pokemon/ability/item/move1-4 chart fields), and
+	 *  TeambuilderRoom.prototype.natureChange (the nature <select>). Deliberately NOT
+	 *  statChange/statSlide (the EV number box and slider): none of the sidebar's own
+	 *  clickable/disabled/equipped checks read curSet.evs at all (Spreads never gets an equipped
+	 *  highlight — see buildSpreadsSection's own comment), so there is nothing in the sidebar
+	 *  for an EV edit to desync; hooking them anyway would rebuild the full 6-section sidebar on
+	 *  every keystroke (statChange is bound to both keyup and input) and every drag frame
+	 *  (statSlide is bound to the slider's own input event, which fires continuously) for zero
+	 *  visible benefit — pure, avoidable jank.
+	 *
+	 *  Across both groups the wraps themselves never modify what the wrapped method does, only
+	 *  observe that it ran (updateSplitState() afterward) — with one intentional exception:
+	 *  this file's own click-to-apply handlers (applyMove/applySetField/etc., near
+	 *  onPikaSidebarClick) mutate curSet/curSetList directly and then call
+	 *  tbRoom.updateSetTop() themselves, reusing Showdown's own set-editor redraw rather than
+	 *  hand-rolling one — which conveniently also re-triggers this same hook chain to refresh
+	 *  the sidebar in the same pass. Whenever the split turns (or stays) on, this also populates
+	 *  the sidebar with Pikalytics data for the currently-edited species/format — see
+	 *  renderPikalyticsSidebar and pikalytics.js. */
 	function patchTeambuilderSidebar() {
 		if (!window.app || typeof window.app.updateLayout !== 'function' || !window.TeambuilderRoom ||
 			typeof window.TeambuilderRoom.prototype.update !== 'function' ||
 			typeof window.TeambuilderRoom.prototype.updateSetTop !== 'function' ||
-			typeof window.TeambuilderRoom.prototype.updatePokemonSprite !== 'function') return;
+			typeof window.TeambuilderRoom.prototype.updatePokemonSprite !== 'function' ||
+			typeof window.TeambuilderRoom.prototype.chartSet !== 'function' ||
+			typeof window.TeambuilderRoom.prototype.natureChange !== 'function') return;
 
 		// The set-editor card and movepool list are both built with fixed-pixel CSS (e.g.
 		// teambuilder.css's `.set-form .set-stats { width: 138px; }`) that doesn't reflow
@@ -933,15 +1177,39 @@
 				`<div class="cf-pika-rows">${rowsHTML}</div></div>`;
 		}
 
+		/** Click-to-apply row markup shared by every clickable section below: `equipped` just
+		 *  controls the highlight (cf-pika-row-equipped); `disabled` is decided independently
+		 *  per section — e.g. an equipped move stays clickable (removes it, see applyMove's
+		 *  toggle) while an equipped teammate is disabled (nothing sensible to do re-clicking
+		 *  it). Disabled rows get no `data-cf-pika-action` at all (nothing for
+		 *  onPikaSidebarClick to match) on top of the CSS `pointer-events: none` — belt and
+		 *  suspenders. */
+		function pikaRowAttrs(action, value, equipped, disabled) {
+			let cls = 'cf-pika-row';
+			cls += disabled ? ' cf-pika-row-disabled' : ' cf-pika-row-clickable';
+			if (equipped) cls += ' cf-pika-row-equipped';
+			const attrs = disabled ? '' : ` data-cf-pika-action="${action}" data-cf-pika-value="${escapeHTML(value)}"`;
+			return { cls, attrs };
+		}
+
 		/** "Other" is Pikalytics' bucket for everything below its per-move cutoff — real
 		 *  aggregate data, not a specific move, so it's kept (dropping it would silently
-		 *  understate usage) but has no `type` of its own, hence the blank spacer. */
-		function buildMovesSection(mon) {
+		 *  understate usage) but has no `type` of its own, hence the blank spacer. Click-to-
+		 *  apply: a move already in the set stays clickable (highlighted as equipped) —
+		 *  clicking it removes it (see applyMove's toggle behavior). A move NOT in the set
+		 *  fills the first empty slot, or is disabled (greyed out) only once all 4 slots are
+		 *  already taken by *other* moves — an equipped move is never greyed out, since it's
+		 *  always clickable to remove regardless of how full the set is. */
+		function buildMovesSection(mon, tbRoom) {
 			const moves = mon.moves || [];
 			if (!moves.length) return pikaSectionHTML('Common Moves', '<p class="cf-pika-empty">No move data.</p>');
+			const set = tbRoom.curSet;
+			const full = curSetMovesFull(set);
 			const rows = moves.map((m) => {
 				const icon = m.type ? window.Dex.getTypeIcon(m.type) : '<span class="cf-pika-icon-spacer"></span>';
-				return `<div class="cf-pika-row">${icon}` +
+				const equipped = curSetHasMove(set, m.move);
+				const { cls, attrs } = pikaRowAttrs('move', m.move, equipped, !equipped && full);
+				return `<div class="${cls}"${attrs}>${icon}` +
 					`<span class="cf-pika-name">${escapeHTML(m.move)}</span>` +
 					`<span class="cf-pika-pct">${escapeHTML(m.percent)}%</span></div>`;
 			}).join('');
@@ -949,23 +1217,42 @@
 		}
 
 		/** Same shape as buildNaturesSection's own rows ({ability, percent}) — confirmed live
-		 *  via the /api/p/ endpoint. */
-		function buildAbilitiesSection(mon) {
+		 *  via the /api/p/ endpoint. Click-to-apply: always clickable (re-applying the current
+		 *  ability is a harmless no-op), just highlighted when it matches the set's current
+		 *  ability. */
+		function buildAbilitiesSection(mon, tbRoom) {
 			const abilities = (mon.abilities || []).filter((a) => (parseFloat(a.percent) || 0) > 0);
 			if (!abilities.length) return pikaSectionHTML('Common Abilities', '<p class="cf-pika-empty">No ability data.</p>');
+			const set = tbRoom.curSet;
 			const rows = abilities.map((a) => {
-				return `<div class="cf-pika-row"><span class="cf-pika-name">${escapeHTML(a.ability)}</span>` +
+				const equipped = !!(set && set.ability && toIDSafe(set.ability) === toIDSafe(a.ability));
+				const { cls, attrs } = pikaRowAttrs('ability', a.ability, equipped, false);
+				return `<div class="${cls}"${attrs}><span class="cf-pika-name">${escapeHTML(a.ability)}</span>` +
 					`<span class="cf-pika-pct">${escapeHTML(a.percent)}%</span></div>`;
 			}).join('');
 			return pikaSectionHTML('Common Abilities', rows);
+		}
+
+		/** The classic community "(+Atk/-SpA)" annotation, via Showdown's own
+		 *  window.BattleNatures — the same nature/stat-modifier table the client's own stat UI
+		 *  reads (see battle-dex-data.ts), not a hand-maintained copy of it. Empty string for a
+		 *  neutral nature (no plus/minus) or if BattleNatures isn't available for some reason —
+		 *  not one of the globals waitForGlobals already gates on, so this degrades to no
+		 *  annotation rather than being a hard dependency. */
+		function natureModifierHTML(natureName) {
+			const nature = window.BattleNatures && window.BattleNatures[natureName];
+			if (!nature || !nature.plus || !nature.minus) return '';
+			return ` <span class="cf-pika-nature-mod">(+${STAT_LABEL_BY_ID[nature.plus]}/-${STAT_LABEL_BY_ID[nature.minus]})</span>`;
 		}
 
 		/** Nature usage is tracked two different ways depending on the format: some give a
 		 *  standalone `natures` array; others (e.g. gen9ou) only bundle a nature into each
 		 *  `spreads` entry, with no separate breakdown — so when `natures` is missing/empty,
 		 *  it's derived here by summing spread percentages per nature instead of showing
-		 *  nothing. */
-		function buildNaturesSection(mon) {
+		 *  nothing. Click-to-apply: always clickable, sets curSet.nature only (not the EVs —
+		 *  see buildSpreadsSection for nature+EVs together), highlighted when it's already the
+		 *  set's current nature. */
+		function buildNaturesSection(mon, tbRoom) {
 			let natures = mon.natures;
 			if (!natures || !natures.length) {
 				const byNature = new Map();
@@ -978,63 +1265,105 @@
 			}
 			natures = natures.filter((n) => (parseFloat(n.percent) || 0) > 0);
 			if (!natures.length) return pikaSectionHTML('Common Natures', '<p class="cf-pika-empty">No nature data.</p>');
+			const set = tbRoom.curSet;
 			const rows = natures.map((n) => {
 				const pct = typeof n.percent === 'number' ? n.percent.toFixed(1) : n.percent;
-				return `<div class="cf-pika-row"><span class="cf-pika-name">${escapeHTML(n.nature)}</span>` +
+				const equipped = !!(set && set.nature && toIDSafe(set.nature) === toIDSafe(n.nature));
+				const { cls, attrs } = pikaRowAttrs('nature', n.nature, equipped, false);
+				return `<div class="${cls}"${attrs}><span class="cf-pika-name"><span class="cf-pika-nature-name">${escapeHTML(n.nature)}</span>${natureModifierHTML(n.nature)}</span>` +
 					`<span class="cf-pika-pct">${escapeHTML(String(pct))}%</span></div>`;
 			}).join('');
 			return pikaSectionHTML('Common Natures', rows);
 		}
 
-		/** "Other" bucket, same as buildMovesSection — kept, no icon. */
-		function buildItemsSection(mon) {
+		/** "Other" bucket, same as buildMovesSection — kept, no icon. Click-to-apply: always
+		 *  clickable, highlighted when it matches the set's current item. */
+		function buildItemsSection(mon, tbRoom) {
 			const items = mon.items || [];
 			if (!items.length) return pikaSectionHTML('Common Items', '<p class="cf-pika-empty">No item data.</p>');
+			const set = tbRoom.curSet;
 			const rows = items.map((it) => {
 				const iconStyle = (it.item && window.Dex) ? window.Dex.getItemIcon(it.item) : '';
 				const icon = iconStyle ? `<span class="itemicon" style="${escapeHTML(iconStyle)}"></span>` : '<span class="cf-pika-icon-spacer"></span>';
-				return `<div class="cf-pika-row">${icon}` +
+				const equipped = !!(set && set.item && toIDSafe(set.item) === toIDSafe(it.item));
+				const { cls, attrs } = pikaRowAttrs('item', it.item, equipped, false);
+				return `<div class="${cls}"${attrs}>${icon}` +
 					`<span class="cf-pika-name">${escapeHTML(it.item)}</span>` +
 					`<span class="cf-pika-pct">${escapeHTML(it.percent)}%</span></div>`;
 			}).join('');
 			return pikaSectionHTML('Common Items', rows);
 		}
 
+		/** A real <table> — one cell per stat — rather than a joined string, so columns line
+		 *  up via normal table layout instead of monospace-font character padding. Nature only
+		 *  gets its own leading column when at least one spread actually has one; Champions VGC
+		 *  spreads never do (confirmed live, `nature` is always ""), so in practice this column
+		 *  is omitted rather than showing empty on every row. Click-to-apply: always clickable,
+		 *  sets curSet.nature (if this spread carries one) AND curSet.evs together (see
+		 *  applySpread) — no equipped highlight, since "does this row's nature+EVs exactly
+		 *  match the current set" is a fuzzier match than the other sections' single-value
+		 *  equality checks. */
 		function buildSpreadsSection(mon) {
 			const spreads = mon.spreads || [];
 			if (!spreads.length) return pikaSectionHTML('Common Spreads', '<p class="cf-pika-empty">No spread data.</p>');
-			const rows = spreads.map((s) => {
-				const label = s.nature ? `${escapeHTML(s.nature)}: ${escapeHTML(s.ev)}` : escapeHTML(s.ev);
-				return `<div class="cf-pika-row"><span class="cf-pika-name cf-pika-spread">${label}</span>` +
-					`<span class="cf-pika-pct">${escapeHTML(s.percent)}%</span></div>`;
+
+			const hasNature = spreads.some((s) => s.nature);
+			const headerCells = (hasNature ? '<th class="cf-spread-nature">Nature</th>' : '') +
+				STAT_LABELS.map((label) => `<th>${label}</th>`).join('') + '<th>Usage</th>';
+
+			const bodyRows = spreads.map((s) => {
+				const natureCell = hasNature ? `<td class="cf-spread-nature"><span class="cf-pika-nature-name">${escapeHTML(s.nature)}</span>${natureModifierHTML(s.nature)}</td>` : '';
+				const evCells = String(s.ev).split('/').map((v) => `<td>${escapeHTML(v)}</td>`).join('');
+				return `<tr class="cf-pika-row-clickable" data-cf-pika-action="spread" data-cf-pika-nature="${escapeHTML(s.nature || '')}" data-cf-pika-ev="${escapeHTML(s.ev)}">` +
+					`${natureCell}${evCells}<td class="cf-pika-pct">${escapeHTML(s.percent)}%</td></tr>`;
 			}).join('');
-			return pikaSectionHTML('Common Spreads', rows);
+
+			const table = `<table class="cf-spread-table"><thead><tr>${headerCells}</tr></thead>` +
+				`<tbody>${bodyRows}</tbody></table>`;
+			return pikaSectionHTML('Common Spreads', table);
 		}
 
 		/** Teammate rows don't consistently carry a usage percent (confirmed live: gen9ou's
 		 *  do, VGC's generally don't) or a `rank` (the reverse can also happen), so this falls
 		 *  back through percent -> explicit rank -> the row's own position in the list — which
 		 *  is itself real rank information, the list is already most- to least-common — rather
-		 *  than ever leaving a row blank. */
-		function buildTeammatesSection(mon) {
+		 *  than ever leaving a row blank. Click-to-apply: appends a new blank team slot with
+		 *  just this species filled in (see applyTeammate) — disabled (and shown as already-
+		 *  equipped) if it's already on the team (species clause — no competitive VGC format
+		 *  allows a duplicate anyway), disabled without the equipped look if the team's already
+		 *  full. */
+		function buildTeammatesSection(mon, tbRoom) {
 			const team = mon.team || [];
 			if (!team.length) return pikaSectionHTML('Common Teammates', '<p class="cf-pika-empty">No teammate data.</p>');
+			const full = curTeamFull(tbRoom);
 			const rows = team.map((t, i) => {
 				const iconStyle = window.Dex ? window.Dex.getPokemonIcon(t.pokemon) : '';
 				let pct;
 				if (t.percent !== undefined && t.percent !== null) pct = `${escapeHTML(String(t.percent))}%`;
 				else if (t.rank !== undefined && t.rank !== null) pct = `#${escapeHTML(String(t.rank))}`;
 				else pct = `#${i + 1}`;
-				return `<div class="cf-pika-row"><span class="picon" style="${escapeHTML(iconStyle)}"></span>` +
+				const equipped = curTeamHasSpecies(tbRoom, t.pokemon);
+				const { cls, attrs } = pikaRowAttrs('teammate', t.pokemon, equipped, equipped || full);
+				return `<div class="${cls}"${attrs}><span class="picon" style="${escapeHTML(iconStyle)}"></span>` +
 					`<span class="cf-pika-name">${escapeHTML(t.pokemon)}</span>` +
 					`<span class="cf-pika-pct">${pct}</span></div>`;
 			}).join('');
 			return pikaSectionHTML('Common Teammates', rows);
 		}
 
-		function buildPikalyticsSidebarHTML(mon) {
-			return buildMovesSection(mon) + buildAbilitiesSection(mon) + buildItemsSection(mon) +
-				buildNaturesSection(mon) + buildSpreadsSection(mon) + buildTeammatesSection(mon);
+		/** Laid out as a 3-row x 2-col grid (.cf-pika-grid, style.css) rather than one long
+		 *  scrolling column — DOM order here IS grid row-major order (row 1: Moves/Abilities,
+		 *  row 2: Items/Teammates, row 3: Natures/Spreads), since the grid has no explicit
+		 *  per-item placement. Every cell is the same fixed size regardless of how much data it
+		 *  holds — Teammates can run to 10-20 rows where Abilities is usually 2-3, so equal
+		 *  sizing (each cell scrolling internally past its own bound) keeps one long section
+		 *  from dominating the panel at every other section's expense. */
+		function buildPikalyticsSidebarHTML(mon, tbRoom) {
+			return `<div class="cf-pika-grid">` +
+				buildMovesSection(mon, tbRoom) + buildAbilitiesSection(mon, tbRoom) +
+				buildItemsSection(mon, tbRoom) + buildTeammatesSection(mon, tbRoom) +
+				buildNaturesSection(mon, tbRoom) + buildSpreadsSection(mon) +
+				`</div>`;
 		}
 
 		/** Populates the sidebar with Pikalytics data for whatever species/format is
@@ -1044,20 +1373,75 @@
 		 *  is discarded on arrival — this is the "format [and species] matches always when
 		 *  showing data" guarantee, since without it a stale response could otherwise land
 		 *  after the UI has already moved on and overwrite what's currently showing with data
-		 *  for a species/format the user isn't even looking at anymore. */
+		 *  for a species/format the user isn't even looking at anymore.
+		 *
+		 *  `lastMon` caches the last successfully-rendered payload for the current
+		 *  `lastRenderKey`. Click-to-apply (applyMove/applySetField/etc, above) mutates curSet
+		 *  and then calls tbRoom.updateSetTop(), which is one of the hooks that calls back into
+		 *  this function via updateSplitState — but the species/format haven't changed, so
+		 *  without this cache every single click-to-apply would trigger a needless refetch just
+		 *  to redraw the same data with updated clickable/disabled/equipped states. The fast
+		 *  path below rebuilds the HTML synchronously from `lastMon` against the *current*
+		 *  curSet/curSetList instead. */
 		let renderToken = 0;
 		let lastRenderKey = null;
+		let lastMon = null;
+		/** Rebuilds sidebarEl's content while keeping each section's own scroll position — a
+		 *  plain `innerHTML =` (as every other render path here still does) throws away the old
+		 *  DOM nodes entirely, resetting every .cf-pika-rows box back to scrollTop 0. Only used
+		 *  for the "same species/format, just refreshing after a click-to-apply or native edit"
+		 *  case (renderPikalyticsSidebar's lastMon fast path) — an actual species/format switch
+		 *  is new content, where jumping back to the top of each section is the right behavior,
+		 *  not something to preserve. Matched up by index rather than any per-section id: the
+		 *  six sections always render in the same fixed order (see buildPikalyticsSidebarHTML),
+		 *  so the Nth .cf-pika-rows before the rebuild is always the same section as the Nth
+		 *  after it, even though a section's own row *count* can change between renders (e.g.
+		 *  a move toggled on/off doesn't add or remove a row, but nothing here assumes it
+		 *  couldn't). */
+		function rebuildSidebarPreservingScroll(sidebarEl, html) {
+			const oldScrollTops = Array.from(sidebarEl.querySelectorAll('.cf-pika-rows'), (el) => el.scrollTop);
+			sidebarEl.innerHTML = html;
+			sidebarEl.querySelectorAll('.cf-pika-rows').forEach((el, i) => {
+				if (oldScrollTops[i]) el.scrollTop = oldScrollTops[i];
+			});
+		}
+
 		function renderPikalyticsSidebar(tbRoom) {
 			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
 			const speciesName = tbRoom.curSet && (tbRoom.curSet.species || tbRoom.curSet.name);
-			if (!formatId || !speciesName) return;
+			if (!formatId || !speciesName) {
+				// A freshly-added blank team slot (right after "Add Pokémon", before a species
+				// is typed) has a truthy curSet with an empty .species — updateSplitState's
+				// editingAPokemon check only looks at curSet's truthiness, so the split still
+				// turns on and this function still gets called. Without clearing here, the
+				// sidebar would keep showing whichever species was rendered last, appearing
+				// "stuck" until something else (switching slots and back) forced a real
+				// re-render — nothing short of reloading the extension would clear it otherwise.
+				ensureTeambuilderSidebarEl().innerHTML = '<p class="cf-sidebar-placeholder">Nothing here yet.</p>';
+				lastRenderKey = null;
+				lastMon = null;
+				return;
+			}
 
 			const key = formatId + '|' + speciesName;
-			if (key === lastRenderKey) return;
+			const sidebarEl = ensureTeambuilderSidebarEl();
+
+			if (key === lastRenderKey) {
+				// Same species/format as the last call. If lastMon is already populated, that's
+				// the click-to-apply/native-edit fast path: just re-derive clickable/disabled/
+				// equipped state against the (possibly just-changed) current set, no refetch. If
+				// lastMon is still null, a fetch for this exact key is either already in flight
+				// or already resolved to "no data"/"failed" — either way there is nothing new to
+				// do, so this must still be an unconditional no-op (not gated on lastMon) or a
+				// second call arriving before the first fetch resolves would otherwise reset the
+				// placeholder back to "Loading…" and fire a redundant duplicate request.
+				if (lastMon) rebuildSidebarPreservingScroll(sidebarEl, buildPikalyticsSidebarHTML(lastMon, tbRoom));
+				return;
+			}
 			lastRenderKey = key;
+			lastMon = null;
 
 			const token = ++renderToken;
-			const sidebarEl = ensureTeambuilderSidebarEl();
 			sidebarEl.innerHTML = '<p class="cf-sidebar-placeholder">Loading Pikalytics data…</p>';
 
 			if (!window.CF_Pikalytics) {
@@ -1074,7 +1458,8 @@
 					sidebarEl.innerHTML = `<p class="cf-sidebar-placeholder">No data for ${escapeHTML(speciesName)} in this format.</p>`;
 					return;
 				}
-				sidebarEl.innerHTML = buildPikalyticsSidebarHTML(mon);
+				lastMon = mon;
+				sidebarEl.innerHTML = buildPikalyticsSidebarHTML(mon, tbRoom);
 			}).catch((e) => {
 				if (token !== renderToken) return; // superseded by a newer request
 				console.error('[Better Teambuilder] Pikalytics lookup failed:', e);
@@ -1125,6 +1510,13 @@
 		// being edited — the same gap as updateSetTop() above, through a different Showdown
 		// entry point that never calls update()/updateSetTop().
 		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'updatePokemonSprite');
+
+		// Group 2 (see this function's own doc comment above): keeps the sidebar's clickable/
+		// disabled/equipped states in sync when the user edits a move/ability/item/nature
+		// directly through the native teambuilder fields, instead of through our own sidebar.
+		// Deliberately excludes statChange/statSlide (EVs) — see the doc comment for why.
+		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'chartSet');
+		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'natureChange');
 
 		window.addEventListener('resize', updateSplitState);
 
@@ -1190,5 +1582,8 @@
 		document.addEventListener('mouseout', onMouseOut, true);
 		document.addEventListener('click', onSpeedFilterClick, true);
 		document.addEventListener('input', onSpeedFilterInput, true);
+		document.addEventListener('focusin', onPikaSidebarFocusChange, true);
+		document.addEventListener('focusout', onPikaSidebarFocusChange, true);
+		document.addEventListener('click', onPikaSidebarClick, true);
 	});
 })();

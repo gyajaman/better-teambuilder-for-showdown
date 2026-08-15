@@ -273,17 +273,24 @@ a[data-entry^="custom|"] .movedesccol {
  * $el.html(buf) on nearly every interaction (every search keystroke, every filter click) —
  * anything inserted inside that subtree would be destroyed on the very next re-render. So it
  * lives as a DOM *sibling* instead (appended straight to <body> — see
- * ensureTeambuilderSidebarEl in content.js) and is positioned with `position: fixed` to align
- * exactly with the room's own (now actually halved) box, rather than floating over content
- * that never moved. */
+ * ensureTeambuilderSidebarEl in content.js), positioned the exact same way Showdown positions
+ * every .ps-room itself (position: absolute; top/left/right/bottom, appended straight to
+ * <body>, no positioned ancestor in between — see client.css) rather than `position: fixed`.
+ * Since <body> never actually scrolls (every room manages its own internal overflow, per
+ * .ps-room's own top:56px/bottom:0 box), the two are visually identical in the normal case —
+ * but `fixed` elements are pinned to the *viewport* and get dragged along independently during
+ * macOS's elastic overscroll/rubber-band bounce, a well-known WebKit/Chromium quirk, while
+ * `absolute` content (like every native .ps-room) is correctly compensated and stays visually
+ * anchored to the rest of the page — reported live on macOS as the sidebar visibly bouncing
+ * apart from #room-teambuilder on overscroll while `fixed`; switched to `absolute` to fix it. */
 #cf-teambuilder-sidebar {
 	display: none;
-	position: fixed;
+	position: absolute;
 	top: 56px;
 	left: 50%;
 	right: 0;
 	bottom: 0;
-	overflow-y: auto;
+	overflow: hidden;
 	box-sizing: border-box;
 	padding: 12px 16px;
 	background: rgba(242, 247, 245, .85);
@@ -312,15 +319,36 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 }
 
 /* Pikalytics sidebar content (content.js renderPikalyticsSidebar/build*Section): common
- * moves/natures/spreads/teammates for the currently-edited Pokémon. Header and row styling
- * are copied values, not invented ones — .cf-pika-header from Showdown's own
+ * moves/abilities/items/natures/spreads/teammates for the currently-edited Pokémon. Header and
+ * row styling are copied values, not invented ones — .cf-pika-header from Showdown's own
  * `.utilichart h3` (utilichart.css) and .cf-pika-row's hover from
  * `.teambuilder-results .result a:hover` (client.css) — so this reads as part of the native
- * UI rather than a bolted-on panel. */
+ * UI rather than a bolted-on panel.
+ *
+ * Laid out as a fixed 3-row x 2-col grid (.cf-pika-grid) rather than one long scrolling
+ * column, so the outer sidebar (#cf-teambuilder-sidebar, overflow: hidden above) never itself
+ * scrolls — every cell gets an equal, capped share of the sidebar's height/width no matter how
+ * much data it holds (see buildPikalyticsSidebarHTML's own comment for why: a long section like
+ * Teammates shouldn't get to crowd out a short one like Abilities just because it has more
+ * rows). Each cell is a flex column of [pinned header, independently-scrolling row list] — the
+ * `min-height: 0` on both .cf-pika-section (a grid item, which otherwise refuses to shrink
+ * below its content's intrinsic height even inside a `1fr` row track) and .cf-pika-rows (a flex
+ * child, same refusal inside a flex column) is what actually makes the internal scrolling work
+ * instead of the cell silently growing past its row's bound. */
+.cf-pika-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	grid-template-rows: repeat(3, 1fr);
+	gap: 4px 16px;
+	height: 100%;
+}
 .cf-pika-section {
-	margin: 0 0 12px;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
 }
 .cf-pika-header {
+	flex: 0 0 auto;
 	margin: 5px 0 4px -1px;
 	padding: 3px 8px;
 	font-family: Verdana, sans-serif;
@@ -337,6 +365,11 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 	border: 1px solid #A9A9A9;
 	text-shadow: 1px 1px 0 rgb(40, 43, 45);
 	box-shadow: inset 0px 1px 0 rgb(49, 49, 49);
+}
+.cf-pika-rows {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
 }
 .cf-pika-row {
 	display: flex;
@@ -357,6 +390,48 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 .dark .cf-pika-row:hover {
 	border-color: #777777;
 	background: rgba(100, 100, 100, .5);
+}
+/* Click-to-apply states (content.js pikaRowAttrs/onPikaSidebarClick) — shared between the
+ * flex `.cf-pika-row` divs (Moves/Abilities/Items/Natures/Teammates) and the `<tr>` rows of
+ * .cf-spread-table, so these three are plain class rules rather than scoped to one or the
+ * other. `cf-pika-row-disabled`'s `pointer-events: none` is the actual click-prevention (the
+ * click handler's own no-op logic underneath it is a second layer, not the primary one) and
+ * also suppresses :hover, which is exactly the "can't interact with this" look wanted here. */
+.cf-pika-row-clickable {
+	cursor: pointer;
+}
+/* content.js onPikaSidebarFocusChange toggles this on <body> while a native move1-4/ability/
+ * item/pokemon input has focus — clicking a row in that state blurs the input first (see that
+ * function's own doc comment for why this needs a second click to actually apply there), so
+ * the cursor drops back to the plain default instead of the usual pointer, signaling "this
+ * click won't do anything yet" without implying the page is busy/loading (cursor: wait reads
+ * as lag, not as "click again"). */
+body.cf-pika-blur-pending .cf-pika-row-clickable {
+	cursor: default;
+}
+.cf-pika-row-disabled {
+	opacity: .45;
+	cursor: not-allowed;
+	pointer-events: none;
+}
+/* Values copied straight from `.teambuilder-results .result a.cur` (client.css) — the exact
+ * rule the native search chart already uses to mark a move/item/ability result as "this is
+ * already on the set" — rather than inventing a new "equipped" color of our own. */
+.cf-pika-row-equipped {
+	border-color: #555555;
+	background: rgba(248, 248, 248, .4);
+}
+.cf-pika-row-equipped:hover {
+	border-color: #555555;
+	background: #F8F8F8;
+}
+.dark .cf-pika-row-equipped {
+	border-color: #BBBBBB;
+	background: rgba(100, 100, 100, .2);
+}
+.dark .cf-pika-row-equipped:hover {
+	border-color: #BBBBBB;
+	background: rgba(100, 100, 100, .4);
 }
 .cf-pika-row .picon,
 .cf-pika-row .itemicon {
@@ -381,16 +456,80 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 .dark .cf-pika-name {
 	color: #EEEEEE;
 }
-.cf-pika-spread {
-	font-family: Consolas, Monaco, monospace;
-	font-size: 8pt;
-}
 .cf-pika-pct {
 	flex: 0 0 auto;
 	color: #777777;
 	font-size: 8pt;
 }
 .dark .cf-pika-pct {
+	color: #AAAAAA;
+}
+
+/* Common Spreads (content.js buildSpreadsSection): a real <table> instead of the joined-string
+ * row every other section uses, so each stat gets its own cell rather than being lined up by
+ * monospace character padding. Colors are the same ones already established elsewhere in this
+ * file, not new ones — header background/border/text-shadow copied from .cf-pika-header (itself
+ * copied from Showdown's own `.utilichart h3`), row hover from .cf-pika-row's own hover, and the
+ * Usage column reuses .cf-pika-pct directly rather than duplicating its color rule. The header
+ * row is `position: sticky` within .cf-pika-rows' own scroll area (style.css, above) so it stays
+ * visible while a long spread list scrolls underneath it. */
+.cf-spread-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: Verdana, sans-serif;
+	font-size: 8pt;
+}
+.cf-spread-table th,
+.cf-spread-table td {
+	padding: 2px 5px;
+	text-align: right;
+	border-bottom: 1px solid #D8D8D8;
+	white-space: nowrap;
+}
+.dark .cf-spread-table th,
+.dark .cf-spread-table td {
+	border-bottom-color: #4A4D50;
+}
+.cf-spread-table th.cf-spread-nature,
+.cf-spread-table td.cf-spread-nature {
+	text-align: left;
+}
+.cf-spread-table thead th {
+	position: sticky;
+	top: 0;
+	padding: 3px 5px;
+	background: #DAE5F0;
+	color: black;
+	border-bottom: 1px solid #AAAAAA;
+	font-weight: normal;
+	text-shadow: 1px 1px 0 rgba(255, 255, 255, .6);
+}
+.dark .cf-spread-table thead th {
+	background: #636363;
+	color: #F1F1F1;
+	border-bottom: 1px solid #A9A9A9;
+	text-shadow: 1px 1px 0 rgb(40, 43, 45);
+}
+.cf-spread-table tbody tr:hover {
+	background: #F8F8F8;
+}
+.dark .cf-spread-table tbody tr:hover {
+	background: rgba(100, 100, 100, .5);
+}
+.cf-spread-table td {
+	color: #000000;
+}
+.dark .cf-spread-table td {
+	color: #EEEEEE;
+}
+/* .cf-spread-table td's own color rule above (#000000/#EEEEEE) is more specific than the
+ * shared .cf-pika-pct rule it reuses for this cell (class + element beats class alone), so the
+ * gray needs restating here to actually win. */
+.cf-spread-table td.cf-pika-pct {
+	color: #777777;
+	font-size: 8pt;
+}
+.dark .cf-spread-table td.cf-pika-pct {
 	color: #AAAAAA;
 }
 .cf-pika-empty {
@@ -400,5 +539,45 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 	font-size: 9pt;
 }
 .dark .cf-pika-empty {
+	color: #AAAAAA;
+}
+/* Nature name + "(+Atk/-SpA)" annotation (content.js buildNaturesSection/buildSpreadsSection,
+ * natureModifierHTML). The name gets a fixed min-width (9ch — long enough for every real
+ * nature name, e.g. "Adamant"/"Bashful"/"Relaxed") so the modifier that follows always starts
+ * at the same column instead of staggering with each row's own name length. Colors are the
+ * same muted-gray light/dark pair already used everywhere else for secondary text
+ * (.cf-pika-pct, .cf-pika-empty), just smaller, since it's riding alongside a name rather than
+ * standing alone. */
+.cf-pika-nature-name {
+	display: inline-block;
+	min-width: 9ch;
+}
+.cf-pika-nature-mod {
+	font-size: 7pt;
+	font-weight: normal;
+	color: #777777;
+}
+.dark .cf-pika-nature-mod {
+	color: #AAAAAA;
+}
+
+/* Pikalytics attribution: Showdown's own set editor renders a `<div class="setmenu">` holding
+ * the Copy/Import-Export/Move/Delete buttons at the bottom of every individual set (see
+ * client-teambuilder.js's renderSet — `.setmenu` itself is `text-align: right` in client.css,
+ * with no rule of its own for its pseudo-elements to conflict with). A `::before` pseudo-
+ * element is a pure-CSS way to put a line of credit beside those buttons without monkey-
+ * patching renderSet just to splice text into its returned HTML string — kept `display: inline`
+ * (the default) rather than `block`, so it sits inline to the LEFT of the buttons on the same
+ * right-aligned line instead of forcing them onto a line of their own. Same muted-gray
+ * convention as .cf-pika-pct/.cf-pika-empty/.cf-pika-nature-mod. */
+.setmenu::before {
+	content: 'All data courtesy of Pikalytics';
+	margin-right: 8px;
+	font-size: 8pt;
+	font-style: italic;
+	color: #777777;
+	vertical-align: middle;
+}
+.dark .setmenu::before {
 	color: #AAAAAA;
 }
