@@ -1528,12 +1528,17 @@
 		 *  to compute the number it displays — not a reimplementation of Pokemon Champions' own
 		 *  stat formula (confirmed live: Champions replaced the classic 0-252 EV/IV/level formula
 		 *  with a flat `base + ev + 20` scaled by nature, no level or IV involved at all — using
-		 *  the real method sidesteps needing to have gotten that right by hand). Each side's
-		 *  currently-equipped/most-common item is folded into its base stat once (not a per-row
-		 *  toggle — see SPEED_COMPARISON_SCENARIOS' own comment for why only Tailwind/PAR/stage
-		 *  vary per row), mirroring how the item is just "on" or "off" here, not something being
-		 *  compared. Returns null (no popup) if the current set has no species yet, or the
-		 *  hovered species has no spread data to build a baseline from. */
+		 *  the real method sidesteps needing to have gotten that right by hand).
+		 *
+		 *  Items are asymmetric between the two sides, deliberately: the ally's currently-
+		 *  equipped item is folded into its base stat once (not a per-row toggle — see
+		 *  SPEED_COMPARISON_SCENARIOS' own comment for why only Tailwind/PAR/stage vary per row),
+		 *  since it's a real, known fact about the set actually being built. The foe's base
+		 *  column never applies an item at all — see the comment above foeBase's own computation
+		 *  for why guessing Pikalytics' "most common item" into that baseline caused real
+		 *  confusion; item hypotheticals for the foe live exclusively in the conditional
+		 *  Mega/Scarf columns instead. Returns null (no popup) if the current set has no species
+		 *  yet, or the hovered species has no spread data to build a baseline from. */
 		function buildSpeedComparisonTooltipHTML(rowEl) {
 			const speciesName = rowEl.getAttribute('data-cf-species');
 			if (!speciesName) return null;
@@ -1560,6 +1565,17 @@
 			const foeBase = tbRoom.getStat('spe', foeSet);
 			const foeItems = entry.mon.items || [];
 
+			// The base Foe column NEVER applies an item — Pikalytics' "most common item" is a
+			// population statistic about the whole spread's usage, not a fact about any specific
+			// hovered build, so guessing one into the baseline was never asked for and only
+			// caused confusion (a species whose top item happened to be Scarf made the base
+			// column and the dedicated "Foe [Scarf]" column below show the exact same number,
+			// reading as "the Scarf column isn't doing anything" even though the multiplier was
+			// firing correctly in both — confirmed live on Basculegion, 44.7% Scarf). Item
+			// hypotheticals live exclusively in the Mega/Scarf columns; the base column is base
+			// stat + spread + nature and nothing else. foeItems itself is still needed below, for
+			// the Scarf/Mega *detection* — just never fed into this column's own speed calc.
+
 			// 4th "what if it ran Scarf instead" column, only when Scarf usage is actually
 			// non-trivial for this species (see SCARF_POPULARITY_THRESHOLD_PERCENT's own doc
 			// comment) — otherwise it's a hypothetical nobody's really building, and the column
@@ -1567,20 +1583,6 @@
 			const scarfItemEntry = foeItems.find((it) => toIDSafe(it.item) === 'choicescarf');
 			const scarfPercent = scarfItemEntry ? parseFloat(scarfItemEntry.percent) || 0 : 0;
 			const showScarfColumn = scarfPercent >= SCARF_POPULARITY_THRESHOLD_PERCENT;
-
-			// The main Foe column's own item: the single most popular one that ISN'T Scarf,
-			// unconditionally — Scarf always gets its own column when it's popular enough (above)
-			// to represent that hypothetical, so the base column has no business ever picking it
-			// too. Without this, a species whose single most common item genuinely IS Scarf
-			// (confirmed live: Basculegion, 44.7%) would show the exact same number in both the
-			// base Foe column and the dedicated "Foe [Scarf]" column, reading as "the Scarf column
-			// isn't doing anything" even though the multiplier fires correctly in both — the two
-			// columns need to represent genuinely different scenarios to be worth having side by
-			// side. Falls back to foeItems[0] only in the degenerate case where every listed item
-			// is Scarf.
-			const nonScarfItemEntry = foeItems.find((it) => toIDSafe(it.item) !== 'choicescarf');
-			const foeItemEntry = nonScarfItemEntry || foeItems[0];
-			const foeItem = foeItemEntry && foeItemEntry.item;
 
 			// A 5th "what if it ran its Mega Stone instead" column, same "additional column,
 			// never a row-identity swap" treatment as Scarf above (see the earlier, reverted
@@ -1618,7 +1620,9 @@
 			// reading the plain numbers against each other is unambiguous without it anyway.
 			const rows = SPEED_COMPARISON_SCENARIOS.map((sc) => {
 				const allySpeed = applySpeedModifiers(allyBase, allySet.item, sc.ally);
-				const foeSpeed = applySpeedModifiers(foeBase, foeItem, sc.foe);
+				// No item — see the comment above foeBase's own computation for why the base
+				// Foe column never applies one.
+				const foeSpeed = applySpeedModifiers(foeBase, null, sc.foe);
 				const megaCell = showMegaColumn ?
 					// No item passed — a Mega Stone isn't in SPEED_ITEM_MULTIPLIERS (it doesn't
 					// multiply Speed, the different base stat from foeMegaBase already covers

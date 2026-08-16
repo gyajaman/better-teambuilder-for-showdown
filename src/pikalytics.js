@@ -346,8 +346,10 @@
 	 *  discoverMonthAndCutoff, and typically already warm by the time this is called (the
 	 *  currently-edited species' own sidebar lookup runs first). Never rejects — a missing
 	 *  format, failed list fetch, or individual species lookup failure all just shrink or empty
-	 *  the result rather than throwing (a null `mon` on one entry doesn't drop that entry, since
-	 *  the caller only needs `name` to render an icon right now). */
+	 *  the result rather than throwing (a null `mon` on one entry doesn't drop that entry — the
+	 *  speed-tier column only needs `name` to render its sprite, so a missing `mon` there just
+	 *  means that one entry's hover comparison popup won't have spread/item data to work with,
+	 *  not that the row disappears). */
 	function getTopUsageList(formatId, querySpeciesHint, count) {
 		return getUsageList(formatId, querySpeciesHint).then((list) => {
 			if (!list) return [];
