@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Better Teambuilder for Showdown!",
   "version": "0.1.0",
-  "description": "Adds movepool/ability search filters, a Speed filter, and a click-to-apply Pikalytics stats panel to the Showdown teambuilder.",
+  "description": "Adds movepool/ability search filters, a Speed filter, a click-to-apply Pikalytics stats panel, and a Speed Tiers panel with a head-to-head Speed comparison popup to the Showdown teambuilder.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

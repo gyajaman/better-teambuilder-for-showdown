@@ -872,55 +872,47 @@
 	}
 
 	// ---------------------------------------------------------------------
-	// Tooltip: explains which custom filter(s) a hovered result matched, and
-	// with which move(s). DOM/CSS mirrors battle-tooltips.ts's #tooltipwrapper
-	// structure but under our own id so it can never collide with the native
-	// singleton's lifecycle (BattleTooltips.isLocked/elem/etc). This is the one
-	// piece of UI we render ourselves, kept as a floating overlay appended to
-	// document.body rather than inserted into the results DOM.
+	// Tooltip: a single floating overlay shared by two unrelated hover features — which
+	// custom filter(s) a hovered search result matched (buildFilterMatchTooltipHTML), and the
+	// speed comparison popup (buildSpeedComparisonTooltipHTML, further down). DOM/CSS mirrors
+	// battle-tooltips.ts's #tooltipwrapper structure but under our own id so it can never
+	// collide with the native singleton's lifecycle (BattleTooltips.isLocked/elem/etc). Tooltip
+	// itself only knows how to show/position/hide a pre-built `.cf-tooltip` HTML string — it
+	// has no idea what's inside, so a third hover feature can reuse it later the same way
+	// without Tooltip itself needing to change.
 	// ---------------------------------------------------------------------
 	const Tooltip = {
 		wrapperEl: null,
 
-		show(li, matches) {
+		show(anchorEl, html) {
 			if (!this.wrapperEl) {
 				this.wrapperEl = document.createElement('div');
 				this.wrapperEl.id = 'cf-tooltipwrapper';
 				document.body.appendChild(this.wrapperEl);
 			}
-			let html = `<div class="cf-tooltip"><h2>Matched custom filters</h2>`;
-			for (const catId of CATEGORY_ORDER) {
-				const moveDefs = matches[catId];
-				if (!moveDefs || !moveDefs.length) continue;
-				const cat = window.CF_MOVE_CATEGORIES[catId];
-				const moveHtml = moveDefs.map(md => {
-					if (md.conditional) {
-						return `${escapeHTML(md.name)}` +
-							`<span class="cf-conditional-tag" title="${escapeHTML(md.reason || 'Conditional')}">conditional</span>`;
-					}
-					return escapeHTML(md.name);
-				}).join(', ');
-				html += `<p class="tooltip-section"><strong>${escapeHTML(cat ? cat.label : catId)}</strong><br />` +
-					`<span class="cf-movelist">${moveHtml}</span></p>`;
-			}
-			html += `</div>`;
 			this.wrapperEl.innerHTML = html;
 			this.wrapperEl.style.display = '';
-			this.position(li);
+			this.position(anchorEl);
 		},
 
-		position(li) {
-			const rect = li.getBoundingClientRect();
+		/** Width is measured from the actual rendered `.cf-tooltip` (offsetWidth) rather than
+		 *  assumed, since callers aren't all the same width — the filter-match tooltip is the
+		 *  base 300px, but the speed comparison one widens itself via an extra modifier class
+		 *  (cf-speedcmp-tooltip, style.css) to fit its table. */
+		position(anchorEl) {
+			const rect = anchorEl.getBoundingClientRect();
 			const tooltipEl = this.wrapperEl.querySelector('.cf-tooltip');
-			const width = 300;
-			let left = Math.max(rect.left - 2, 0);
-			left = Math.min(left, window.innerWidth - width - 4);
-			this.wrapperEl.style.left = left + 'px';
 
 			this.wrapperEl.style.visibility = 'hidden';
+			this.wrapperEl.style.left = '0px';
 			this.wrapperEl.style.top = '0px';
+			const width = tooltipEl.offsetWidth;
 			const height = tooltipEl.offsetHeight;
 			this.wrapperEl.style.visibility = '';
+
+			let left = Math.max(rect.left - 2, 0);
+			left = Math.min(left, window.innerWidth - width - 4);
+			this.wrapperEl.style.left = Math.max(4, left) + 'px';
 
 			let top = rect.top - 5 - height;
 			if (top < 4) top = rect.bottom + 5;
@@ -937,6 +929,28 @@
 		return target.closest ? target.closest('li.result') : null;
 	}
 
+	/** Extracted verbatim from Tooltip's own old show() — building this HTML is filter-match
+	 *  business logic, not Tooltip's job (see Tooltip's own doc comment above). */
+	function buildFilterMatchTooltipHTML(matches) {
+		let html = `<div class="cf-tooltip"><h2>Matched custom filters</h2>`;
+		for (const catId of CATEGORY_ORDER) {
+			const moveDefs = matches[catId];
+			if (!moveDefs || !moveDefs.length) continue;
+			const cat = window.CF_MOVE_CATEGORIES[catId];
+			const moveHtml = moveDefs.map(md => {
+				if (md.conditional) {
+					return `${escapeHTML(md.name)}` +
+						`<span class="cf-conditional-tag" title="${escapeHTML(md.reason || 'Conditional')}">conditional</span>`;
+				}
+				return escapeHTML(md.name);
+			}).join(', ');
+			html += `<p class="tooltip-section"><strong>${escapeHTML(cat ? cat.label : catId)}</strong><br />` +
+				`<span class="cf-movelist">${moveHtml}</span></p>`;
+		}
+		html += `</div>`;
+		return html;
+	}
+
 	// Pokémon-search rows only: a species can match a filter through any of several moves in
 	// its pool, so the tooltip is the only way to see *which* one(s) actually qualified. A
 	// move-search row IS a specific move already sitting in a pre-filtered list — hovering it
@@ -944,24 +958,39 @@
 	// chip), so there's deliberately no tooltip for move rows.
 	function onMouseOver(ev) {
 		const li = findResultLi(ev.target);
-		if (!li) return;
-		const engine = CF.lastEngine;
-		if (!engine || !engine.__cfFilters || !engine.__cfFilters.length) return;
+		if (li) {
+			const engine = CF.lastEngine;
+			if (!engine || !engine.__cfFilters || !engine.__cfFilters.length) return;
+			const pokemonLink = li.querySelector('a[data-entry^="pokemon|"]');
+			if (pokemonLink) {
+				const name = pokemonLink.getAttribute('data-entry').slice('pokemon|'.length);
+				const speciesId = window.toID(name);
+				const matches = engine.__cfMatches && engine.__cfMatches.get(speciesId);
+				if (matches) Tooltip.show(li, buildFilterMatchTooltipHTML(matches));
+			}
+			return;
+		}
 
-		const pokemonLink = li.querySelector('a[data-entry^="pokemon|"]');
-		if (pokemonLink) {
-			const name = pokemonLink.getAttribute('data-entry').slice('pokemon|'.length);
-			const speciesId = window.toID(name);
-			const matches = engine.__cfMatches && engine.__cfMatches.get(speciesId);
-			if (matches) Tooltip.show(li, matches);
+		const speedRow = ev.target.closest ? ev.target.closest('.cf-speedtier-row') : null;
+		if (speedRow && CF.buildSpeedComparisonTooltipHTML) {
+			const html = CF.buildSpeedComparisonTooltipHTML(speedRow);
+			if (html) Tooltip.show(speedRow, html);
 		}
 	}
 
 	function onMouseOut(ev) {
 		const li = findResultLi(ev.target);
-		if (!li) return;
-		if (ev.relatedTarget && li.contains(ev.relatedTarget)) return;
-		Tooltip.hide();
+		if (li) {
+			if (ev.relatedTarget && li.contains(ev.relatedTarget)) return;
+			Tooltip.hide();
+			return;
+		}
+
+		const speedRow = ev.target.closest ? ev.target.closest('.cf-speedtier-row') : null;
+		if (speedRow) {
+			if (ev.relatedTarget && speedRow.contains(ev.relatedTarget)) return;
+			Tooltip.hide();
+		}
 	}
 
 	/** Forces a full re-filter + redraw of whatever search box is currently active, the
@@ -1162,14 +1191,29 @@
 		// would drop under 659, not partway through — 2 x 659 = 1318, rounded up to 1320.
 		const SPLIT_THRESHOLD = 1320;
 
+		/** Two independent sub-panels rather than one innerHTML blob, so a species switch
+		 *  (which only needs to redraw the right-hand Pikalytics grid) doesn't wipe and reset
+		 *  the scroll position of the left-hand speed-tier column, and vice versa — the two
+		 *  update on entirely different triggers (species/format vs. format-only, see
+		 *  renderPikalyticsSidebar and renderSpeedTierColumn respectively). */
 		function ensureTeambuilderSidebarEl() {
 			let el = document.getElementById('cf-teambuilder-sidebar');
 			if (el) return el;
 			el = document.createElement('div');
 			el.id = 'cf-teambuilder-sidebar';
-			el.innerHTML = '<p class="cf-sidebar-placeholder">Nothing here yet.</p>';
+			el.innerHTML =
+				'<div id="cf-speedtier-col" class="cf-pika-section">' +
+					'<h3 class="cf-pika-header">Speed</h3>' +
+					'<div class="cf-pika-rows"><p class="cf-sidebar-placeholder">Loading…</p></div>' +
+				'</div>' +
+				'<div id="cf-pika-panel"><p class="cf-sidebar-placeholder">Nothing here yet.</p></div>';
 			document.body.appendChild(el);
 			return el;
+		}
+
+		function ensurePikaPanelEl() {
+			ensureTeambuilderSidebarEl();
+			return document.getElementById('cf-pika-panel');
 		}
 
 		function pikaSectionHTML(title, rowsHTML) {
@@ -1351,6 +1395,301 @@
 			return pikaSectionHTML('Common Teammates', rows);
 		}
 
+		/** Speed-tier column (style.css #cf-speedtier-col): the top-20-by-usage species'
+		 *  sprites, top to bottom in rank order, each boxed with its usage rank in the top-left
+		 *  corner. Same `.picon`/getPokemonIcon() as buildTeammatesSection above, so a
+		 *  Mega/regional-forme sprite resolves exactly the same way. Ranks 1-3 get a
+		 *  gold/silver/bronze rank badge (cf-speedtier-rank-1/2/3, style.css) instead of the
+		 *  plain semi-transparent-black one every other rank gets. `data-cf-species` (not
+		 *  `title`) carries the name for buildSpeedComparisonTooltipHTML's hover lookup below —
+		 *  deliberately not a native title tooltip, since hovering now shows the real speed
+		 *  comparison popup instead and a native tooltip stacked on top of that would just be
+		 *  visual noise.
+		 *
+		 *  speedTierColumnHTML wraps every state (loading/empty/error/loaded — see
+		 *  renderSpeedTierColumn) in the exact same `.cf-pika-header`/`.cf-pika-rows` markup
+		 *  pikaSectionHTML uses for the other six sections, just without pikaSectionHTML's own
+		 *  outer `.cf-pika-section` div — #cf-speedtier-col carries that class directly instead
+		 *  (see ensureTeambuilderSidebarEl) since it's a real element with its own id, not a
+		 *  disposable wrapper. Same header/row classes end up meaning the same fonts, colors,
+		 *  padding, and border as every other section — nothing bespoke to keep in sync. */
+		function speedTierColumnHTML(rowsHTML) {
+			return `<h3 class="cf-pika-header">Speed</h3><div class="cf-pika-rows">${rowsHTML}</div>`;
+		}
+		function buildSpeedTierColumnHTML(list) {
+			if (!list || !list.length) return speedTierColumnHTML('<p class="cf-sidebar-placeholder">No data.</p>');
+			const rows = list.map((entry) => {
+				const iconStyle = window.Dex ? window.Dex.getPokemonIcon(entry.name) : '';
+				const rankCls = entry.rank >= 1 && entry.rank <= 3 ? ` cf-speedtier-rank-${entry.rank}` : '';
+				return `<div class="cf-speedtier-row" data-cf-species="${escapeHTML(entry.name)}">` +
+					`<div class="cf-speedtier-box">` +
+						`<span class="picon" style="${escapeHTML(iconStyle)}"></span>` +
+						`<span class="cf-speedtier-rank${rankCls}">${escapeHTML(String(entry.rank))}</span>` +
+					`</div></div>`;
+			}).join('');
+			return speedTierColumnHTML(rows);
+		}
+
+		/** Items with a known Speed-stat effect, id-keyed (toIDSafe). Deliberately small — just
+		 *  the two the feature was scoped around (Choice Scarf, Iron Ball) rather than every
+		 *  item that touches turn order in some way (e.g. Lagging Tail/Full Incense change move
+		 *  priority, not the Speed *stat*, so a straight stat comparison has nothing to do with
+		 *  them; Quick Powder only matters on Ditto, deliberately left out for now rather than
+		 *  special-cased for one species). Extend this table, not the comparison logic below,
+		 *  when another Speed-affecting item needs covering. */
+		const SPEED_ITEM_MULTIPLIERS = { choicescarf: 1.5, ironball: 0.5 };
+
+		/** Minimum Pikalytics usage percent for Choice Scarf before buildSpeedComparisonTooltipHTML
+		 *  bothers showing the "what if it ran Scarf" column at all — a starting guess, not a
+		 *  researched number. The real percent is always shown in that column's own header
+		 *  either way, so a borderline case stays visible to judge yourself rather than getting
+		 *  silently hidden by wherever this number happens to sit. */
+		const SCARF_POPULARITY_THRESHOLD_PERCENT = 5;
+
+		/** Same idea as SCARF_POPULARITY_THRESHOLD_PERCENT, for the "what if it ran its Mega
+		 *  Stone" column — a starting guess, not a researched number, with the real percent
+		 *  always shown in the column's own header regardless. Deliberately never changes the
+		 *  base Foe column itself (see buildSpeedComparisonTooltipHTML's own comment for why a
+		 *  species with dominant Mega Stone usage still keeps its base forme as the main Foe
+		 *  column) — a Pokémon holding a Mega Stone can't simultaneously hold Choice Scarf, so
+		 *  this and the Scarf column are two independent, mutually exclusive "what if" columns
+		 *  sitting alongside the same unchanged base column, never merged into it. */
+		const MEGA_POPULARITY_THRESHOLD_PERCENT = 15;
+
+		/** Standard Pokémon stat-stage multiplier: positive stages boost by (2+n)/2, negative
+		 *  stages cut by 2/(2-n) — e.g. -1 -> 2/3, -2 -> 1/2. Only -1/-2 are ever passed in by
+		 *  the scenario table below, but the general formula is no more code than hardcoding
+		 *  just those two ratios would be. */
+		function speedStageMultiplier(stage) {
+			if (!stage) return 1;
+			return stage > 0 ? (2 + stage) / 2 : 2 / (2 - stage);
+		}
+
+		/** Applies item/status/stage/Tailwind on top of an already-computed base Speed stat
+		 *  (tbRoom.getStat('spe', ...) — see buildSpeedComparisonTooltipHTML). All multiplicative,
+		 *  so order doesn't change the result; floored once at the end, matching how a single
+		 *  displayed stat number is always a whole number in-game (this is an approximation of
+		 *  the real battle engine's own multi-step rounding, same simplification tools like the
+		 *  Smogon damage calc make — not meant to be bit-exact in extreme edge cases). */
+		function applySpeedModifiers(baseStat, itemName, modifiers) {
+			let stat = baseStat;
+			const itemMult = itemName && SPEED_ITEM_MULTIPLIERS[toIDSafe(itemName)];
+			if (itemMult) stat *= itemMult;
+			if (modifiers.paralyzed) stat *= 0.5;
+			if (modifiers.tailwind) stat *= 2;
+			if (modifiers.stage) stat *= speedStageMultiplier(modifiers.stage);
+			return Math.floor(stat);
+		}
+
+		/** The 9-row scenario table: an ally/foe modifier pair per row, one modifier changed at a
+		 *  time (never combined — see the conversation this was scoped in) against an otherwise-
+		 *  identical baseline. Row order mirrors how the badges on the speed-tier boxes
+		 *  themselves are grouped (Tailwind, then PAR, then stage drops). */
+		const SPEED_COMPARISON_SCENARIOS = [
+			{ label: 'Base', ally: {}, foe: {} },
+			{ label: 'Tailwind (ally)', ally: { tailwind: true }, foe: {} },
+			{ label: 'Tailwind (foe)', ally: {}, foe: { tailwind: true } },
+			{ label: 'PAR (ally)', ally: { paralyzed: true }, foe: {} },
+			{ label: 'PAR (foe)', ally: {}, foe: { paralyzed: true } },
+			{ label: '-1 (ally)', ally: { stage: -1 }, foe: {} },
+			{ label: '-1 (foe)', ally: {}, foe: { stage: -1 } },
+			{ label: '-2 (ally)', ally: { stage: -2 }, foe: {} },
+			{ label: '-2 (foe)', ally: {}, foe: { stage: -2 } },
+		];
+
+		/** Populated by renderSpeedTierColumn whenever it successfully loads a format's top-20
+		 *  list — buildSpeedComparisonTooltipHTML (below) looks up the hovered species' already-
+		 *  fetched `mon` payload (base stats, spreads, items) here on hover, rather than
+		 *  refetching or threading the list through the DOM some other way. */
+		let lastSpeedTierList = null;
+
+		/** "+"/"−"/"" for a Speed EV count — same plus/minus concept as natureModifierHTML above,
+		 *  but collapsed to just Speed (that's the only stat this table cares about) instead of
+		 *  spelling out which two stats a nature touches. */
+		function speedNatureIndicator(natureName) {
+			const nature = window.BattleNatures && window.BattleNatures[natureName];
+			if (!nature) return '';
+			if (nature.plus === 'spe') return '+';
+			if (nature.minus === 'spe') return '−';
+			return '';
+		}
+
+		/** "32 EV" when neutral, "32 EV / +" (or "/ −") when speedNatureIndicator found a boost
+		 *  or drop — the slash keeps the EV count and the +/- visually separate rather than
+		 *  running them together as "32+". */
+		function formatSpeedEvText(ev, indicator) {
+			return indicator ? `${ev} EV / ${indicator}` : `${ev} EV`;
+		}
+
+		/** Builds the hover popup comparing the currently-edited Pokémon's real Speed against a
+		 *  hovered top-20-usage species' *expected* Speed (its base stat + most common EV spread
+		 *  + most common nature — the single most-common spread only, not a blend of several).
+		 *  Both go through tbRoom.getStat, the exact same method the native Stats/EV panel uses
+		 *  to compute the number it displays — not a reimplementation of Pokemon Champions' own
+		 *  stat formula (confirmed live: Champions replaced the classic 0-252 EV/IV/level formula
+		 *  with a flat `base + ev + 20` scaled by nature, no level or IV involved at all — using
+		 *  the real method sidesteps needing to have gotten that right by hand). Each side's
+		 *  currently-equipped/most-common item is folded into its base stat once (not a per-row
+		 *  toggle — see SPEED_COMPARISON_SCENARIOS' own comment for why only Tailwind/PAR/stage
+		 *  vary per row), mirroring how the item is just "on" or "off" here, not something being
+		 *  compared. Returns null (no popup) if the current set has no species yet, or the
+		 *  hovered species has no spread data to build a baseline from. */
+		function buildSpeedComparisonTooltipHTML(rowEl) {
+			const speciesName = rowEl.getAttribute('data-cf-species');
+			if (!speciesName) return null;
+			const entry = lastSpeedTierList && lastSpeedTierList.find((e) => e.name === speciesName);
+			if (!entry || !entry.mon) return null;
+
+			const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
+			const allySet = tbRoom && tbRoom.curSet;
+			if (!tbRoom || !allySet || !allySet.species) return null;
+
+			const topSpread = (entry.mon.spreads || [])[0];
+			if (!topSpread) return null;
+			const topNature = (entry.mon.natures || [])[0];
+			const foeNature = (topNature && topNature.nature) || '';
+			const foeSet = {
+				species: speciesName,
+				evs: { spe: parseEVs(topSpread.ev).spe },
+				nature: foeNature,
+				ivs: { spe: 31 },
+				level: allySet.level || 50,
+			};
+
+			const allyBase = tbRoom.getStat('spe', allySet);
+			const foeBase = tbRoom.getStat('spe', foeSet);
+			const foeItems = entry.mon.items || [];
+
+			// 4th "what if it ran Scarf instead" column, only when Scarf usage is actually
+			// non-trivial for this species (see SCARF_POPULARITY_THRESHOLD_PERCENT's own doc
+			// comment) — otherwise it's a hypothetical nobody's really building, and the column
+			// would just be noise.
+			const scarfItemEntry = foeItems.find((it) => toIDSafe(it.item) === 'choicescarf');
+			const scarfPercent = scarfItemEntry ? parseFloat(scarfItemEntry.percent) || 0 : 0;
+			const showScarfColumn = scarfPercent >= SCARF_POPULARITY_THRESHOLD_PERCENT;
+
+			// The main Foe column's own item: the single most popular one that ISN'T Scarf,
+			// unconditionally — Scarf always gets its own column when it's popular enough (above)
+			// to represent that hypothetical, so the base column has no business ever picking it
+			// too. Without this, a species whose single most common item genuinely IS Scarf
+			// (confirmed live: Basculegion, 44.7%) would show the exact same number in both the
+			// base Foe column and the dedicated "Foe [Scarf]" column, reading as "the Scarf column
+			// isn't doing anything" even though the multiplier fires correctly in both — the two
+			// columns need to represent genuinely different scenarios to be worth having side by
+			// side. Falls back to foeItems[0] only in the degenerate case where every listed item
+			// is Scarf.
+			const nonScarfItemEntry = foeItems.find((it) => toIDSafe(it.item) !== 'choicescarf');
+			const foeItemEntry = nonScarfItemEntry || foeItems[0];
+			const foeItem = foeItemEntry && foeItemEntry.item;
+
+			// A 5th "what if it ran its Mega Stone instead" column, same "additional column,
+			// never a row-identity swap" treatment as Scarf above (see the earlier, reverted
+			// approach that tried overriding the base row itself — a Pokémon holding a Mega
+			// Stone can't also hold Scarf, so collapsing the row broke exactly that: a "Mega +
+			// Scarf" combination that can't exist in the real game). If a species has more than
+			// one Mega Stone (Charizard X/Y, Mewtwo X/Y), only the more popular one gets a
+			// column — showing both would need a 6th column for a genuinely rare case.
+			// getStat resolves the real Mega base stat from Dex once the *species name* is the
+			// Mega forme (see megaSet below) — same mechanism as every other stat lookup here,
+			// not a separately maintained stats field.
+			let megaFormeName = null;
+			let megaPercent = 0;
+			let megaItemName = null;
+			if (window.Dex) {
+				for (const it of foeItems) {
+					const itemData = window.Dex.items.get(it.item);
+					const forme = itemData && itemData.megaStone && itemData.megaStone[speciesName];
+					if (!forme) continue;
+					const percent = parseFloat(it.percent) || 0;
+					if (percent > megaPercent) {
+						megaFormeName = forme;
+						megaPercent = percent;
+						megaItemName = it.item;
+					}
+				}
+			}
+			const showMegaColumn = megaFormeName && megaPercent >= MEGA_POPULARITY_THRESHOLD_PERCENT;
+			const megaSet = showMegaColumn ?
+				{ species: megaFormeName, evs: foeSet.evs, nature: foeSet.nature, ivs: foeSet.ivs, level: foeSet.level } : null;
+			const foeMegaBase = megaSet ? tbRoom.getStat('spe', megaSet) : 0;
+
+			// No win/lose coloring — with several independent Speed numbers per row (ally, foe,
+			// and up to two foe "what if" variants) a single "winner" no longer means anything;
+			// reading the plain numbers against each other is unambiguous without it anyway.
+			const rows = SPEED_COMPARISON_SCENARIOS.map((sc) => {
+				const allySpeed = applySpeedModifiers(allyBase, allySet.item, sc.ally);
+				const foeSpeed = applySpeedModifiers(foeBase, foeItem, sc.foe);
+				const megaCell = showMegaColumn ?
+					// No item passed — a Mega Stone isn't in SPEED_ITEM_MULTIPLIERS (it doesn't
+					// multiply Speed, the different base stat from foeMegaBase already covers
+					// its effect), and the holder can't also be running Scarf/Iron Ball anyway.
+					`<td>${applySpeedModifiers(foeMegaBase, null, sc.foe)}</td>` : '';
+				const scarfCell = showScarfColumn ?
+					// Same base stat as the main foe column (items don't change EVs/nature) —
+					// only the item plugged into applySpeedModifiers changes, so this is
+					// "what if" against an otherwise-identical spread, not a different build.
+					`<td>${applySpeedModifiers(foeBase, 'Choice Scarf', sc.foe)}</td>` : '';
+				return `<tr><td>${escapeHTML(sc.label)}</td><td>${allySpeed}</td><td>${foeSpeed}</td>${megaCell}${scarfCell}</tr>`;
+			}).join('');
+
+			const allyIcon = window.Dex ? window.Dex.getPokemonIcon(allySet.species) : '';
+			const foeIcon = window.Dex ? window.Dex.getPokemonIcon(speciesName) : '';
+			const allyEvText = formatSpeedEvText((allySet.evs && allySet.evs.spe) || 0, speedNatureIndicator(allySet.nature));
+			const foeEvText = formatSpeedEvText(foeSet.evs.spe, speedNatureIndicator(foeNature));
+			const scarfIconStyle = window.Dex ? window.Dex.getItemIcon('Choice Scarf') : '';
+
+			// Only the ally sprite gets an unconditional held-item badge — the popup is scoped
+			// to "what's actually on my set" for that side (see applySpeedModifiers' own doc
+			// comment: the item is baseline-only, not a per-row toggle). The foe's own most-
+			// common item is Pikalytics' population statistic rather than something really
+			// "held," so badging it the same way would misleadingly imply the same certainty —
+			// Scarf/Mega specifically get their own conditional columns instead (above), with
+			// their real usage percent shown rather than asserted.
+			const allyHasScarf = toIDSafe(allySet.item) === 'choicescarf';
+			const allySpriteHTML = `<span class="cf-speedcmp-sprite">` +
+				`<span class="picon" style="${escapeHTML(allyIcon)}"></span>` +
+				(allyHasScarf && window.Dex ?
+					`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon('Choice Scarf'))}"></span>` : '') +
+				`</span>`;
+			// Bottom-right badge matches the ally sprite's own Scarf badge above; bottom-left
+			// (otherwise empty on this sprite — nothing else claims that corner) carries the
+			// real usage percent, so each column reads as "here's the item, and here's how
+			// common it actually is" at a glance rather than needing a caption line underneath.
+			// The Mega column uses the Mega forme's own sprite (not the base species') since
+			// that's genuinely a different-looking Pokémon, unlike Scarf which doesn't change
+			// what the foe looks like.
+			const megaColumnHeaderHTML = showMegaColumn ?
+				`<th><span class="cf-speedcmp-sprite">` +
+					`<span class="picon" style="${escapeHTML(window.Dex.getPokemonIcon(megaFormeName))}"></span>` +
+					`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(megaItemName))}"></span>` +
+					`<span class="cf-speedcmp-usage-badge">${Math.round(megaPercent)}%</span>` +
+					`</span></th>` : '';
+			const scarfColumnHeaderHTML = showScarfColumn ?
+				`<th><span class="cf-speedcmp-sprite">` +
+					`<span class="picon" style="${escapeHTML(foeIcon)}"></span>` +
+					`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(scarfIconStyle)}"></span>` +
+					`<span class="cf-speedcmp-usage-badge">${Math.round(scarfPercent)}%</span>` +
+					`</span></th>` : '';
+
+			const extraCols = (showMegaColumn ? 1 : 0) + (showScarfColumn ? 1 : 0);
+			const widthCls = extraCols === 2 ? ' cf-speedcmp-tooltip-widest' : extraCols === 1 ? ' cf-speedcmp-tooltip-wide' : '';
+
+			return `<div class="cf-tooltip cf-speedcmp-tooltip${widthCls}">` +
+				`<h2>${escapeHTML(allySet.species)} ` +
+				`<span class="cf-speedcmp-evinfo">(${escapeHTML(allyEvText)})</span> vs. ${escapeHTML(speciesName)} ` +
+				`<span class="cf-speedcmp-evinfo">(${escapeHTML(foeEvText)})</span></h2>` +
+				`<table class="cf-speedcmp-table"><thead><tr><th>Scenario</th>` +
+				`<th>${allySpriteHTML}</th>` +
+				`<th><span class="picon" style="${escapeHTML(foeIcon)}"></span></th>` +
+				`${megaColumnHeaderHTML}${scarfColumnHeaderHTML}</tr></thead>` +
+				`<tbody>${rows}</tbody></table></div>`;
+		}
+		// onMouseOver (outer scope, near Tooltip) needs to call this, but it's defined here
+		// (inside patchTeambuilderSidebar) since it depends on things scoped to this function's
+		// own closure. CF is this file's existing cross-scope handoff — same pattern
+		// CF.lastEngine already uses for patchDexSearch -> onMouseOver.
+		CF.buildSpeedComparisonTooltipHTML = buildSpeedComparisonTooltipHTML;
+
 		/** Laid out as a 3-row x 2-col grid (.cf-pika-grid, style.css) rather than one long
 		 *  scrolling column — DOM order here IS grid row-major order (row 1: Moves/Abilities,
 		 *  row 2: Items/Teammates, row 3: Natures/Spreads), since the grid has no explicit
@@ -1417,14 +1756,14 @@
 				// sidebar would keep showing whichever species was rendered last, appearing
 				// "stuck" until something else (switching slots and back) forced a real
 				// re-render — nothing short of reloading the extension would clear it otherwise.
-				ensureTeambuilderSidebarEl().innerHTML = '<p class="cf-sidebar-placeholder">Nothing here yet.</p>';
+				ensurePikaPanelEl().innerHTML = '<p class="cf-sidebar-placeholder">Nothing here yet.</p>';
 				lastRenderKey = null;
 				lastMon = null;
 				return;
 			}
 
 			const key = formatId + '|' + speciesName;
-			const sidebarEl = ensureTeambuilderSidebarEl();
+			const sidebarEl = ensurePikaPanelEl();
 
 			if (key === lastRenderKey) {
 				// Same species/format as the last call. If lastMon is already populated, that's
@@ -1467,6 +1806,51 @@
 			});
 		}
 
+		/** Populates #cf-speedtier-col with the format's top-20-by-usage species. Keyed on
+		 *  formatId alone, not species — unlike renderPikalyticsSidebar this doesn't need to
+		 *  refetch every time the user switches which Pokémon they're editing, only when the
+		 *  format itself changes, since the top-20 usage list is format-wide. speciesHint only
+		 *  feeds getTopUsageList's cold-cache bootstrap (see that function's own doc comment) —
+		 *  by the time this runs, renderPikalyticsSidebar has usually already warmed the same
+		 *  format-meta cache entry via the exact same hint, so this is typically a cache hit with
+		 *  no extra discovery request.
+		 *
+		 *  lastSpeedTierList (module-level, above) is kept in sync with whatever's actually
+		 *  rendered — cleared alongside the placeholder states, populated alongside the real
+		 *  list — so buildSpeedComparisonTooltipHTML's hover lookup can never find a species from
+		 *  a format that's no longer showing (e.g. mid-fetch, or after a failed request). */
+		let lastSpeedTierFormatId = null;
+		let speedTierRenderToken = 0;
+		function renderSpeedTierColumn(tbRoom) {
+			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
+			const speciesHint = tbRoom.curSet && (tbRoom.curSet.species || tbRoom.curSet.name);
+			const colEl = document.getElementById('cf-speedtier-col');
+			if (!colEl) return;
+
+			if (!formatId || !window.CF_Pikalytics || !window.CF_Pikalytics.getTopUsageList) {
+				colEl.innerHTML = speedTierColumnHTML('<p class="cf-sidebar-placeholder">No data.</p>');
+				lastSpeedTierFormatId = null;
+				lastSpeedTierList = null;
+				return;
+			}
+			if (formatId === lastSpeedTierFormatId) return; // already loaded/loading for this format
+			lastSpeedTierFormatId = formatId;
+
+			const token = ++speedTierRenderToken;
+			colEl.innerHTML = speedTierColumnHTML('<p class="cf-sidebar-placeholder">Loading…</p>');
+			lastSpeedTierList = null;
+
+			window.CF_Pikalytics.getTopUsageList(formatId, speciesHint, 20).then((list) => {
+				if (token !== speedTierRenderToken) return; // superseded by a newer request
+				lastSpeedTierList = list;
+				colEl.innerHTML = buildSpeedTierColumnHTML(list);
+			}).catch((e) => {
+				if (token !== speedTierRenderToken) return;
+				console.error('[Better Teambuilder] Speed tier usage list lookup failed:', e);
+				colEl.innerHTML = speedTierColumnHTML('<p class="cf-sidebar-placeholder">Failed to load.</p>');
+			});
+		}
+
 		function updateSplitState() {
 			const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
 			const editingAPokemon = !!(window.app.curRoom === tbRoom && tbRoom && tbRoom.curSet);
@@ -1475,6 +1859,9 @@
 				ensureTeambuilderSidebarEl();
 				try { renderPikalyticsSidebar(tbRoom); } catch (e) {
 					console.error('[Better Teambuilder] renderPikalyticsSidebar failed:', e);
+				}
+				try { renderSpeedTierColumn(tbRoom); } catch (e) {
+					console.error('[Better Teambuilder] renderSpeedTierColumn failed:', e);
 				}
 			} else {
 				lastRenderKey = null; // force a fresh render next time the sidebar becomes active

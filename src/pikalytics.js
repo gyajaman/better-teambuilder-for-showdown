@@ -11,7 +11,7 @@
  * origin's localStorage (e.g. Storage.teams).
  *
  * Pikalytics (https://pikalytics.com) publishes competitive usage stats behind three
- * different endpoints — this went through two false starts before landing on the third:
+ * different endpoints:
  *
  *   GET /api/l/{YYYY-MM}/{slug}-{cutoff}          — bulk JSON, meant to cover every Pokémon
  *                                                    in a format in one request, BUT
@@ -20,7 +20,14 @@
  *                                                    actually has move/item/ability/nature/
  *                                                    spread/teammate data — every other
  *                                                    entry, however popular, only has name/
- *                                                    rank/winrate/types. Not usable here.
+ *                                                    rank/winrate/types. Useless for a given
+ *                                                    species' own data (that's what /api/p/
+ *                                                    below is for) but that name+rank list is
+ *                                                    exactly the ranked usage order
+ *                                                    getTopUsageList needs, and it's the only
+ *                                                    endpoint that gives the whole format's
+ *                                                    ranking in one request — see
+ *                                                    fetchUsageList.
  *   GET /ai/pokedex/{slug}/{species}              — lightweight per-species Markdown, does
  *                                                    have full data for any rank, BUT only a
  *                                                    single "top build" nature+EV spread (one
@@ -92,6 +99,7 @@
 
 	const FORMAT_META_PREFIX = 'cf_pikalytics_meta_';
 	const SPECIES_CACHE_PREFIX = 'cf_pikalytics_cache_';
+	const USAGE_LIST_CACHE_PREFIX = 'cf_pikalytics_usagelist_';
 	/** Fields the /api/p/ payload carries as arrays (confirmed live) — fetchSpeciesData
 	 *  rejects a response where one of these is present but not actually an array, since
 	 *  content.js's `mon.moves || []`-style guards only catch a falsy value, not a truthy
@@ -281,5 +289,74 @@
 		});
 	}
 
-	window.CF_Pikalytics = { getSpeciesData, resolveQuerySpecies, slugFor };
+	/** Fetches the bulk /api/l/ list purely for its name+rank ordering (see the module doc
+	 *  comment — every other field on a non-#1 entry is missing/unusable). Confirmed live: the
+	 *  208 entries already arrive in rank order, but sorted defensively here anyway rather than
+	 *  trusting that to stay true. Same "200 OK with garbage body" failure mode as
+	 *  fetchSpeciesData (wrong cutoff, etc.) — treated as null the same way. */
+	function fetchUsageList(month, slug, cutoff) {
+		return fetch(`https://pikalytics.com/api/l/${month}/${slug}-${cutoff}`)
+			.then((r) => (r.ok ? r.text() : null))
+			.then((text) => {
+				if (!text) return null;
+				let data;
+				try { data = JSON.parse(text); } catch (e) { return null; }
+				if (!Array.isArray(data)) return null;
+				const list = data
+					.filter((entry) => entry && entry.name)
+					.map((entry) => ({ name: entry.name, rank: parseInt(entry.rank, 10) || 0 }));
+				list.sort((a, b) => a.rank - b.rank);
+				return list;
+			})
+			.catch(() => null);
+	}
+
+	/** Tier 2 sibling of getSpeciesData, same shape/reasoning (see the module comment's
+	 *  two-tier cache design) — just keyed by slug instead of by species, and holding a
+	 *  name+rank list instead of a mon object. Kept as its own function/cache entry rather than
+	 *  folded into getSpeciesData's cache because it's fetched once per format lookup, not once
+	 *  per species. */
+	function getUsageList(formatId, querySpeciesHint) {
+		const slug = slugFor(formatId);
+		if (!slug) return Promise.resolve(null);
+
+		return getFormatMeta(slug, querySpeciesHint).then((meta) => {
+			const cached = readEntry(USAGE_LIST_CACHE_PREFIX, slug);
+			if (!meta) return cached ? cached.data : null;
+
+			const cacheIsCurrent = cached &&
+				cached.month === meta.month && cached.cutoff === meta.cutoff &&
+				(Date.now() - cached.fetchedAt) < CACHE_TTL_MS;
+			if (cacheIsCurrent) return cached.data;
+
+			return fetchUsageList(meta.month, slug, meta.cutoff).then((list) => {
+				if (!list) return cached ? cached.data : null;
+				writeEntry(USAGE_LIST_CACHE_PREFIX, slug, { month: meta.month, cutoff: meta.cutoff, data: list, fetchedAt: Date.now() });
+				return list;
+			});
+		});
+	}
+
+	/** Returns a Promise resolving to the top `count` most-used Pokémon in a format, each as
+	 *  `{ rank, name, mon }` — `mon` is the exact same per-species payload getSpeciesData
+	 *  returns for any other lookup (stats.spe, items, natures, spreads, ...), just fetched and
+	 *  attached here too rather than left for the caller to look up separately, since it's
+	 *  already going through the same cached per-species path either way. `querySpeciesHint`
+	 *  only matters on a cold cache — same bootstrapping need as getSpeciesData, see
+	 *  discoverMonthAndCutoff, and typically already warm by the time this is called (the
+	 *  currently-edited species' own sidebar lookup runs first). Never rejects — a missing
+	 *  format, failed list fetch, or individual species lookup failure all just shrink or empty
+	 *  the result rather than throwing (a null `mon` on one entry doesn't drop that entry, since
+	 *  the caller only needs `name` to render an icon right now). */
+	function getTopUsageList(formatId, querySpeciesHint, count) {
+		return getUsageList(formatId, querySpeciesHint).then((list) => {
+			if (!list) return [];
+			const top = list.slice(0, count || 20);
+			return Promise.all(top.map((entry) =>
+				getSpeciesData(formatId, entry.name).then((mon) => ({ rank: entry.rank, name: entry.name, mon }))
+			));
+		});
+	}
+
+	window.CF_Pikalytics = { getSpeciesData, getTopUsageList, resolveQuerySpecies, slugFor };
 })();

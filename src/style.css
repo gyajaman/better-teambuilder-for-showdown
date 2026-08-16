@@ -1,3 +1,11 @@
+/* Press Start 2P — the one genuinely-pixelated webfont this file uses (.cf-speedcmp-usage-badge
+ * below), for a retro-game-HUD numeral look no system/Showdown-native font can give. Must be the
+ * very first rule in the file — @import is silently ignored anywhere else per the CSS spec.
+ * Confirmed live: play.pokemonshowdown.com sends no CSP header, so this external fetch isn't
+ * blocked; if Google Fonts is ever unreachable the badge just falls back to the plain monospace
+ * stack already listed alongside it rather than failing visibly. */
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
 /* Better Teambuilder for Showdown! — styling for the hover tooltip, plus one small
  * corrective override for the typed-filter suggestion row (below). Custom
  * filters are typed into the same search box as any move/ability/type, appear
@@ -250,6 +258,167 @@ a[data-entry^="custom|"] .movedesccol {
 	vertical-align: middle;
 }
 
+/* Speed comparison popup (content.js buildSpeedComparisonTooltipHTML) — shares #cf-tooltipwrapper
+ * and the base .cf-tooltip card shell (border/radius/shadow/dark-mode background) with the
+ * custom-filter tooltip above; only widens it (a table needs more room than a paragraph of
+ * prose) via this extra class rather than touching the shared rule. h2 and table reuse the
+ * exact same header/border colors as .cf-tooltip h2 and .cf-spread-table respectively — see
+ * those rules' own comments for where the values originally came from. */
+#cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip {
+	width: 340px;
+}
+/* Applied alongside cf-speedcmp-tooltip (not instead of it) whenever exactly one of the two
+ * conditional "what if" columns (Mega, Scarf — content.js's own showMegaColumn/showScarfColumn)
+ * is showing — 340px was sized for 3 columns, a 4th needs more room or Scenario's own labels
+ * ("Tailwind (ally)") start wrapping. */
+#cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip-wide {
+	width: 420px;
+}
+/* Both conditional columns at once (a species with popular Mega Stone *and* popular Scarf
+ * usage — independent stats, so nothing stops both crossing their own threshold) needs a 5th
+ * column's worth of extra room again. */
+#cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip-widest {
+	width: 500px;
+}
+.cf-speedcmp-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: Verdana, sans-serif;
+	font-size: 8pt;
+}
+.cf-speedcmp-table th,
+.cf-speedcmp-table td {
+	padding: 2px 5px;
+	text-align: right;
+	border-bottom: 1px solid #D8D8D8;
+	white-space: nowrap;
+}
+.dark .cf-speedcmp-table th,
+.dark .cf-speedcmp-table td {
+	border-bottom-color: #4A4D50;
+}
+.cf-speedcmp-table th:first-child,
+.cf-speedcmp-table td:first-child {
+	text-align: left;
+}
+/* Ally/Foe columns center their header sprite (below), so the numbers underneath need to match
+ * — left as the shared right-align above, they'd sit noticeably right of center relative to the
+ * sprite pinned above them. */
+.cf-speedcmp-table td:not(:first-child) {
+	text-align: center;
+}
+.cf-speedcmp-table thead th {
+	padding: 3px 5px;
+	background: #DAE5F0;
+	color: black;
+	border-bottom: 1px solid #AAAAAA;
+	font-weight: normal;
+	text-shadow: 1px 1px 0 rgba(255, 255, 255, .6);
+}
+.dark .cf-speedcmp-table thead th {
+	background: #636363;
+	color: #F1F1F1;
+	border-bottom: 1px solid #A9A9A9;
+	text-shadow: 1px 1px 0 rgb(40, 43, 45);
+}
+.cf-speedcmp-table td {
+	color: #000000;
+}
+.dark .cf-speedcmp-table td {
+	color: #EEEEEE;
+}
+/* Header cells now hold a sprite (content.js buildSpeedComparisonTooltipHTML) instead of plain
+ * "Ally"/"Foe" text — .picon is inline-block by default (native Showdown CSS), so centering it
+ * needs an explicit block context. */
+.cf-speedcmp-table thead th:not(:first-child) {
+	text-align: center;
+}
+.cf-speedcmp-table thead th .picon {
+	display: block;
+	margin: 0 auto;
+}
+/* Choice Scarf badge — on the ally sprite when it's actually equipped, and on the "what if it
+ * ran Scarf" column's own sprite when that column is showing (buildSpeedComparisonTooltipHTML's
+ * own comment covers why the foe's *actual* most-common item never gets this treatment).
+ * .cf-speedcmp-sprite just gives .cf-speedcmp-item-badge/.cf-speedcmp-usage-badge something
+ * position: relative to anchor against. Native .itemicon is a fixed 24x24 (too big next to a
+ * 40x30 .picon) — scale() shrinks the whole rendered icon, sprite-sheet background-position
+ * included, rather than clipping it the way a plain width/height override would; anchored at
+ * bottom right so it shrinks toward the corner it's pinned to instead of drifting off it. */
+.cf-speedcmp-sprite {
+	position: relative;
+	display: inline-block;
+}
+.cf-speedcmp-item-badge {
+	position: absolute;
+	right: -4px;
+	bottom: -4px;
+	transform: scale(.55);
+	transform-origin: bottom right;
+}
+/* Bottom-left corner of the Scarf column's sprite — otherwise empty, since the item badge above
+ * already claims bottom-right — carries the real Scarf usage percent (content.js
+ * SCARF_POPULARITY_THRESHOLD_PERCENT's own comment covers why this is shown rather than just
+ * implied by the column existing at all). No background box — Press Start 2P (imported at the
+ * top of this file) for a real retro-game-HUD numeral look, monospace as the fallback if that
+ * font ever fails to load; white fill with a 4-direction black text-shadow standing in for a
+ * stroke/outline (plain CSS has no real text-stroke with reliable cross-browser support), small
+ * enough to read as a label rather than competing with the sprite it's sitting on — Press Start
+ * 2P's glyphs are wide/blocky even at small sizes, so this needs to run smaller than a normal
+ * font would at the same legibility. */
+.cf-speedcmp-usage-badge {
+	position: absolute;
+	left: -2px;
+	bottom: -2px;
+	font-family: 'Press Start 2P', 'Courier New', monospace;
+	font-size: 11px;
+	font-weight: normal;
+	color: #FFFFFF;
+	text-shadow:
+		-1px -1px 0 #000000,
+		1px -1px 0 #000000,
+		-1px 1px 0 #000000,
+		1px 1px 0 #000000;
+}
+/* EV count + Speed nature indicator, bracketed next to each Pokémon's name in the tooltip's own
+ * h2 (content.js buildSpeedComparisonTooltipHTML) rather than under its sprite in the table
+ * header — muted relative to the name itself so the name stays the visually dominant part of
+ * the title. */
+.cf-speedcmp-tooltip h2 .cf-speedcmp-evinfo {
+	font-size: 8pt;
+	font-weight: normal;
+	color: #666666;
+}
+.dark .cf-speedcmp-tooltip h2 .cf-speedcmp-evinfo {
+	color: #AAAAAA;
+}
+
+/* Single source of truth for the teambuilder room's width cap, shared with
+ * #cf-teambuilder-sidebar's `left` and .cf-pika-grid's `max-width` below — three separate
+ * rules that all need to agree on the same number, so it's a custom property instead of a
+ * repeated magic value that could drift out of sync across edits. */
+:root {
+	--cf-teambuilder-max-width: 653px;
+}
+
+/* Caps how wide the teambuilder room itself is ever allowed to render, regardless of monitor
+ * size — applies unconditionally (not scoped to body.cf-teambuilder-split), so it also clamps
+ * the split's own `width: 50% !important` below whenever 50% of the viewport would exceed
+ * --cf-teambuilder-max-width. Plain `max-width`, no !important needed: it's a separate
+ * property from `width`, so it still clamps the final rendered box even though Showdown's
+ * inline `width` (and our own `width: 50% !important` in split mode) wins the `width`
+ * property itself — clamping happens afterward regardless of which declaration won that
+ * property.
+ *
+ * #cf-teambuilder-sidebar's `left: min(50%, var(--cf-teambuilder-max-width))` mirrors this
+ * exact clamp so the sidebar's left edge always lands exactly on the room's actual (possibly
+ * capped) right edge, handing it every pixel the room doesn't need — below the 2×max-width
+ * breakpoint both sides are still a plain 50/50 split (unchanged from before), same as this
+ * rule doing nothing below the room's own max-width. */
+#room-teambuilder {
+	max-width: var(--cf-teambuilder-max-width);
+}
+
 /* Teambuilder sidebar: when no side room is docked and the window is wide enough, shrinks
  * the teambuilder room *itself* (#room-teambuilder — the real .ps-room box: background,
  * border, and scroll area included, not just its inner content) to half width, and docks
@@ -287,12 +456,11 @@ a[data-entry^="custom|"] .movedesccol {
 	display: none;
 	position: absolute;
 	top: 56px;
-	left: 50%;
+	left: min(50%, var(--cf-teambuilder-max-width));
 	right: 0;
 	bottom: 0;
 	overflow: hidden;
 	box-sizing: border-box;
-	padding: 12px 16px;
 	background: rgba(242, 247, 245, .85);
 	border-left: 1px solid #AAAAAA;
 	color: #000000;
@@ -307,8 +475,109 @@ body.cf-teambuilder-split #room-teambuilder {
 	width: 50% !important;
 	right: auto !important;
 }
+/* flex, not the plain `block` this used to be — #cf-teambuilder-sidebar now holds two
+ * independent sub-panels side by side (#cf-speedtier-col, #cf-pika-panel — see content.js
+ * ensureTeambuilderSidebarEl) instead of one innerHTML blob. */
 body.cf-teambuilder-split #cf-teambuilder-sidebar {
-	display: block;
+	display: flex;
+}
+/* Own header ("Speed") + independently-scrolling row list — the exact same section shape as
+ * the six grid sections below (.cf-pika-header/.cf-pika-rows, reused verbatim, not
+ * reimplemented — same fonts/colors/padding/border as every other section for free), just
+ * standing alone instead of living in a grid cell. #cf-speedtier-col carries the
+ * .cf-pika-section class directly for that reason (see content.js ensureTeambuilderSidebarEl,
+ * speedTierColumnHTML) — that class alone supplies the flex column + min-height: 0 that makes
+ * .cf-pika-rows' own internal scrolling work, so nothing extra is needed here beyond sizing.
+ * content.js buildSpeedTierColumnHTML fills the rows with one .cf-speedtier-row per
+ * top-20-usage species.
+ *
+ * No border between this and #cf-pika-panel — both sit on the same sidebar background, so
+ * nothing but padding is needed to read as two areas. Width is wider than the bare minimum a
+ * 40px-wide .picon needs, on request (room to breathe); not tied to --cf-teambuilder-max-width
+ * since it doesn't grow with the sidebar the way #cf-pika-panel's grid does — a sprite column
+ * doesn't get more useful by getting wider than this. */
+#cf-speedtier-col {
+	flex: 0 0 auto;
+	width: 96px;
+	padding: 12px 6px;
+	box-sizing: border-box;
+}
+.cf-speedtier-row {
+	display: flex;
+	justify-content: center;
+	padding: 4px 0;
+}
+/* Square corners on purpose (border-radius: 0, unlike .cf-pika-row's rounded 4px) — a boxed
+ * icon reads differently from a clickable list row, which is also why this doesn't borrow
+ * .cf-pika-row's hover treatment. Border color/weight and the light fill match the rest of the
+ * extension's own chrome (.cf-pill's background, .cf-pika-header's border) rather than
+ * inventing new tones. position: relative anchors .cf-speedtier-rank below.
+ *
+ * Fixed width AND height (not sized to the icon) so the box is always a true square regardless
+ * of .picon's own 40x30 rectangular aspect ratio — flex-centering the icon inside is what
+ * absorbs that mismatch (5px of empty space top and bottom) rather than the box stretching to
+ * match the icon. */
+.cf-speedtier-box {
+	position: relative;
+	width: 46px;
+	height: 46px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid #AAAAAA;
+	border-radius: 0;
+	background: #F8FBFD;
+	box-sizing: border-box;
+}
+.dark .cf-speedtier-box {
+	background: #2A2D30;
+	border-color: #555555;
+}
+/* Sits right on the box's top-left corner, overlapping the sprite underneath — semi-transparent
+ * so the icon still reads through it rather than being fully hidden. Ranks 1-3 (below) get
+ * gold/silver/bronze instead of this default; text color on each follows the same "darkest
+ * shade from the same family" rule as every other colored chip in this file (cf-negative-filter,
+ * etc.) so it stays legible against its own background rather than defaulting to black. Fixed
+ * width AND height, same reasoning as .cf-speedtier-box above — a two-digit rank ("20") must
+ * not stretch this into a rectangle the way min-width/auto-width would. */
+.cf-speedtier-rank {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 16px;
+	height: 16px;
+	line-height: 16px;
+	text-align: center;
+	font-family: Verdana, sans-serif;
+	font-size: 8px;
+	font-weight: bold;
+	background: rgba(0, 0, 0, .65);
+	color: #FFFFFF;
+	box-sizing: border-box;
+}
+.cf-speedtier-rank-1 {
+	background: rgba(212, 175, 55, .85);
+	color: #4A3800;
+}
+.cf-speedtier-rank-2 {
+	background: rgba(192, 192, 192, .85);
+	color: #333333;
+}
+.cf-speedtier-rank-3 {
+	background: rgba(205, 127, 50, .85);
+	color: #3A2510;
+}
+/* Takes whatever width #cf-speedtier-col doesn't need; .cf-pika-grid inside (style.css below)
+ * still separately caps itself at --cf-teambuilder-max-width, so this flex item can be wider
+ * than its content without stretching the grid — min-width: 0 is required for that (a flex
+ * item's default min-width: auto would otherwise refuse to shrink below the grid's own
+ * intrinsic width, defeating the cap here the same way it would inside a grid track). */
+#cf-pika-panel {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	padding: 12px 16px;
+	box-sizing: border-box;
 }
 .cf-sidebar-placeholder {
 	color: #777777;
@@ -334,13 +603,24 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
  * `min-height: 0` on both .cf-pika-section (a grid item, which otherwise refuses to shrink
  * below its content's intrinsic height even inside a `1fr` row track) and .cf-pika-rows (a flex
  * child, same refusal inside a flex column) is what actually makes the internal scrolling work
- * instead of the cell silently growing past its row's bound. */
+ * instead of the cell silently growing past its row's bound.
+ *
+ * max-width caps the grid at the same --cf-teambuilder-max-width the room itself is capped to
+ * (see that rule's comment) — #cf-teambuilder-sidebar can now be considerably wider than that
+ * on a big monitor (it absorbs whatever the capped room doesn't need), and without this the
+ * grid's `1fr 1fr` columns would stretch to fill all of it: .cf-pika-name's `flex: 1 1 auto`
+ * would push each row's percentage far out to the right with a long empty gap in between
+ * instead of sitting close to the name, exactly the "flying all over the page" look this
+ * avoids. Left-aligned, not centered — reads as "the panel has extra room to its right"
+ * (consistent with the room's own cap leaving blank space) rather than floating detached from
+ * the divider it's docked against. */
 .cf-pika-grid {
 	display: grid;
 	grid-template-columns: 1fr 1fr;
 	grid-template-rows: repeat(3, 1fr);
 	gap: 4px 16px;
 	height: 100%;
+	max-width: var(--cf-teambuilder-max-width);
 }
 .cf-pika-section {
 	display: flex;

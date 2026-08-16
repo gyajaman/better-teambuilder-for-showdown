@@ -1,6 +1,6 @@
 # Better Teambuilder for Showdown!
 
-A Chrome/Firefox extension that adds custom search filters, a Speed stat comparator, and a live [Pikalytics](https://pikalytics.com) usage-stats sidebar to the [Pokémon Showdown](https://play.pokemonshowdown.com) teambuilder — filters computed from a species' full movepool or ability access, not just a single static field like the site's built-in type/move/ability filters.
+A Chrome/Firefox extension that adds custom search filters, a Speed stat comparator, a live [Pikalytics](https://pikalytics.com) usage-stats sidebar, and a Speed Tiers panel with a real head-to-head Speed comparison popup to the [Pokémon Showdown](https://play.pokemonshowdown.com) teambuilder — filters computed from a species' full movepool or ability access, not just a single static field like the site's built-in type/move/ability filters.
 
 ## Filters
 
@@ -63,6 +63,22 @@ Data always matches the currently-edited species and format — switching Pokém
 
 Bo1 uses the official matchmaking ladder (the larger, more representative sample); Bo3 is tournament-only, so it's mapped to Pikalytics' tournament-aggregate data instead. Any other format shows "No data" — no guessing at an unverified slug mapping. Data is cached locally (`localStorage`) for up to 24 hours and automatically invalidated the moment Pikalytics rolls over to a new month's data, so you never have to manually clear anything.
 
+## Speed Tiers panel
+
+A narrow scrolling column docked to the left of the Pikalytics sidebar, alongside it whenever the split is active. It lists the top 20 Pokémon by usage in the current format, sprite only, top to bottom in rank order — ranks 1–3 get a gold/silver/bronze badge in the corner, every other rank gets a plain one.
+
+The teambuilder room itself is capped to a fixed max width regardless of monitor size, so on a wide window the sidebar absorbs whatever room the (now-capped) editor doesn't need instead of the two staying locked to a 50/50 split forever.
+
+### Speed comparison popup
+
+Hovering a Pokémon in the Speed Tiers column opens a popup comparing its expected Speed against whichever Pokémon you're currently editing:
+
+- **Ally** column — your real EVs, nature, and currently-held item, read straight from the set editor.
+- **Foe** column — the hovered species' base Speed stat plus its single most common EV spread, nature, and item, all from Pikalytics.
+- Both columns go through `TeambuilderRoom.prototype.getStat`, the exact method Showdown's own Stats/EV panel uses to compute the number it displays — not a hand-rolled formula. (Pokemon Champions turned out to use a different stat formula than mainline games — `floor((base + EV + 20) × nature)`, EVs running 0–32, no level or IVs involved at all — reusing the real method sidesteps needing to have gotten that right by hand.)
+- Nine scenario rows: a baseline, then Tailwind / paralysis / a −1 stage / a −2 stage, each applied to one side at a time (never combined).
+- Two further columns, shown only when relevant and never replacing the base Foe column (a Pokémon holding a Mega Stone can't also be holding Choice Scarf, so the base column's own identity never changes): **Mega** — shown when a Mega Stone's usage crosses a threshold, using the Mega forme's own real sprite and base stat (from Showdown's Dex, since Pikalytics tracks Mega usage under the base species — see the Pikalytics sidebar section above) — and **Scarf**, the same idea for Choice Scarf. Both are badged with the real item icon plus their actual usage percentage in a small pixel font, so a borderline case is always visible to judge for yourself rather than hidden behind a threshold you can't see.
+
 ## Options
 
 An extension options page (right-click the extension icon → **Options**, or `chrome://extensions` → **Details** → **Extension options**) lets you toggle:
@@ -99,13 +115,15 @@ A MAIN-world content script patches `DexSearch.prototype` (the teambuilder's sea
 - **Speed filter** post-filters `engine.results` by comparing each species' `baseStats.spe` against the widget's operator/value state.
 - **Typed suggestions** are injected as synthetic `['customfilter', catId]` rows that the site's own click → `addFilter` chain handles natively.
 - **Filter chips** are folded into the site's own "Filters: …" row by wrapping `BattleSearch.prototype.getFilterText` / `removeFilter`.
-- **Tooltip** is a standalone floating overlay (`#cf-tooltipwrapper`), never inserted into the results DOM, positioned via `getBoundingClientRect`.
+- **Tooltip** is a standalone floating overlay (`#cf-tooltipwrapper`), never inserted into the results DOM, positioned via `getBoundingClientRect` — shared, not duplicated, between the custom-filter match tooltip and the Speed comparison popup below, since both are just pre-built HTML strings handed to the same show/position/hide logic.
 
 The teambuilder sidebar and Pikalytics data follow the same "patch, don't replace" philosophy:
 
-- **Sidebar layout** works by shrinking `#room-teambuilder` itself to 50% width (a CSS `!important` override, since Showdown's own layout engine keeps re-setting a non-important inline width) and docking a genuine DOM sibling — never a fake Showdown `Room`/tab — in the freed half.
+- **Sidebar layout** works by capping `#room-teambuilder` itself to a fixed max width (plain CSS `max-width`, which clamps the final rendered box regardless of which declaration actually won the `width` property — no `!important` fight needed for that part) and docking a genuine DOM sibling — never a fake Showdown `Room`/tab — in the freed space. In split mode the sidebar's own `left` is `min(50%, <the same max-width>)`, so it always starts exactly where the room's real right edge lands, absorbing everything the capped room doesn't need on a wide monitor instead of a flat, wasteful 50/50 split.
 - **Split state** is re-evaluated on window resize and by wrapping four Showdown methods (`app.updateLayout`, `TeambuilderRoom.prototype.update`/`updateSetTop`/`updatePokemonSprite`) that each catch a different way the edited Pokémon can change without the others firing.
 - **Pikalytics data** is fetched client-side (`src/pikalytics.js`) via the same `/api/p/{month}/{slug}-{cutoff}/{species}` endpoint pikalytics.com's own per-Pokémon pages use, against a small, explicit format→slug allowlist (see the Pikalytics sidebar section above) rather than guessing at every format Pikalytics happens to have a similarly-named slug for.
+- **Top-20 usage list** (`src/pikalytics.js`'s `getTopUsageList`) comes from Pikalytics' bulk `/api/l/{month}/{slug}-{cutoff}` endpoint purely for its rank-ordered name list — confirmed live that every entry past #1 is otherwise missing its own move/item/spread data — then each of the top 20 names is looked up through the same cached per-species path `getSpeciesData` already uses, so it costs no new request shape, just more of the existing one.
+- **Speed math** (`src/content.js`) always goes through `TeambuilderRoom.prototype.getStat`, never a reimplemented formula — for the currently-edited Pokémon directly, and for a hovered Pikalytics entry via a synthetic `{species, evs, nature, ivs, level}` object built from its most-common spread. Tailwind/paralysis/stat-stage/Choice Scarf/Iron Ball are applied afterward as plain multipliers.
 - **Options/settings**: `src/content.js` runs in the page's MAIN world (needed to see Showdown's own globals) and has no access to `chrome.storage`. A separate isolated-world script, `src/settings-bridge.js`, reads the setting and hands it to `content.js` via a DOM attribute on `<html>` — the one thing both JS realms share.
 
 See `src/move-data.js` for the filter definitions, `src/pikalytics.js` for the Pikalytics client/cache, and `src/content.js` for the patching logic; all are commented throughout.
