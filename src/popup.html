@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8" />
+	<title>Better Teambuilder for Showdown!</title>
+	<style>
+		/* Every color/font value below is copied from src/style.css (the extension's own
+		 * in-page UI), not invented fresh — this page has no access to Showdown's live
+		 * .dark class (it's a standalone popup document, not injected into the teambuilder),
+		 * so the same light/dark pairs are instead driven by prefers-color-scheme. Sized for a
+		 * toolbar popup (see manifest.json's action.default_popup), not a shrunk-down copy of a
+		 * full-page layout — 260px wide with small type and tight padding throughout, so Chrome
+		 * doesn't render an oversized popup window. */
+		:root {
+			--cf-font: Verdana, Geneva, sans-serif;
+			--cf-bg: #F5F8FA;
+			--cf-fg: #000000;
+			--cf-muted: #777777;
+			--cf-border: #AAAAAA;
+			--cf-header-bg: #DAE5F0;
+			--cf-header-shadow: rgba(255, 255, 255, .6);
+			--cf-section-bg: #FFFFFF;
+			--cf-pill-bg: #F8FBFD;
+			--cf-input-bg: #FFFFFF;
+			--cf-saved: #2A7A2A;
+		}
+		@media (prefers-color-scheme: dark) {
+			:root {
+				--cf-bg: #16181A;
+				--cf-fg: #DDDDDD;
+				--cf-muted: #AAAAAA;
+				--cf-border: #555555;
+				--cf-header-bg: #636363;
+				--cf-header-shadow: rgb(40, 43, 45);
+				--cf-section-bg: #202325;
+				--cf-pill-bg: #2A2D30;
+				--cf-input-bg: #2A2D30;
+				--cf-saved: #6FCF6F;
+			}
+		}
+		body {
+			font: 11px/1.3 var(--cf-font);
+			color: var(--cf-fg);
+			background: var(--cf-bg);
+			margin: 0;
+			padding: 10px 12px;
+			width: 260px;
+		}
+		h1 {
+			margin: 0 0 8px;
+			padding: 4px 8px;
+			font-size: 10pt;
+			font-weight: normal;
+			background: var(--cf-header-bg);
+			color: var(--cf-fg);
+			border: 1px solid var(--cf-border);
+			border-radius: 3px;
+			text-shadow: 1px 1px 0 var(--cf-header-shadow);
+			box-shadow: inset 1px 1px 0 var(--cf-header-shadow);
+		}
+		.cf-section {
+			background: var(--cf-section-bg);
+			border: 1px solid var(--cf-border);
+			border-radius: 4px;
+			padding: 8px 10px;
+			margin-bottom: 8px;
+		}
+		.cf-section h2 {
+			margin: 0 0 6px;
+			font-size: 8pt;
+			font-weight: bold;
+			color: var(--cf-muted);
+			text-transform: uppercase;
+			letter-spacing: .03em;
+		}
+		.cf-field {
+			margin-bottom: 8px;
+		}
+		.cf-field:last-child {
+			margin-bottom: 0;
+		}
+		label.cf-checkbox-label {
+			display: flex;
+			align-items: flex-start;
+			gap: 6px;
+			cursor: pointer;
+			font-size: 9pt;
+		}
+		input[type="checkbox"] {
+			margin: 2px 0 0;
+			accent-color: #6890B0;
+		}
+		.cf-number-row {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
+		}
+		.cf-number-row label {
+			font-size: 9pt;
+		}
+		/* Same pill shape as .cf-pill in style.css (the live Speed filter widget) — reused here
+		 * deliberately so a threshold input looks like it belongs to the same UI as the popup
+		 * it actually controls. */
+		.cf-pill {
+			display: inline-flex;
+			align-items: stretch;
+			height: 19px;
+			border: 1px solid var(--cf-border);
+			border-radius: 3px;
+			overflow: hidden;
+			background: var(--cf-pill-bg);
+			flex: 0 0 auto;
+		}
+		.cf-pill input[type="number"] {
+			appearance: textfield;
+			border: none;
+			background: var(--cf-input-bg);
+			color: var(--cf-fg);
+			width: 34px;
+			font-family: var(--cf-font);
+			font-size: 8.5pt;
+			text-align: right;
+			padding: 0 3px;
+		}
+		.cf-pill input[type="number"]::-webkit-inner-spin-button,
+		.cf-pill input[type="number"]::-webkit-outer-spin-button {
+			margin: 0;
+		}
+		.cf-pill .cf-pct-suffix {
+			display: flex;
+			align-items: center;
+			padding: 0 5px;
+			background: var(--cf-header-bg);
+			color: var(--cf-fg);
+			font-size: 8pt;
+			border-left: 1px solid var(--cf-border);
+		}
+		.cf-hint {
+			color: var(--cf-muted);
+			font-size: 8pt;
+			margin: 3px 0 0;
+		}
+		.cf-field .cf-hint {
+			margin-left: 0;
+		}
+		/* display, not visibility — an invisible-but-still-laid-out element would leave a
+		 * permanent empty strip at the bottom of this already-compact popup. popup.js toggles
+		 * this inline (display: block/none) rather than a class. */
+		#saved {
+			color: var(--cf-saved);
+			font-size: 8pt;
+			font-weight: bold;
+			margin-top: 8px;
+			display: none;
+		}
+		.cf-support-text {
+			margin: 0 0 6px;
+			font-size: 8.5pt;
+			color: var(--cf-muted);
+		}
+		/* A button, not another .cf-pill link — this is the one action-taking control on the
+		 * whole page (everything else here is a passive setting), so it gets its own distinct
+		 * treatment rather than borrowing the settings' quieter chrome. Stacked under its own
+		 * description rather than side-by-side with it (tried first) — at this page's width the
+		 * description has nowhere near enough room next to a fixed-width button and wraps into
+		 * an awkward narrow column instead. */
+		.cf-support-button {
+			display: inline-block;
+			padding: 4px 10px;
+			border-radius: 3px;
+			background: #6890B0;
+			color: #FFFFFF;
+			font-family: var(--cf-font);
+			font-size: 8.5pt;
+			font-weight: bold;
+			text-decoration: none;
+			text-shadow: 1px 1px 0 rgba(0, 0, 0, .15);
+			white-space: nowrap;
+		}
+		.cf-support-button:hover {
+			background: #5A7C99;
+		}
+	</style>
+</head>
+<body>
+	<h1>Better Teambuilder for Showdown!</h1>
+
+	<div class="cf-section">
+		<h2>General</h2>
+		<div class="cf-field">
+			<label class="cf-checkbox-label">
+				<input type="checkbox" id="closeSideRoomsOnLoad" />
+				Auto-close side rooms on load
+			</label>
+			<p class="cf-hint">Closes any chat/side rooms Showdown restores from your last session as soon as the page loads.</p>
+		</div>
+	</div>
+
+	<div class="cf-section">
+		<!-- "Speed comparison", not "...popup" — this whole page is itself a popup now
+		     (manifest.json's action.default_popup), so reusing that word for the Speed
+		     comparison tooltip too would read as the same thing. -->
+		<h2>Speed comparison</h2>
+		<div class="cf-field">
+			<div class="cf-number-row">
+				<label for="scarfThresholdPercent">Show "what if Scarf" column above</label>
+				<span class="cf-pill">
+					<input type="number" id="scarfThresholdPercent" min="0" max="100" step="1" />
+					<span class="cf-pct-suffix">%</span>
+				</span>
+			</div>
+			<p class="cf-hint">Minimum Pikalytics Choice Scarf usage before the hover comparison's conditional Scarf column shows at all.</p>
+		</div>
+		<div class="cf-field">
+			<div class="cf-number-row">
+				<label for="megaThresholdPercent">Show "what if Mega Stone" column above</label>
+				<span class="cf-pill">
+					<input type="number" id="megaThresholdPercent" min="0" max="100" step="1" />
+					<span class="cf-pct-suffix">%</span>
+				</span>
+			</div>
+			<p class="cf-hint">Minimum Pikalytics Mega Stone usage before the hover comparison's conditional Mega Stone column shows at all.</p>
+		</div>
+	</div>
+
+	<div class="cf-section">
+		<h2>Support</h2>
+		<p class="cf-support-text">If this extension's useful to you, consider chipping in to keep it going.</p>
+		<a class="cf-support-button" href="https://www.patreon.com/cw/yajaman" target="_blank" rel="noopener">Support on Patreon</a>
+	</div>
+
+	<div id="saved">Saved.</div>
+	<script src="defaults.js"></script>
+	<script src="popup.js"></script>
+</body>
+</html>

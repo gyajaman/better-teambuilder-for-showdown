@@ -8,7 +8,7 @@
  * do share: the DOM. This writes it as a JSON attribute on <html>; content.js's own
  * waitForSideRoomSettings() polls for that attribute the same bounded-retry way it already
  * polls for Showdown's own globals. CF_DEFAULT_SETTINGS comes from defaults.js, loaded first
- * in this same content script (see manifest.json) — shared with options.js rather than a
+ * in this same content script (see manifest.json) — shared with popup.js rather than a
  * second hand-typed copy.
  */
 (function () {

@@ -499,7 +499,16 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 #cf-speedtier-col {
 	flex: 0 0 auto;
 	width: 96px;
-	padding: 12px 6px;
+	/* Left/right padding is deliberately asymmetric (21px/6px) — this column's two neighbors
+	 * aren't symmetric either, so plain equal padding doesn't produce an equal visual gap on
+	 * both sides. The room-facing left edge only has #cf-teambuilder-sidebar's 1px border-left
+	 * in front of it (room itself contributes no padding of its own), while the right edge
+	 * pairs with #cf-pika-panel's own 16px left padding (chosen there to match its internal
+	 * grid gap — see .cf-pika-grid's own comment). Plain symmetric padding (was 6px/6px) made
+	 * the room-side gap (1 + 6 = 7px) read noticeably tighter than the pika-panel-side one
+	 * (6 + 16 = 22px); 21px left balances it out — 21 + 1(border) = 22 = 6 + 16 — so both gaps
+	 * now read as equal. */
+	padding: 12px 6px 12px 21px;
 	box-sizing: border-box;
 }
 .cf-speedtier-row {

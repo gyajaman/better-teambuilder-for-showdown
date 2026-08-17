@@ -2,6 +2,8 @@
 
 A Chrome/Firefox extension that adds custom search filters, a Speed stat comparator, a live [Pikalytics](https://pikalytics.com) usage-stats sidebar, and a Speed Tiers panel with a real head-to-head Speed comparison popup to the [Pokémon Showdown](https://play.pokemonshowdown.com) teambuilder — filters computed from a species' full movepool or ability access, not just a single static field like the site's built-in type/move/ability filters.
 
+If this is useful to you, consider [supporting it on Patreon](https://www.patreon.com/cw/yajaman).
+
 ## Filters
 
 ### Pokémon & Move search
@@ -79,11 +81,14 @@ Hovering a Pokémon in the Speed Tiers column opens a popup comparing its expect
 - Nine scenario rows: a baseline, then Tailwind / paralysis / a −1 stage / a −2 stage, each applied to one side at a time (never combined).
 - Two further columns, shown only when relevant and never replacing the base Foe column (a Pokémon holding a Mega Stone can't also be holding Choice Scarf, so the base column's own identity never changes): **Mega** — shown when a Mega Stone's usage crosses a threshold, using the Mega forme's own real sprite and base stat (from Showdown's Dex, since Pikalytics tracks Mega usage under the base species — see the Pikalytics sidebar section above) — and **Scarf**, the same idea for Choice Scarf. Both are badged with the real item icon plus their actual usage percentage in a small pixel font, so a borderline case is always visible to judge for yourself rather than hidden behind a threshold you can't see.
 
-## Options
+## Settings
 
-An extension options page (right-click the extension icon → **Options**, or `chrome://extensions` → **Details** → **Extension options**) lets you toggle:
+Click the extension's icon in the toolbar to open its popup, which holds:
 
 - **Auto-close side rooms on load** — closes any chat/side rooms Showdown restores from your last session as soon as the page loads, so the layout starts clean. On by default.
+- **Scarf/Mega "worth showing" thresholds** — the minimum Pikalytics usage percent before the Speed comparison popup's conditional "what if it ran Choice Scarf" / "what if it ran its Mega Stone" columns show at all (see the Speed comparison popup section above). 5%/15% by default — these were always a starting guess rather than a researched number, so they're adjustable rather than fixed for everyone.
+
+A setting change takes effect the next time you reload the Showdown tab — no separate "apply" step, just refresh once after saving.
 
 ## Usage
 

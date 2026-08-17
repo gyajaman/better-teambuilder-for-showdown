@@ -74,6 +74,22 @@
 		dynamicMoveLists: {},
 	};
 
+	// Same shape as CF_DEFAULT_SETTINGS in defaults.js — this file can't share that module,
+	// since it runs in the page's own MAIN-world JS realm (see manifest.json) rather than the
+	// isolated world/popup defaults.js is loaded into (see defaults.js's own doc
+	// comment for why the other two files DO share it).
+	const DEFAULT_SETTINGS = { closeSideRoomsOnLoad: true, scarfThresholdPercent: 5, megaThresholdPercent: 15 };
+
+	/** Reassigned to the real synced settings object once waitForSideRoomSettings (near the
+	 *  bottom of this file) resolves — starts out as DEFAULT_SETTINGS so anything reading it
+	 *  before that (there shouldn't be anything, in practice, but this is cheap insurance) gets
+	 *  sane values rather than undefined. buildSpeedComparisonTooltipHTML
+	 *  (patchTeambuilderSidebar, below) reads CF_SETTINGS.scarfThresholdPercent/
+	 *  megaThresholdPercent fresh on every hover rather than capturing a value at page load, so
+	 *  a setting change takes effect on the very next hover after a page reload — no need to
+	 *  re-open the teambuilder, just reload once after saving the popup's settings. */
+	let CF_SETTINGS = DEFAULT_SETTINGS;
+
 	function escapeHTML(text) {
 		if (text === null || text === undefined) return '';
 		return String(text)
@@ -1191,7 +1207,7 @@
 	 *  session (Showdown reopens them automatically on load) so the layout starts clean. Not
 	 *  hooked to joinRoom and doesn't run again after — this only fires once, right after
 	 *  load, not every time the teambuilder (or anything else) is opened. Gated by the
-	 *  "closeSideRoomsOnLoad" option (see settings-bridge.js/options.html) — on by default,
+	 *  "closeSideRoomsOnLoad" option (see settings-bridge.js/popup.html) — on by default,
 	 *  matching prior always-on behavior, but the user can turn it off. */
 	function closeSideRoomsOnLoad() {
 		if (!window.app) return;
@@ -1515,22 +1531,19 @@
 			return speedTierColumnHTML(rows);
 		}
 
-		/** Minimum Pikalytics usage percent for Choice Scarf before buildSpeedComparisonTooltipHTML
-		 *  bothers showing the "what if it ran Scarf" column at all — a starting guess, not a
-		 *  researched number. The real percent is always shown in that column's own header
-		 *  either way, so a borderline case stays visible to judge yourself rather than getting
-		 *  silently hidden by wherever this number happens to sit. */
-		const SCARF_POPULARITY_THRESHOLD_PERCENT = 5;
-
-		/** Same idea as SCARF_POPULARITY_THRESHOLD_PERCENT, for the "what if it ran its Mega
-		 *  Stone" column — a starting guess, not a researched number, with the real percent
-		 *  always shown in the column's own header regardless. Deliberately never changes the
-		 *  base Foe column itself (see buildSpeedComparisonTooltipHTML's own comment for why a
-		 *  species with dominant Mega Stone usage still keeps its base forme as the main Foe
-		 *  column) — a Pokémon holding a Mega Stone can't simultaneously hold Choice Scarf, so
-		 *  this and the Scarf column are two independent, mutually exclusive "what if" columns
-		 *  sitting alongside the same unchanged base column, never merged into it. */
-		const MEGA_POPULARITY_THRESHOLD_PERCENT = 15;
+		/** Minimum Pikalytics usage percent for Choice Scarf/Mega Stone before
+		 *  buildSpeedComparisonTooltipHTML bothers showing the corresponding "what if" column at
+		 *  all — user-adjustable (CF_SETTINGS.scarfThresholdPercent/megaThresholdPercent, set in
+		 *  the toolbar popup), since these started as a guess rather than a researched number and
+		 *  different players reasonably draw that line in different places. The real percent is
+		 *  always shown in the column's own header either way, so a borderline case stays visible
+		 *  to judge yourself rather than getting silently hidden by wherever the threshold sits.
+		 *  Deliberately never changes the base Foe column itself (see
+		 *  buildSpeedComparisonTooltipHTML's own comment for why a species with dominant Mega
+		 *  Stone usage still keeps its base forme as the main Foe column) — a Pokémon holding a
+		 *  Mega Stone can't simultaneously hold Choice Scarf, so Scarf/Mega are two independent,
+		 *  mutually exclusive "what if" columns sitting alongside the same unchanged base column,
+		 *  never merged into it. */
 
 		/** The 9-row scenario table: an ally/foe modifier pair per row, one modifier changed at a
 		 *  time (never combined — see the conversation this was scoped in) against an otherwise-
@@ -1610,12 +1623,12 @@
 			// the Scarf/Mega *detection* — just never fed into this column's own speed calc.
 
 			// 4th "what if it ran Scarf instead" column, only when Scarf usage is actually
-			// non-trivial for this species (see SCARF_POPULARITY_THRESHOLD_PERCENT's own doc
-			// comment) — otherwise it's a hypothetical nobody's really building, and the column
-			// would just be noise.
+			// non-trivial for this species (see CF_SETTINGS.scarfThresholdPercent's own doc
+			// comment, above) — otherwise it's a hypothetical nobody's really building, and the
+			// column would just be noise.
 			const scarfItemEntry = foeItems.find((it) => toIDSafe(it.item) === 'choicescarf');
 			const scarfPercent = scarfItemEntry ? parseFloat(scarfItemEntry.percent) || 0 : 0;
-			const showScarfColumn = scarfPercent >= SCARF_POPULARITY_THRESHOLD_PERCENT;
+			const showScarfColumn = scarfPercent >= CF_SETTINGS.scarfThresholdPercent;
 
 			// A 5th "what if it ran its Mega Stone instead" column, same "additional column,
 			// never a row-identity swap" treatment as Scarf above (see the earlier, reverted
@@ -1643,7 +1656,7 @@
 					}
 				}
 			}
-			const showMegaColumn = megaFormeName && megaPercent >= MEGA_POPULARITY_THRESHOLD_PERCENT;
+			const showMegaColumn = megaFormeName && megaPercent >= CF_SETTINGS.megaThresholdPercent;
 			const megaSet = showMegaColumn ?
 				{ species: megaFormeName, evs: foeSet.evs, nature: foeSet.nature, ivs: foeSet.ivs, level: foeSet.level } : null;
 			const foeMegaBase = megaSet ? tbRoom.getStat('spe', megaSet) : 0;
@@ -1950,12 +1963,6 @@
 		updateSplitState();
 	}
 
-	// Same shape as CF_DEFAULT_SETTINGS in defaults.js — this file can't share that module,
-	// since it runs in the page's own MAIN-world JS realm (see manifest.json) rather than the
-	// isolated world/options page defaults.js is loaded into (see defaults.js's own doc
-	// comment for why the other two files DO share it).
-	const DEFAULT_SETTINGS = { closeSideRoomsOnLoad: true };
-
 	/** settings-bridge.js (isolated world, document_start — see manifest.json) reads
 	 *  chrome.storage.sync, which this MAIN-world script has no access to, and writes it as a
 	 *  JSON attribute on <html> once it resolves — normally within a frame or two, well before
@@ -1980,6 +1987,7 @@
 	}
 
 	waitForSideRoomSettings((settings) => {
+		CF_SETTINGS = settings;
 		if (!settings.closeSideRoomsOnLoad) return;
 		try { closeSideRoomsOnLoad(); } catch (e) {
 			console.error('[Better Teambuilder] closeSideRoomsOnLoad failed:', e);
