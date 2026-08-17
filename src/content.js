@@ -193,19 +193,30 @@
 	}
 
 	/** Applies item/status/stage/Tailwind on top of an already-computed base Speed stat
-	 *  (tbRoom.getStat('spe', ...) — see buildSpeedComparisonTooltipHTML). All multiplicative,
-	 *  so order doesn't change the result; floored once at the end, matching how a single
-	 *  displayed stat number is always a whole number in-game (this is an approximation of
-	 *  the real battle engine's own multi-step rounding, same simplification tools like the
-	 *  Smogon damage calc make — not meant to be bit-exact in extreme edge cases). */
+	 *  (tbRoom.getStat('spe', ...) — see buildSpeedComparisonTooltipHTML). Two separate floors,
+	 *  not one at the very end — matching Pokemon Showdown's own sim, confirmed against source:
+	 *  Pokemon.prototype.getStat (sim/pokemon.ts) applies the stat *stage* first and floors it
+	 *  immediately (`Math.floor(stat * boostTable[boost])` / `Math.floor(stat / boostTable[-boost])`)
+	 *  — that always resolves before any item/ability/status modifier runs. Everything else
+	 *  (item, paralysis, Tailwind, abilities) is instead combined into a single running
+	 *  multiplier via Battle.prototype.chainModify and only applied/floored ONCE, together, via
+	 *  Battle.prototype.modify — not floored after each individual modifier. Every multiplier
+	 *  used here (1.5, 0.5, 2, and the -1/-2 stage ratios) is "nice" enough in Showdown's 4096-
+	 *  denominator fixed-point chain math that this plain-float two-floor version matches it
+	 *  exactly for every case this feature actually presents; it's only fixed-point-vs-float
+	 *  edge cases with uglier fractions (irrelevant here) where the two could diverge. */
 	function applySpeedModifiers(baseStat, itemName, modifiers) {
 		let stat = baseStat;
+		if (modifiers.stage) stat = Math.floor(stat * speedStageMultiplier(modifiers.stage));
+
+		let otherMult = 1;
 		const itemMult = itemName && SPEED_ITEM_MULTIPLIERS[toIDSafe(itemName)];
-		if (itemMult) stat *= itemMult;
-		if (modifiers.paralyzed) stat *= 0.5;
-		if (modifiers.tailwind) stat *= 2;
-		if (modifiers.stage) stat *= speedStageMultiplier(modifiers.stage);
-		return Math.floor(stat);
+		if (itemMult) otherMult *= itemMult;
+		if (modifiers.paralyzed) otherMult *= 0.5;
+		if (modifiers.tailwind) otherMult *= 2;
+		if (otherMult !== 1) stat = Math.floor(stat * otherMult);
+
+		return stat;
 	}
 
 	/** Test-only export hook. In the real extension there's no bundler/CommonJS, so `module`

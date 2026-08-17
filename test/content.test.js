@@ -227,9 +227,18 @@ describe('applySpeedModifiers', () => {
 		expect(applySpeedModifiers(100, null, { stage: -1 })).toBe(66); // floor(100 * 2/3)
 	});
 
-	it('stacks every modifier multiplicatively and floors once at the end', () => {
-		// 100 * 1.5 (scarf) * 0.5 (par) * 2 (tailwind) * 2/3 (-1 stage) = 100, floored.
-		expect(applySpeedModifiers(100, 'Choice Scarf', { paralyzed: true, tailwind: true, stage: -1 })).toBe(100);
+	it('floors the stage step separately, before combining and flooring the other modifiers — matching the real sim', () => {
+		// Real order (see the function's own doc comment, sourced from Showdown's sim/pokemon.ts
+		// and sim/battle.ts): stage first, floored on its own — floor(100 * 2/3) = 66 — THEN
+		// item/status/field multiply together and floor once more — floor(66 * 1.5) = 99.
+		// A single combined floor at the end (the old, wrong behavior) would instead give
+		// floor(100 * 1.5 * 2/3) = 100 — off by one from the real engine.
+		expect(applySpeedModifiers(100, 'Choice Scarf', { stage: -1 })).toBe(99);
+	});
+
+	it('stacks every non-stage modifier into one combined multiplier, floored together', () => {
+		// floor(100 * 2/3) = 66 (stage), then floor(66 * 1.5 * 0.5 * 2) = floor(66 * 1.5) = 99.
+		expect(applySpeedModifiers(100, 'Choice Scarf', { paralyzed: true, tailwind: true, stage: -1 })).toBe(99);
 	});
 
 	it('ignores an item with no known Speed effect', () => {
