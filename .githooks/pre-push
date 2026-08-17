@@ -1,0 +1,22 @@
+#!/bin/sh
+# Blocks `git push` unless the test suite (npm test — vitest, see package.json) passes.
+#
+# Installed automatically: package.json's "prepare" script points git at this directory
+# (`git config core.hooksPath .githooks`) on every `npm install`, so a fresh clone picks
+# this up the first time dependencies are installed — no separate setup step, and no
+# extra dependency (e.g. husky) needed for it.
+#
+# Skip deliberately with `git push --no-verify` if you really need to (e.g. pushing a WIP
+# branch) — not recommended for main.
+
+npm test
+status=$?
+
+if [ $status -ne 0 ]; then
+	echo "" >&2
+	echo "pre-push: tests failed — push aborted. Fix the failures above, or run" >&2
+	echo "'git push --no-verify' to skip this check (not recommended)." >&2
+	exit 1
+fi
+
+exit 0

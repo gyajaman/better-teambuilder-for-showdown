@@ -21,6 +21,9 @@ export default [
 				toID: "readonly",
 				// defaults.js's shared global — see its own doc comment.
 				CF_DEFAULT_SETTINGS: "readonly",
+				// Node/CommonJS — only ever defined when a test runner requires this file
+				// (see content.js's test-only export guard); undefined in the real extension.
+				module: "readonly",
 			},
 		},
 		rules: {

@@ -123,7 +123,7 @@
 
 	/** Single source of truth for Showdown's own HP/Atk/Def/SpA/SpD/Spe stat order/labels —
 	 *  STAT_IDS and STAT_LABELS (used by parseEVs below and by buildSpreadsSection/
-	 *  natureModifierHTML further down) are both derived from this one object rather than each
+	 *  natureModifierHTML below) are both derived from this one object rather than each
 	 *  being its own hand-typed literal, so the order/spelling can't drift between them. */
 	const STAT_LABEL_BY_ID = { hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe' };
 	const STAT_IDS = Object.keys(STAT_LABEL_BY_ID);
@@ -142,6 +142,92 @@
 			evs[id] = Math.min(Math.max(val, 0), 32);
 		});
 		return evs;
+	}
+
+	/** The classic community "(+Atk/-SpA)" annotation, via Showdown's own
+	 *  window.BattleNatures — the same nature/stat-modifier table the client's own stat UI
+	 *  reads (see battle-dex-data.ts), not a hand-maintained copy of it. Empty string for a
+	 *  neutral nature (no plus/minus) or if BattleNatures isn't available for some reason —
+	 *  not one of the globals waitForGlobals already gates on, so this degrades to no
+	 *  annotation rather than being a hard dependency. */
+	function natureModifierHTML(natureName) {
+		const nature = window.BattleNatures && window.BattleNatures[natureName];
+		if (!nature || !nature.plus || !nature.minus) return '';
+		return ` <span class="cf-pika-nature-mod">(+${STAT_LABEL_BY_ID[nature.plus]}/-${STAT_LABEL_BY_ID[nature.minus]})</span>`;
+	}
+
+	/** "+"/"−"/"" for a Speed EV count — same plus/minus concept as natureModifierHTML above,
+	 *  but collapsed to just Speed (that's the only stat this table cares about) instead of
+	 *  spelling out which two stats a nature touches. */
+	function speedNatureIndicator(natureName) {
+		const nature = window.BattleNatures && window.BattleNatures[natureName];
+		if (!nature) return '';
+		if (nature.plus === 'spe') return '+';
+		if (nature.minus === 'spe') return '−';
+		return '';
+	}
+
+	/** "32 EV" when neutral, "32 EV / +" (or "/ −") when speedNatureIndicator found a boost
+	 *  or drop — the slash keeps the EV count and the +/- visually separate rather than
+	 *  running them together as "32+". */
+	function formatSpeedEvText(ev, indicator) {
+		return indicator ? `${ev} EV / ${indicator}` : `${ev} EV`;
+	}
+
+	/** Items with a known Speed-stat effect, id-keyed (toIDSafe). Deliberately small — just
+	 *  the two the feature was scoped around (Choice Scarf, Iron Ball) rather than every
+	 *  item that touches turn order in some way (e.g. Lagging Tail/Full Incense change move
+	 *  priority, not the Speed *stat*, so a straight stat comparison has nothing to do with
+	 *  them; Quick Powder only matters on Ditto, deliberately left out for now rather than
+	 *  special-cased for one species). Extend this table, not the comparison logic below,
+	 *  when another Speed-affecting item needs covering. */
+	const SPEED_ITEM_MULTIPLIERS = { choicescarf: 1.5, ironball: 0.5 };
+
+	/** Standard Pokémon stat-stage multiplier: positive stages boost by (2+n)/2, negative
+	 *  stages cut by 2/(2-n) — e.g. -1 -> 2/3, -2 -> 1/2. Only -1/-2 are ever passed in by
+	 *  the scenario table below, but the general formula is no more code than hardcoding
+	 *  just those two ratios would be. */
+	function speedStageMultiplier(stage) {
+		if (!stage) return 1;
+		return stage > 0 ? (2 + stage) / 2 : 2 / (2 - stage);
+	}
+
+	/** Applies item/status/stage/Tailwind on top of an already-computed base Speed stat
+	 *  (tbRoom.getStat('spe', ...) — see buildSpeedComparisonTooltipHTML). All multiplicative,
+	 *  so order doesn't change the result; floored once at the end, matching how a single
+	 *  displayed stat number is always a whole number in-game (this is an approximation of
+	 *  the real battle engine's own multi-step rounding, same simplification tools like the
+	 *  Smogon damage calc make — not meant to be bit-exact in extreme edge cases). */
+	function applySpeedModifiers(baseStat, itemName, modifiers) {
+		let stat = baseStat;
+		const itemMult = itemName && SPEED_ITEM_MULTIPLIERS[toIDSafe(itemName)];
+		if (itemMult) stat *= itemMult;
+		if (modifiers.paralyzed) stat *= 0.5;
+		if (modifiers.tailwind) stat *= 2;
+		if (modifiers.stage) stat *= speedStageMultiplier(modifiers.stage);
+		return Math.floor(stat);
+	}
+
+	/** Test-only export hook. In the real extension there's no bundler/CommonJS, so `module`
+	 *  is undefined and this branch never runs — a no-op in production, same as every other
+	 *  content script here. Under Node/Vitest (see test/content.test.js), requiring this file
+	 *  hits this branch and returns before any of the DOM-patching/Showdown-global wiring
+	 *  below runs, none of which means anything outside a live Showdown page anyway. Every
+	 *  exported name here is either a hoisted `function` declaration (safe to reference from
+	 *  any point in this scope) or a `const` already initialized by the time execution reaches
+	 *  this line — this guard has to sit *after* those consts (STAT_LABEL_BY_ID/SPEED_ITEM_
+	 *  MULTIPLIERS/etc, above), not before, since an unevaluated `const` stays in the temporal
+	 *  dead zone forever once a `return` skips its declaration. */
+	if (typeof module !== 'undefined' && module.exports) {
+		module.exports = {
+			escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
+			curTeamHasSpecies, curTeamFull, parseEVs, natureModifierHTML, speedNatureIndicator,
+			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers,
+			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter,
+			STAT_LABEL_BY_ID, STAT_IDS, STAT_LABELS,
+			CATEGORY_ORDER, DYNAMIC_CATEGORIES,
+		};
+		return;
 	}
 
 	/** Applies a Pikalytics value straight to the currently-edited set/team, the same fields
@@ -1277,18 +1363,6 @@
 			return pikaSectionHTML('Common Abilities', rows);
 		}
 
-		/** The classic community "(+Atk/-SpA)" annotation, via Showdown's own
-		 *  window.BattleNatures — the same nature/stat-modifier table the client's own stat UI
-		 *  reads (see battle-dex-data.ts), not a hand-maintained copy of it. Empty string for a
-		 *  neutral nature (no plus/minus) or if BattleNatures isn't available for some reason —
-		 *  not one of the globals waitForGlobals already gates on, so this degrades to no
-		 *  annotation rather than being a hard dependency. */
-		function natureModifierHTML(natureName) {
-			const nature = window.BattleNatures && window.BattleNatures[natureName];
-			if (!nature || !nature.plus || !nature.minus) return '';
-			return ` <span class="cf-pika-nature-mod">(+${STAT_LABEL_BY_ID[nature.plus]}/-${STAT_LABEL_BY_ID[nature.minus]})</span>`;
-		}
-
 		/** Nature usage is tracked two different ways depending on the format: some give a
 		 *  standalone `natures` array; others (e.g. gen9ou) only bundle a nature into each
 		 *  `spreads` entry, with no separate breakdown — so when `natures` is missing/empty,
@@ -1430,15 +1504,6 @@
 			return speedTierColumnHTML(rows);
 		}
 
-		/** Items with a known Speed-stat effect, id-keyed (toIDSafe). Deliberately small — just
-		 *  the two the feature was scoped around (Choice Scarf, Iron Ball) rather than every
-		 *  item that touches turn order in some way (e.g. Lagging Tail/Full Incense change move
-		 *  priority, not the Speed *stat*, so a straight stat comparison has nothing to do with
-		 *  them; Quick Powder only matters on Ditto, deliberately left out for now rather than
-		 *  special-cased for one species). Extend this table, not the comparison logic below,
-		 *  when another Speed-affecting item needs covering. */
-		const SPEED_ITEM_MULTIPLIERS = { choicescarf: 1.5, ironball: 0.5 };
-
 		/** Minimum Pikalytics usage percent for Choice Scarf before buildSpeedComparisonTooltipHTML
 		 *  bothers showing the "what if it ran Scarf" column at all — a starting guess, not a
 		 *  researched number. The real percent is always shown in that column's own header
@@ -1455,31 +1520,6 @@
 		 *  this and the Scarf column are two independent, mutually exclusive "what if" columns
 		 *  sitting alongside the same unchanged base column, never merged into it. */
 		const MEGA_POPULARITY_THRESHOLD_PERCENT = 15;
-
-		/** Standard Pokémon stat-stage multiplier: positive stages boost by (2+n)/2, negative
-		 *  stages cut by 2/(2-n) — e.g. -1 -> 2/3, -2 -> 1/2. Only -1/-2 are ever passed in by
-		 *  the scenario table below, but the general formula is no more code than hardcoding
-		 *  just those two ratios would be. */
-		function speedStageMultiplier(stage) {
-			if (!stage) return 1;
-			return stage > 0 ? (2 + stage) / 2 : 2 / (2 - stage);
-		}
-
-		/** Applies item/status/stage/Tailwind on top of an already-computed base Speed stat
-		 *  (tbRoom.getStat('spe', ...) — see buildSpeedComparisonTooltipHTML). All multiplicative,
-		 *  so order doesn't change the result; floored once at the end, matching how a single
-		 *  displayed stat number is always a whole number in-game (this is an approximation of
-		 *  the real battle engine's own multi-step rounding, same simplification tools like the
-		 *  Smogon damage calc make — not meant to be bit-exact in extreme edge cases). */
-		function applySpeedModifiers(baseStat, itemName, modifiers) {
-			let stat = baseStat;
-			const itemMult = itemName && SPEED_ITEM_MULTIPLIERS[toIDSafe(itemName)];
-			if (itemMult) stat *= itemMult;
-			if (modifiers.paralyzed) stat *= 0.5;
-			if (modifiers.tailwind) stat *= 2;
-			if (modifiers.stage) stat *= speedStageMultiplier(modifiers.stage);
-			return Math.floor(stat);
-		}
 
 		/** The 9-row scenario table: an ally/foe modifier pair per row, one modifier changed at a
 		 *  time (never combined — see the conversation this was scoped in) against an otherwise-
@@ -1502,24 +1542,6 @@
 		 *  fetched `mon` payload (base stats, spreads, items) here on hover, rather than
 		 *  refetching or threading the list through the DOM some other way. */
 		let lastSpeedTierList = null;
-
-		/** "+"/"−"/"" for a Speed EV count — same plus/minus concept as natureModifierHTML above,
-		 *  but collapsed to just Speed (that's the only stat this table cares about) instead of
-		 *  spelling out which two stats a nature touches. */
-		function speedNatureIndicator(natureName) {
-			const nature = window.BattleNatures && window.BattleNatures[natureName];
-			if (!nature) return '';
-			if (nature.plus === 'spe') return '+';
-			if (nature.minus === 'spe') return '−';
-			return '';
-		}
-
-		/** "32 EV" when neutral, "32 EV / +" (or "/ −") when speedNatureIndicator found a boost
-		 *  or drop — the slash keeps the EV count and the +/- visually separate rather than
-		 *  running them together as "32+". */
-		function formatSpeedEvText(ev, indicator) {
-			return indicator ? `${ev} EV / ${indicator}` : `${ev} EV`;
-		}
 
 		/** Builds the hover popup comparing the currently-edited Pokémon's real Speed against a
 		 *  hovered top-20-usage species' *expected* Speed (its base stat + most common EV spread

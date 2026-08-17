@@ -128,6 +128,16 @@ The teambuilder sidebar and Pikalytics data follow the same "patch, don't replac
 
 See `src/move-data.js` for the filter definitions, `src/pikalytics.js` for the Pikalytics client/cache, and `src/content.js` for the patching logic; all are commented throughout.
 
+## Development
+
+`npm install` pulls in ESLint and [Vitest](https://vitest.dev) (dev-only — nothing here ships to the extension itself) and, via the `prepare` script, points git at the versioned `.githooks/` directory so the checks below run locally as well as in CI.
+
+- `npm run lint` — ESLint over `src/`.
+- `npm test` — the unit test suite (`test/*.test.js`), covering the pure logic in `content.js`/`pikalytics.js` (Speed math, EV parsing, the click-to-apply helpers, ...), `move-data.js`'s data shape, and `pikalytics.js`'s caching/allowlist behavior against a mocked `fetch`. DOM patching and Showdown-global wiring aren't unit-tested — they only mean anything on a live Showdown page; see the README's own "How it works" section for what's manually verified there instead.
+- A `pre-push` git hook (`.githooks/pre-push`) runs `npm test` before every push and blocks it on a failure; skip deliberately with `git push --no-verify`. CI (`.github/workflows/lint.yml`) runs both lint and tests on every push/PR regardless, as a backstop.
+
+Two of `content.js`'s pure helper groups — the click-to-apply/team-state helpers near the top of the file, and the Speed-comparison math (`applySpeedModifiers` and friends, hoisted to the top level specifically so tests can reach them) — are exposed to Node through a `module.exports` guard right after they're defined. That branch only ever runs under a test runner: in the real extension (no bundler, no CommonJS) `module` is undefined, so it's a no-op there, same as every other content script in this repo.
+
 ## License
 
 MIT

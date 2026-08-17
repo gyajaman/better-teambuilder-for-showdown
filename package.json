@@ -5,10 +5,14 @@
   "description": "Adds movepool- and ability-derived custom search filters to the Pokémon Showdown teambuilder.",
   "scripts": {
     "lint": "eslint src/",
-    "lint:fix": "eslint --fix src/"
+    "lint:fix": "eslint --fix src/",
+    "test": "vitest run",
+    "prepare": "node -e \"try{require('child_process').execSync('git config core.hooksPath .githooks')}catch(e){}\""
   },
   "devDependencies": {
     "eslint": "^9.27.0",
-    "globals": "^16.1.0"
+    "globals": "^16.1.0",
+    "jsdom": "^29.1.1",
+    "vitest": "^4.1.10"
   }
 }
