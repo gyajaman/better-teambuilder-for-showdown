@@ -235,6 +235,20 @@
 		return stat;
 	}
 
+	/** Maps "how many conditional columns (Mega + Scarf) is buildSpeedComparisonTooltipHTML
+	 *  actually rendering" to the CSS class that widens #cf-tooltipwrapper .cf-tooltip enough to
+	 *  fit them (see style.css's cf-speedcmp-tooltip-wide/-widest/-widest2 rules, each sized for
+	 *  one more column than the last). Clamped via Math.min, NOT `array[n] || fallback` — the
+	 *  n===0 entry is the empty string '', which is falsy, so an `||` fallback would wrongly
+	 *  replace the correct "no extra columns" case with the widest tier instead of leaving it
+	 *  alone (confirmed live: every tooltip with zero conditional columns — most of them, any
+	 *  species without a real Mega Stone or popular Scarf usage — rendered stretched to the
+	 *  widest tier with nothing on the right side to fill it). */
+	const SPEED_CMP_WIDTH_TIER_CLASSES = ['', ' cf-speedcmp-tooltip-wide', ' cf-speedcmp-tooltip-widest', ' cf-speedcmp-tooltip-widest2'];
+	function speedCmpTooltipWidthClass(extraCols) {
+		return SPEED_CMP_WIDTH_TIER_CLASSES[Math.min(extraCols, SPEED_CMP_WIDTH_TIER_CLASSES.length - 1)];
+	}
+
 	/** Test-only export hook. In the real extension there's no bundler/CommonJS, so `module`
 	 *  is undefined and this branch never runs — a no-op in production, same as every other
 	 *  content script here. Under Node/Vitest (see test/content.test.js), requiring this file
@@ -249,7 +263,7 @@
 		module.exports = {
 			escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
 			curTeamHasSpecies, curTeamFull, parseEVs, natureModifierHTML, speedNatureIndicator,
-			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers,
+			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter,
 			STAT_LABEL_BY_ID, STAT_IDS, STAT_LABELS,
 			CATEGORY_ORDER, DYNAMIC_CATEGORIES,
@@ -1622,64 +1636,61 @@
 			// stat + spread + nature and nothing else. foeItems itself is still needed below, for
 			// the Scarf/Mega *detection* — just never fed into this column's own speed calc.
 
-			// 4th "what if it ran Scarf instead" column, only when Scarf usage is actually
-			// non-trivial for this species (see CF_SETTINGS.scarfThresholdPercent's own doc
-			// comment, above) — otherwise it's a hypothetical nobody's really building, and the
-			// column would just be noise.
+			// An extra "what if it ran Scarf instead" column (rendered after any Mega columns —
+			// see megaOptions below), only when Scarf usage is actually non-trivial for this
+			// species (see CF_SETTINGS.scarfThresholdPercent's own doc comment, above) —
+			// otherwise it's a hypothetical nobody's really building, and the column would just
+			// be noise.
 			const scarfItemEntry = foeItems.find((it) => toIDSafe(it.item) === 'choicescarf');
 			const scarfPercent = scarfItemEntry ? parseFloat(scarfItemEntry.percent) || 0 : 0;
 			const showScarfColumn = scarfPercent >= CF_SETTINGS.scarfThresholdPercent;
 
-			// A 5th "what if it ran its Mega Stone instead" column, same "additional column,
-			// never a row-identity swap" treatment as Scarf above (see the earlier, reverted
-			// approach that tried overriding the base row itself — a Pokémon holding a Mega
-			// Stone can't also hold Scarf, so collapsing the row broke exactly that: a "Mega +
-			// Scarf" combination that can't exist in the real game). If a species has more than
-			// one Mega Stone (Charizard X/Y, Mewtwo X/Y), only the more popular one gets a
-			// column — showing both would need a 6th column for a genuinely rare case.
-			// getStat resolves the real Mega base stat from Dex once the *species name* is the
-			// Mega forme (see megaSet below) — same mechanism as every other stat lookup here,
-			// not a separately maintained stats field.
-			let megaFormeName = null;
-			let megaPercent = 0;
-			let megaItemName = null;
+			// One "what if it ran its Mega Stone instead" column per Mega Stone that crosses
+			// CF_SETTINGS.megaThresholdPercent — never a row-identity swap on the base Foe
+			// column itself (see the earlier, reverted approach that tried overriding the base
+			// row directly — a Pokémon holding a Mega Stone can't also hold Scarf, so collapsing
+			// the row broke exactly that: a "Mega + Scarf" combination that can't exist in the
+			// real game). A species can have more than one real Mega Stone (Charizard X/Y,
+			// Mewtwo X/Y) — and confirmed live on Raichu, X and Y can BOTH comfortably clear the
+			// threshold (18.2%/60.5%) rather than one dominating, so keeping only the single most
+			// popular one was silently hiding a real, comparably-popular build rather than the
+			// "genuinely rare case" this was originally scoped around. Sorted by usage descending
+			// so the more common one still reads first, left to right. getStat resolves each
+			// Mega forme's own real base stat from Dex once the *species name* passed in is the
+			// Mega forme itself — same mechanism as every other stat lookup here, not a
+			// separately maintained stats field.
+			const megaOptions = [];
 			if (window.Dex) {
 				for (const it of foeItems) {
 					const itemData = window.Dex.items.get(it.item);
 					const forme = itemData && itemData.megaStone && itemData.megaStone[speciesName];
 					if (!forme) continue;
 					const percent = parseFloat(it.percent) || 0;
-					if (percent > megaPercent) {
-						megaFormeName = forme;
-						megaPercent = percent;
-						megaItemName = it.item;
-					}
+					if (percent < CF_SETTINGS.megaThresholdPercent) continue;
+					const megaSet = { species: forme, evs: foeSet.evs, nature: foeSet.nature, ivs: foeSet.ivs, level: foeSet.level };
+					megaOptions.push({ formeName: forme, percent, itemName: it.item, base: tbRoom.getStat('spe', megaSet) });
 				}
+				megaOptions.sort((a, b) => b.percent - a.percent);
 			}
-			const showMegaColumn = megaFormeName && megaPercent >= CF_SETTINGS.megaThresholdPercent;
-			const megaSet = showMegaColumn ?
-				{ species: megaFormeName, evs: foeSet.evs, nature: foeSet.nature, ivs: foeSet.ivs, level: foeSet.level } : null;
-			const foeMegaBase = megaSet ? tbRoom.getStat('spe', megaSet) : 0;
 
 			// No win/lose coloring — with several independent Speed numbers per row (ally, foe,
-			// and up to two foe "what if" variants) a single "winner" no longer means anything;
-			// reading the plain numbers against each other is unambiguous without it anyway.
+			// and any number of foe "what if" variants) a single "winner" no longer means
+			// anything; reading the plain numbers against each other is unambiguous without it.
 			const rows = SPEED_COMPARISON_SCENARIOS.map((sc) => {
 				const allySpeed = applySpeedModifiers(allyBase, allySet.item, sc.ally);
 				// No item — see the comment above foeBase's own computation for why the base
 				// Foe column never applies one.
 				const foeSpeed = applySpeedModifiers(foeBase, null, sc.foe);
-				const megaCell = showMegaColumn ?
-					// No item passed — a Mega Stone isn't in SPEED_ITEM_MULTIPLIERS (it doesn't
-					// multiply Speed, the different base stat from foeMegaBase already covers
-					// its effect), and the holder can't also be running Scarf/Iron Ball anyway.
-					`<td>${applySpeedModifiers(foeMegaBase, null, sc.foe)}</td>` : '';
+				// No item passed to any Mega cell — a Mega Stone isn't in SPEED_ITEM_MULTIPLIERS
+				// (it doesn't multiply Speed, each entry's own `base` already covers its effect),
+				// and the holder can't also be running Scarf/Iron Ball anyway.
+				const megaCells = megaOptions.map((m) => `<td>${applySpeedModifiers(m.base, null, sc.foe)}</td>`).join('');
 				const scarfCell = showScarfColumn ?
 					// Same base stat as the main foe column (items don't change EVs/nature) —
 					// only the item plugged into applySpeedModifiers changes, so this is
 					// "what if" against an otherwise-identical spread, not a different build.
 					`<td>${applySpeedModifiers(foeBase, 'Choice Scarf', sc.foe)}</td>` : '';
-				return `<tr><td>${escapeHTML(sc.label)}</td><td>${allySpeed}</td><td>${foeSpeed}</td>${megaCell}${scarfCell}</tr>`;
+				return `<tr><td>${escapeHTML(sc.label)}</td><td>${allySpeed}</td><td>${foeSpeed}</td>${megaCells}${scarfCell}</tr>`;
 			}).join('');
 
 			const allyIcon = window.Dex ? window.Dex.getPokemonIcon(allySet.species) : '';
@@ -1705,15 +1716,16 @@
 			// (otherwise empty on this sprite — nothing else claims that corner) carries the
 			// real usage percent, so each column reads as "here's the item, and here's how
 			// common it actually is" at a glance rather than needing a caption line underneath.
-			// The Mega column uses the Mega forme's own sprite (not the base species') since
+			// The Mega columns use each Mega forme's own sprite (not the base species') since
 			// that's genuinely a different-looking Pokémon, unlike Scarf which doesn't change
 			// what the foe looks like.
-			const megaColumnHeaderHTML = showMegaColumn ?
+			const megaColumnHeadersHTML = megaOptions.map((m) =>
 				`<th><span class="cf-speedcmp-sprite">` +
-					`<span class="picon" style="${escapeHTML(window.Dex.getPokemonIcon(megaFormeName))}"></span>` +
-					`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(megaItemName))}"></span>` +
-					`<span class="cf-speedcmp-usage-badge">${Math.round(megaPercent)}%</span>` +
-					`</span></th>` : '';
+					`<span class="picon" style="${escapeHTML(window.Dex.getPokemonIcon(m.formeName))}"></span>` +
+					`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(m.itemName))}"></span>` +
+					`<span class="cf-speedcmp-usage-badge">${Math.round(m.percent)}%</span>` +
+					`</span></th>`
+			).join('');
 			const scarfColumnHeaderHTML = showScarfColumn ?
 				`<th><span class="cf-speedcmp-sprite">` +
 					`<span class="picon" style="${escapeHTML(foeIcon)}"></span>` +
@@ -1721,8 +1733,12 @@
 					`<span class="cf-speedcmp-usage-badge">${Math.round(scarfPercent)}%</span>` +
 					`</span></th>` : '';
 
-			const extraCols = (showMegaColumn ? 1 : 0) + (showScarfColumn ? 1 : 0);
-			const widthCls = extraCols === 2 ? ' cf-speedcmp-tooltip-widest' : extraCols === 1 ? ' cf-speedcmp-tooltip-wide' : '';
+			// Width tiers scale with however many conditional columns are actually showing —
+			// 0-2 Mega columns (see megaOptions above) plus 0-1 Scarf, so up to 3 extra columns
+			// in practice (a species with 3+ real Mega Stones doesn't exist, so this doesn't
+			// need to handle more than that).
+			const extraCols = megaOptions.length + (showScarfColumn ? 1 : 0);
+			const widthCls = speedCmpTooltipWidthClass(extraCols);
 
 			return `<div class="cf-tooltip cf-speedcmp-tooltip${widthCls}">` +
 				`<h2>${escapeHTML(allySet.species)} ` +
@@ -1731,7 +1747,7 @@
 				`<table class="cf-speedcmp-table"><thead><tr><th>Scenario</th>` +
 				`<th>${allySpriteHTML}</th>` +
 				`<th><span class="picon" style="${escapeHTML(foeIcon)}"></span></th>` +
-				`${megaColumnHeaderHTML}${scarfColumnHeaderHTML}</tr></thead>` +
+				`${megaColumnHeadersHTML}${scarfColumnHeaderHTML}</tr></thead>` +
 				`<tbody>${rows}</tbody></table></div>`;
 		}
 		// onMouseOver (outer scope, near Tooltip) needs to call this, but it's defined here

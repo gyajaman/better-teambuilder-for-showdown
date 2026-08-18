@@ -274,11 +274,18 @@ a[data-entry^="custom|"] .movedesccol {
 #cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip-wide {
 	width: 420px;
 }
-/* Both conditional columns at once (a species with popular Mega Stone *and* popular Scarf
- * usage — independent stats, so nothing stops both crossing their own threshold) needs a 5th
- * column's worth of extra room again. */
+/* Two conditional columns at once — either both Mega X and Mega Y clearing
+ * CF_SETTINGS.megaThresholdPercent (confirmed live: Raichu's are 18.2%/60.5%, both comfortably
+ * over the 15% default), or one Mega plus Scarf (independent stats, so nothing stops both
+ * crossing their own threshold) — needs a 5th column's worth of extra room again. */
 #cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip-widest {
 	width: 500px;
+}
+/* All three at once — Mega X, Mega Y, AND popular Scarf usage. Rare, but content.js's
+ * buildSpeedComparisonTooltipHTML doesn't cap how many conditional columns can show at
+ * once, so this needs to exist rather than the table silently overflowing its card. */
+#cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip-widest2 {
+	width: 580px;
 }
 .cf-speedcmp-table {
 	width: 100%;

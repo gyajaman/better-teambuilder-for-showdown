@@ -10,7 +10,7 @@
 const {
 	escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
 	curTeamHasSpecies, curTeamFull, parseEVs, natureModifierHTML, speedNatureIndicator,
-	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers,
+	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter,
 } = require('../src/content.js');
 
@@ -243,6 +243,27 @@ describe('applySpeedModifiers', () => {
 
 	it('ignores an item with no known Speed effect', () => {
 		expect(applySpeedModifiers(100, 'Leftovers', {})).toBe(100);
+	});
+});
+
+describe('speedCmpTooltipWidthClass', () => {
+	// Regression test: this was a real bug. array[0] is '' (the "no extra columns" case), and
+	// '' is falsy — an earlier `array[extraCols] || fallback` implementation wrongly replaced
+	// that correct empty-string case with the widest tier, so every tooltip with zero
+	// conditional columns (most of them) rendered stretched to the widest CSS class with
+	// nothing on the right side to fill it.
+	it('returns no extra class for zero conditional columns, not the widest tier', () => {
+		expect(speedCmpTooltipWidthClass(0)).toBe('');
+	});
+
+	it('returns the wide/widest/widest2 tiers for 1/2/3 conditional columns', () => {
+		expect(speedCmpTooltipWidthClass(1)).toBe(' cf-speedcmp-tooltip-wide');
+		expect(speedCmpTooltipWidthClass(2)).toBe(' cf-speedcmp-tooltip-widest');
+		expect(speedCmpTooltipWidthClass(3)).toBe(' cf-speedcmp-tooltip-widest2');
+	});
+
+	it('clamps to the widest tier rather than returning undefined for an out-of-range count', () => {
+		expect(speedCmpTooltipWidthClass(4)).toBe(' cf-speedcmp-tooltip-widest2');
 	});
 });
 
