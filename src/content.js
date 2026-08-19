@@ -267,6 +267,9 @@
 			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 			STAT_LABEL_BY_ID, STAT_IDS, STAT_LABELS,
 			CATEGORY_ORDER, DYNAMIC_CATEGORIES,
+			pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
+			buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
+			buildSpreadsSection, buildTeammatesSection,
 		};
 		return;
 	}
@@ -1321,6 +1324,188 @@
 	 *  the sidebar in the same pass. Whenever the split turns (or stays) on, this also populates
 	 *  the sidebar with Pikalytics data for the currently-edited species/format — see
 	 *  renderPikalyticsSidebar and pikalytics.js. */
+	function pikaSectionHTML(title, rowsHTML) {
+		return `<div class="cf-pika-section"><h3 class="cf-pika-header">${escapeHTML(title)}</h3>` +
+			`<div class="cf-pika-rows">${rowsHTML}</div></div>`;
+	}
+
+	/** Click-to-apply row markup shared by every clickable section below: `equipped` just
+	 *  controls the highlight (cf-pika-row-equipped); `disabled` is decided independently
+	 *  per section — e.g. an equipped move stays clickable (removes it, see applyMove's
+	 *  toggle) while an equipped teammate is disabled (nothing sensible to do re-clicking
+	 *  it). Disabled rows get no `data-cf-pika-action` at all (nothing for
+	 *  onPikaSidebarClick to match) on top of the CSS `pointer-events: none` — belt and
+	 *  suspenders. */
+	function pikaRowAttrs(action, value, equipped, disabled) {
+		let cls = 'cf-pika-row';
+		cls += disabled ? ' cf-pika-row-disabled' : ' cf-pika-row-clickable';
+		if (equipped) cls += ' cf-pika-row-equipped';
+		const attrs = disabled ? '' : ` data-cf-pika-action="${action}" data-cf-pika-value="${escapeHTML(value)}"`;
+		return { cls, attrs };
+	}
+
+	/** Shared by every Moves/Abilities/Items/Teammates/Natures row below — the outer
+	 *  `<div class="cf-pika-row...">` markup (icon cell, then a `.cf-pika-name` cell, then a
+	 *  `.cf-pika-pct` cell) is byte-identical across all five sections; only what goes inside
+	 *  those three cells differs per section, so that's what each section still builds itself. */
+	function pikaRowDivHTML(cls, attrs, iconHTML, nameHTML, pctHTML) {
+		return `<div class="${cls}"${attrs}>${iconHTML}` +
+			`<span class="cf-pika-name">${nameHTML}</span>` +
+			`<span class="cf-pika-pct">${pctHTML}</span></div>`;
+	}
+
+	/** Moves/Items both fall back to the same blank `.cf-pika-icon-spacer` placeholder when
+	 *  there's no real icon to show, so every row's name column still lines up regardless. */
+	function iconOrSpacer(iconHTML) {
+		return iconHTML || '<span class="cf-pika-icon-spacer"></span>';
+	}
+
+	/** "Other" is Pikalytics' bucket for everything below its per-move cutoff — real
+	 *  aggregate data, not a specific move, so it's kept (dropping it would silently
+	 *  understate usage) but has no `type` of its own, hence the blank spacer. Click-to-
+	 *  apply: a move already in the set stays clickable (highlighted as equipped) —
+	 *  clicking it removes it (see applyMove's toggle behavior). A move NOT in the set
+	 *  fills the first empty slot, or is disabled (greyed out) only once all 4 slots are
+	 *  already taken by *other* moves — an equipped move is never greyed out, since it's
+	 *  always clickable to remove regardless of how full the set is. */
+	function buildMovesSection(mon, tbRoom) {
+		const moves = mon.moves || [];
+		if (!moves.length) return pikaSectionHTML('Common Moves', '<p class="cf-pika-empty">No move data.</p>');
+		const set = tbRoom.curSet;
+		const full = curSetMovesFull(set);
+		const rows = moves.map((m) => {
+			const icon = iconOrSpacer(m.type ? window.Dex.getTypeIcon(m.type) : '');
+			const equipped = curSetHasMove(set, m.move);
+			const { cls, attrs } = pikaRowAttrs('move', m.move, equipped, !equipped && full);
+			return pikaRowDivHTML(cls, attrs, icon, escapeHTML(m.move), `${escapeHTML(m.percent)}%`);
+		}).join('');
+		return pikaSectionHTML('Common Moves', rows);
+	}
+
+	/** Same shape as buildNaturesSection's own rows ({ability, percent}) — confirmed live
+	 *  via the /api/p/ endpoint. Click-to-apply: always clickable (re-applying the current
+	 *  ability is a harmless no-op), just highlighted when it matches the set's current
+	 *  ability. */
+	function buildAbilitiesSection(mon, tbRoom) {
+		const abilities = (mon.abilities || []).filter((a) => (parseFloat(a.percent) || 0) > 0);
+		if (!abilities.length) return pikaSectionHTML('Common Abilities', '<p class="cf-pika-empty">No ability data.</p>');
+		const set = tbRoom.curSet;
+		const rows = abilities.map((a) => {
+			const equipped = !!(set && set.ability && toIDSafe(set.ability) === toIDSafe(a.ability));
+			const { cls, attrs } = pikaRowAttrs('ability', a.ability, equipped, false);
+			return pikaRowDivHTML(cls, attrs, '', escapeHTML(a.ability), `${escapeHTML(a.percent)}%`);
+		}).join('');
+		return pikaSectionHTML('Common Abilities', rows);
+	}
+
+	/** Nature usage is tracked two different ways depending on the format: some give a
+	 *  standalone `natures` array; others (e.g. gen9ou) only bundle a nature into each
+	 *  `spreads` entry, with no separate breakdown — so when `natures` is missing/empty,
+	 *  it's derived here by summing spread percentages per nature instead of showing
+	 *  nothing. Click-to-apply: always clickable, sets curSet.nature only (not the EVs —
+	 *  see buildSpreadsSection for nature+EVs together), highlighted when it's already the
+	 *  set's current nature. */
+	function buildNaturesSection(mon, tbRoom) {
+		let natures = mon.natures;
+		if (!natures || !natures.length) {
+			const byNature = new Map();
+			for (const s of (mon.spreads || [])) {
+				if (!s.nature) continue;
+				byNature.set(s.nature, (byNature.get(s.nature) || 0) + (parseFloat(s.percent) || 0));
+			}
+			natures = Array.from(byNature, ([nature, percent]) => ({ nature, percent }))
+				.sort((a, b) => b.percent - a.percent);
+		}
+		natures = natures.filter((n) => (parseFloat(n.percent) || 0) > 0);
+		if (!natures.length) return pikaSectionHTML('Common Natures', '<p class="cf-pika-empty">No nature data.</p>');
+		const set = tbRoom.curSet;
+		const rows = natures.map((n) => {
+			const pct = typeof n.percent === 'number' ? n.percent.toFixed(1) : n.percent;
+			const equipped = !!(set && set.nature && toIDSafe(set.nature) === toIDSafe(n.nature));
+			const { cls, attrs } = pikaRowAttrs('nature', n.nature, equipped, false);
+			const nameHTML = `<span class="cf-pika-nature-name">${escapeHTML(n.nature)}</span>${natureModifierHTML(n.nature)}`;
+			return pikaRowDivHTML(cls, attrs, '', nameHTML, `${escapeHTML(String(pct))}%`);
+		}).join('');
+		return pikaSectionHTML('Common Natures', rows);
+	}
+
+	/** "Other" bucket, same as buildMovesSection — kept, no icon. Click-to-apply: always
+	 *  clickable, highlighted when it matches the set's current item. */
+	function buildItemsSection(mon, tbRoom) {
+		const items = mon.items || [];
+		if (!items.length) return pikaSectionHTML('Common Items', '<p class="cf-pika-empty">No item data.</p>');
+		const set = tbRoom.curSet;
+		const rows = items.map((it) => {
+			const iconStyle = (it.item && window.Dex) ? window.Dex.getItemIcon(it.item) : '';
+			const icon = iconOrSpacer(iconStyle ? `<span class="itemicon" style="${escapeHTML(iconStyle)}"></span>` : '');
+			const equipped = !!(set && set.item && toIDSafe(set.item) === toIDSafe(it.item));
+			const { cls, attrs } = pikaRowAttrs('item', it.item, equipped, false);
+			return pikaRowDivHTML(cls, attrs, icon, escapeHTML(it.item), `${escapeHTML(it.percent)}%`);
+		}).join('');
+		return pikaSectionHTML('Common Items', rows);
+	}
+
+	/** A real <table> — one cell per stat — rather than a joined string, so columns line
+	 *  up via normal table layout instead of monospace-font character padding. Nature only
+	 *  gets its own leading column when at least one spread actually has one; Champions VGC
+	 *  spreads never do (confirmed live, `nature` is always ""), so in practice this column
+	 *  is omitted rather than showing empty on every row. Click-to-apply: always clickable,
+	 *  sets curSet.nature (if this spread carries one) AND curSet.evs together (see
+	 *  applySpread) — no equipped highlight, since "does this row's nature+EVs exactly
+	 *  match the current set" is a fuzzier match than the other sections' single-value
+	 *  equality checks. */
+	function buildSpreadsSection(mon) {
+		const spreads = mon.spreads || [];
+		if (!spreads.length) return pikaSectionHTML('Common Spreads', '<p class="cf-pika-empty">No spread data.</p>');
+
+		const hasNature = spreads.some((s) => s.nature);
+		const headerCells = (hasNature ? '<th class="cf-spread-nature">Nature</th>' : '') +
+			STAT_LABELS.map((label) => `<th>${label}</th>`).join('') + '<th>Usage</th>';
+
+		const bodyRows = spreads.map((s) => {
+			const natureCell = hasNature ? `<td class="cf-spread-nature"><span class="cf-pika-nature-name">${escapeHTML(s.nature)}</span>${natureModifierHTML(s.nature)}</td>` : '';
+			const evCells = String(s.ev).split('/').map((v) => `<td>${escapeHTML(v)}</td>`).join('');
+			return `<tr class="cf-pika-row-clickable" data-cf-pika-action="spread" data-cf-pika-nature="${escapeHTML(s.nature || '')}" data-cf-pika-ev="${escapeHTML(s.ev)}">` +
+				`${natureCell}${evCells}<td class="cf-pika-pct">${escapeHTML(s.percent)}%</td></tr>`;
+		}).join('');
+
+		const table = `<table class="cf-spread-table"><thead><tr>${headerCells}</tr></thead>` +
+			`<tbody>${bodyRows}</tbody></table>`;
+		return pikaSectionHTML('Common Spreads', table);
+	}
+
+	/** Teammate rows don't consistently carry a usage percent (confirmed live: gen9ou's
+	 *  do, VGC's generally don't) or a `rank` (the reverse can also happen), so this falls
+	 *  back through percent -> explicit rank -> the row's own position in the list — which
+	 *  is itself real rank information, the list is already most- to least-common — rather
+	 *  than ever leaving a row blank. Click-to-apply: appends a new blank team slot with
+	 *  just this species filled in (see applyTeammate) — disabled (and shown as already-
+	 *  equipped) if it's already on the team (species clause — no competitive VGC format
+	 *  allows a duplicate anyway), disabled without the equipped look if the team's already
+	 *  full. */
+	function buildTeammatesSection(mon, tbRoom) {
+		const team = mon.team || [];
+		if (!team.length) return pikaSectionHTML('Common Teammates', '<p class="cf-pika-empty">No teammate data.</p>');
+		const full = curTeamFull(tbRoom);
+		// Same base-species-ID comparison curTeamHasSpecies does per call, just computed once
+		// for the whole team up front instead of re-walking curSetList (and re-resolving each
+		// member's Mega/Primal base species) for every one of the up-to-20 rows below.
+		const teamSpeciesIds = new Set(
+			(tbRoom.curSetList || []).filter((s) => s.species).map((s) => baseSpeciesID(s.species))
+		);
+		const rows = team.map((t, i) => {
+			const icon = `<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(t.pokemon) : '')}"></span>`;
+			let pct;
+			if (t.percent !== undefined && t.percent !== null) pct = `${escapeHTML(String(t.percent))}%`;
+			else if (t.rank !== undefined && t.rank !== null) pct = `#${escapeHTML(String(t.rank))}`;
+			else pct = `#${i + 1}`;
+			const equipped = teamSpeciesIds.has(baseSpeciesID(t.pokemon));
+			const { cls, attrs } = pikaRowAttrs('teammate', t.pokemon, equipped, equipped || full);
+			return pikaRowDivHTML(cls, attrs, icon, escapeHTML(t.pokemon), pct);
+		}).join('');
+		return pikaSectionHTML('Common Teammates', rows);
+	}
+
 	function patchTeambuilderSidebar() {
 		if (!window.app || typeof window.app.updateLayout !== 'function' || !window.TeambuilderRoom ||
 			typeof window.TeambuilderRoom.prototype.update !== 'function' ||
@@ -1363,188 +1548,6 @@
 		function ensurePikaPanelEl() {
 			ensureTeambuilderSidebarEl();
 			return document.getElementById('cf-pika-panel');
-		}
-
-		function pikaSectionHTML(title, rowsHTML) {
-			return `<div class="cf-pika-section"><h3 class="cf-pika-header">${escapeHTML(title)}</h3>` +
-				`<div class="cf-pika-rows">${rowsHTML}</div></div>`;
-		}
-
-		/** Click-to-apply row markup shared by every clickable section below: `equipped` just
-		 *  controls the highlight (cf-pika-row-equipped); `disabled` is decided independently
-		 *  per section — e.g. an equipped move stays clickable (removes it, see applyMove's
-		 *  toggle) while an equipped teammate is disabled (nothing sensible to do re-clicking
-		 *  it). Disabled rows get no `data-cf-pika-action` at all (nothing for
-		 *  onPikaSidebarClick to match) on top of the CSS `pointer-events: none` — belt and
-		 *  suspenders. */
-		function pikaRowAttrs(action, value, equipped, disabled) {
-			let cls = 'cf-pika-row';
-			cls += disabled ? ' cf-pika-row-disabled' : ' cf-pika-row-clickable';
-			if (equipped) cls += ' cf-pika-row-equipped';
-			const attrs = disabled ? '' : ` data-cf-pika-action="${action}" data-cf-pika-value="${escapeHTML(value)}"`;
-			return { cls, attrs };
-		}
-
-		/** Shared by every Moves/Abilities/Items/Teammates/Natures row below — the outer
-		 *  `<div class="cf-pika-row...">` markup (icon cell, then a `.cf-pika-name` cell, then a
-		 *  `.cf-pika-pct` cell) is byte-identical across all five sections; only what goes inside
-		 *  those three cells differs per section, so that's what each section still builds itself. */
-		function pikaRowDivHTML(cls, attrs, iconHTML, nameHTML, pctHTML) {
-			return `<div class="${cls}"${attrs}>${iconHTML}` +
-				`<span class="cf-pika-name">${nameHTML}</span>` +
-				`<span class="cf-pika-pct">${pctHTML}</span></div>`;
-		}
-
-		/** Moves/Items both fall back to the same blank `.cf-pika-icon-spacer` placeholder when
-		 *  there's no real icon to show, so every row's name column still lines up regardless. */
-		function iconOrSpacer(iconHTML) {
-			return iconHTML || '<span class="cf-pika-icon-spacer"></span>';
-		}
-
-		/** "Other" is Pikalytics' bucket for everything below its per-move cutoff — real
-		 *  aggregate data, not a specific move, so it's kept (dropping it would silently
-		 *  understate usage) but has no `type` of its own, hence the blank spacer. Click-to-
-		 *  apply: a move already in the set stays clickable (highlighted as equipped) —
-		 *  clicking it removes it (see applyMove's toggle behavior). A move NOT in the set
-		 *  fills the first empty slot, or is disabled (greyed out) only once all 4 slots are
-		 *  already taken by *other* moves — an equipped move is never greyed out, since it's
-		 *  always clickable to remove regardless of how full the set is. */
-		function buildMovesSection(mon, tbRoom) {
-			const moves = mon.moves || [];
-			if (!moves.length) return pikaSectionHTML('Common Moves', '<p class="cf-pika-empty">No move data.</p>');
-			const set = tbRoom.curSet;
-			const full = curSetMovesFull(set);
-			const rows = moves.map((m) => {
-				const icon = iconOrSpacer(m.type ? window.Dex.getTypeIcon(m.type) : '');
-				const equipped = curSetHasMove(set, m.move);
-				const { cls, attrs } = pikaRowAttrs('move', m.move, equipped, !equipped && full);
-				return pikaRowDivHTML(cls, attrs, icon, escapeHTML(m.move), `${escapeHTML(m.percent)}%`);
-			}).join('');
-			return pikaSectionHTML('Common Moves', rows);
-		}
-
-		/** Same shape as buildNaturesSection's own rows ({ability, percent}) — confirmed live
-		 *  via the /api/p/ endpoint. Click-to-apply: always clickable (re-applying the current
-		 *  ability is a harmless no-op), just highlighted when it matches the set's current
-		 *  ability. */
-		function buildAbilitiesSection(mon, tbRoom) {
-			const abilities = (mon.abilities || []).filter((a) => (parseFloat(a.percent) || 0) > 0);
-			if (!abilities.length) return pikaSectionHTML('Common Abilities', '<p class="cf-pika-empty">No ability data.</p>');
-			const set = tbRoom.curSet;
-			const rows = abilities.map((a) => {
-				const equipped = !!(set && set.ability && toIDSafe(set.ability) === toIDSafe(a.ability));
-				const { cls, attrs } = pikaRowAttrs('ability', a.ability, equipped, false);
-				return pikaRowDivHTML(cls, attrs, '', escapeHTML(a.ability), `${escapeHTML(a.percent)}%`);
-			}).join('');
-			return pikaSectionHTML('Common Abilities', rows);
-		}
-
-		/** Nature usage is tracked two different ways depending on the format: some give a
-		 *  standalone `natures` array; others (e.g. gen9ou) only bundle a nature into each
-		 *  `spreads` entry, with no separate breakdown — so when `natures` is missing/empty,
-		 *  it's derived here by summing spread percentages per nature instead of showing
-		 *  nothing. Click-to-apply: always clickable, sets curSet.nature only (not the EVs —
-		 *  see buildSpreadsSection for nature+EVs together), highlighted when it's already the
-		 *  set's current nature. */
-		function buildNaturesSection(mon, tbRoom) {
-			let natures = mon.natures;
-			if (!natures || !natures.length) {
-				const byNature = new Map();
-				for (const s of (mon.spreads || [])) {
-					if (!s.nature) continue;
-					byNature.set(s.nature, (byNature.get(s.nature) || 0) + (parseFloat(s.percent) || 0));
-				}
-				natures = Array.from(byNature, ([nature, percent]) => ({ nature, percent }))
-					.sort((a, b) => b.percent - a.percent);
-			}
-			natures = natures.filter((n) => (parseFloat(n.percent) || 0) > 0);
-			if (!natures.length) return pikaSectionHTML('Common Natures', '<p class="cf-pika-empty">No nature data.</p>');
-			const set = tbRoom.curSet;
-			const rows = natures.map((n) => {
-				const pct = typeof n.percent === 'number' ? n.percent.toFixed(1) : n.percent;
-				const equipped = !!(set && set.nature && toIDSafe(set.nature) === toIDSafe(n.nature));
-				const { cls, attrs } = pikaRowAttrs('nature', n.nature, equipped, false);
-				const nameHTML = `<span class="cf-pika-nature-name">${escapeHTML(n.nature)}</span>${natureModifierHTML(n.nature)}`;
-				return pikaRowDivHTML(cls, attrs, '', nameHTML, `${escapeHTML(String(pct))}%`);
-			}).join('');
-			return pikaSectionHTML('Common Natures', rows);
-		}
-
-		/** "Other" bucket, same as buildMovesSection — kept, no icon. Click-to-apply: always
-		 *  clickable, highlighted when it matches the set's current item. */
-		function buildItemsSection(mon, tbRoom) {
-			const items = mon.items || [];
-			if (!items.length) return pikaSectionHTML('Common Items', '<p class="cf-pika-empty">No item data.</p>');
-			const set = tbRoom.curSet;
-			const rows = items.map((it) => {
-				const iconStyle = (it.item && window.Dex) ? window.Dex.getItemIcon(it.item) : '';
-				const icon = iconOrSpacer(iconStyle ? `<span class="itemicon" style="${escapeHTML(iconStyle)}"></span>` : '');
-				const equipped = !!(set && set.item && toIDSafe(set.item) === toIDSafe(it.item));
-				const { cls, attrs } = pikaRowAttrs('item', it.item, equipped, false);
-				return pikaRowDivHTML(cls, attrs, icon, escapeHTML(it.item), `${escapeHTML(it.percent)}%`);
-			}).join('');
-			return pikaSectionHTML('Common Items', rows);
-		}
-
-		/** A real <table> — one cell per stat — rather than a joined string, so columns line
-		 *  up via normal table layout instead of monospace-font character padding. Nature only
-		 *  gets its own leading column when at least one spread actually has one; Champions VGC
-		 *  spreads never do (confirmed live, `nature` is always ""), so in practice this column
-		 *  is omitted rather than showing empty on every row. Click-to-apply: always clickable,
-		 *  sets curSet.nature (if this spread carries one) AND curSet.evs together (see
-		 *  applySpread) — no equipped highlight, since "does this row's nature+EVs exactly
-		 *  match the current set" is a fuzzier match than the other sections' single-value
-		 *  equality checks. */
-		function buildSpreadsSection(mon) {
-			const spreads = mon.spreads || [];
-			if (!spreads.length) return pikaSectionHTML('Common Spreads', '<p class="cf-pika-empty">No spread data.</p>');
-
-			const hasNature = spreads.some((s) => s.nature);
-			const headerCells = (hasNature ? '<th class="cf-spread-nature">Nature</th>' : '') +
-				STAT_LABELS.map((label) => `<th>${label}</th>`).join('') + '<th>Usage</th>';
-
-			const bodyRows = spreads.map((s) => {
-				const natureCell = hasNature ? `<td class="cf-spread-nature"><span class="cf-pika-nature-name">${escapeHTML(s.nature)}</span>${natureModifierHTML(s.nature)}</td>` : '';
-				const evCells = String(s.ev).split('/').map((v) => `<td>${escapeHTML(v)}</td>`).join('');
-				return `<tr class="cf-pika-row-clickable" data-cf-pika-action="spread" data-cf-pika-nature="${escapeHTML(s.nature || '')}" data-cf-pika-ev="${escapeHTML(s.ev)}">` +
-					`${natureCell}${evCells}<td class="cf-pika-pct">${escapeHTML(s.percent)}%</td></tr>`;
-			}).join('');
-
-			const table = `<table class="cf-spread-table"><thead><tr>${headerCells}</tr></thead>` +
-				`<tbody>${bodyRows}</tbody></table>`;
-			return pikaSectionHTML('Common Spreads', table);
-		}
-
-		/** Teammate rows don't consistently carry a usage percent (confirmed live: gen9ou's
-		 *  do, VGC's generally don't) or a `rank` (the reverse can also happen), so this falls
-		 *  back through percent -> explicit rank -> the row's own position in the list — which
-		 *  is itself real rank information, the list is already most- to least-common — rather
-		 *  than ever leaving a row blank. Click-to-apply: appends a new blank team slot with
-		 *  just this species filled in (see applyTeammate) — disabled (and shown as already-
-		 *  equipped) if it's already on the team (species clause — no competitive VGC format
-		 *  allows a duplicate anyway), disabled without the equipped look if the team's already
-		 *  full. */
-		function buildTeammatesSection(mon, tbRoom) {
-			const team = mon.team || [];
-			if (!team.length) return pikaSectionHTML('Common Teammates', '<p class="cf-pika-empty">No teammate data.</p>');
-			const full = curTeamFull(tbRoom);
-			// Same base-species-ID comparison curTeamHasSpecies does per call, just computed once
-			// for the whole team up front instead of re-walking curSetList (and re-resolving each
-			// member's Mega/Primal base species) for every one of the up-to-20 rows below.
-			const teamSpeciesIds = new Set(
-				(tbRoom.curSetList || []).filter((s) => s.species).map((s) => baseSpeciesID(s.species))
-			);
-			const rows = team.map((t, i) => {
-				const icon = `<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(t.pokemon) : '')}"></span>`;
-				let pct;
-				if (t.percent !== undefined && t.percent !== null) pct = `${escapeHTML(String(t.percent))}%`;
-				else if (t.rank !== undefined && t.rank !== null) pct = `#${escapeHTML(String(t.rank))}`;
-				else pct = `#${i + 1}`;
-				const equipped = teamSpeciesIds.has(baseSpeciesID(t.pokemon));
-				const { cls, attrs } = pikaRowAttrs('teammate', t.pokemon, equipped, equipped || full);
-				return pikaRowDivHTML(cls, attrs, icon, escapeHTML(t.pokemon), pct);
-			}).join('');
-			return pikaSectionHTML('Common Teammates', rows);
 		}
 
 		/** Speed-tier column (style.css #cf-speedtier-col): the top-20-by-usage species'

@@ -12,7 +12,22 @@ const {
 	curTeamHasSpecies, curTeamFull, parseEVs, natureModifierHTML, speedNatureIndicator,
 	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
+	pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
+	buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
+	buildSpreadsSection, buildTeammatesSection,
 } = require('../src/content.js');
+
+/** Minimal window.Dex stand-in for the icon-rendering branches in the Pikalytics sidebar
+ *  section builders below — real Dex.getTypeIcon/getItemIcon/getPokemonIcon all return some
+ *  non-empty HTML string, so a fixed non-empty stand-in is enough to exercise the "there is an
+ *  icon" branch without pulling in the real Dex implementation. */
+function mockDex() {
+	window.Dex = {
+		getTypeIcon: (type) => `<img class="type-icon" alt="${type}">`,
+		getItemIcon: (item) => `background:url(${item})`,
+		getPokemonIcon: (species) => `background:url(${species})`,
+	};
+}
 
 describe('escapeHTML', () => {
 	it('escapes the five HTML-significant characters', () => {
@@ -354,5 +369,258 @@ describe('passesSpeedFilter', () => {
 		expect(passesSpeedFilter({ op: '<', orEqual: false, value: 100 }, 100)).toBe(false);
 		expect(passesSpeedFilter({ op: '<', orEqual: false, value: 100 }, 99)).toBe(true);
 		expect(passesSpeedFilter({ op: '<', orEqual: true, value: 100 }, 100)).toBe(true);
+	});
+});
+
+describe('pikaSectionHTML', () => {
+	it('wraps escaped title and pre-built row markup in the section shell', () => {
+		expect(pikaSectionHTML('A & B', '<div>rows</div>')).toBe(
+			'<div class="cf-pika-section"><h3 class="cf-pika-header">A &amp; B</h3>' +
+			'<div class="cf-pika-rows"><div>rows</div></div></div>'
+		);
+	});
+});
+
+describe('pikaRowAttrs', () => {
+	it('is clickable with a data-cf-pika-action/value pair when not disabled', () => {
+		const { cls, attrs } = pikaRowAttrs('move', 'Fake Out', false, false);
+		expect(cls).toBe('cf-pika-row cf-pika-row-clickable');
+		expect(attrs).toBe(' data-cf-pika-action="move" data-cf-pika-value="Fake Out"');
+	});
+
+	it('adds the equipped class on top of clickable, without dropping it', () => {
+		const { cls } = pikaRowAttrs('move', 'Fake Out', true, false);
+		expect(cls).toBe('cf-pika-row cf-pika-row-clickable cf-pika-row-equipped');
+	});
+
+	it('is disabled with no data attributes at all when disabled', () => {
+		const { cls, attrs } = pikaRowAttrs('move', 'Fake Out', false, true);
+		expect(cls).toBe('cf-pika-row cf-pika-row-disabled');
+		expect(attrs).toBe('');
+	});
+
+	it('escapes the value written into the data attribute', () => {
+		const { attrs } = pikaRowAttrs('move', 'Fake Out & Friends', false, false);
+		expect(attrs).toBe(' data-cf-pika-action="move" data-cf-pika-value="Fake Out &amp; Friends"');
+	});
+});
+
+describe('pikaRowDivHTML', () => {
+	it('assembles the icon/name/pct cells inside the given class/attrs wrapper', () => {
+		expect(pikaRowDivHTML(
+			'cf-pika-row cf-pika-row-clickable',
+			' data-cf-pika-action="move" data-cf-pika-value="Fake Out"',
+			'<i>icon</i>', 'Fake Out', '80%'
+		)).toBe(
+			'<div class="cf-pika-row cf-pika-row-clickable" data-cf-pika-action="move" data-cf-pika-value="Fake Out">' +
+			'<i>icon</i><span class="cf-pika-name">Fake Out</span><span class="cf-pika-pct">80%</span></div>'
+		);
+	});
+
+	it('renders cleanly with empty icon/attrs strings (the no-icon sections)', () => {
+		expect(pikaRowDivHTML('cf-pika-row', '', '', 'Intimidate', '100%')).toBe(
+			'<div class="cf-pika-row"><span class="cf-pika-name">Intimidate</span><span class="cf-pika-pct">100%</span></div>'
+		);
+	});
+});
+
+describe('iconOrSpacer', () => {
+	it('passes real icon HTML through unchanged', () => {
+		expect(iconOrSpacer('<img src="x.png">')).toBe('<img src="x.png">');
+	});
+
+	it('falls back to the spacer placeholder for empty/falsy input', () => {
+		expect(iconOrSpacer('')).toBe('<span class="cf-pika-icon-spacer"></span>');
+	});
+});
+
+describe('buildMovesSection', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('shows the empty-state message when mon has no moves', () => {
+		expect(buildMovesSection({}, { curSet: {} })).toContain('No move data.');
+	});
+
+	it('renders a clickable row with a type icon and usage percent', () => {
+		mockDex();
+		const mon = { moves: [{ move: 'Fake Out', type: 'Normal', percent: '80.0' }] };
+		const html = buildMovesSection(mon, { curSet: { moves: [] } });
+		expect(html).toContain('cf-pika-row-clickable');
+		expect(html).toContain('data-cf-pika-action="move" data-cf-pika-value="Fake Out"');
+		expect(html).toContain('<img class="type-icon" alt="Normal">');
+		expect(html).toContain('Fake Out');
+		expect(html).toContain('80.0%');
+	});
+
+	it('falls back to the spacer icon when a move has no type', () => {
+		const mon = { moves: [{ move: 'Struggle', percent: '1.0' }] };
+		const html = buildMovesSection(mon, { curSet: { moves: [] } });
+		expect(html).toContain('cf-pika-icon-spacer');
+	});
+
+	it('highlights a move already on the set as equipped and keeps it clickable even when the set is full', () => {
+		const mon = { moves: [{ move: 'Fake Out', percent: '80.0' }] };
+		const set = { moves: ['Fake Out', 'Ice Shard', 'Aqua Jet', 'Tackle'] };
+		const html = buildMovesSection(mon, { curSet: set });
+		expect(html).toContain('cf-pika-row-equipped');
+		expect(html).toContain('cf-pika-row-clickable');
+		expect(html).not.toContain('cf-pika-row-disabled');
+	});
+
+	it('disables a move NOT on the set once all 4 slots are filled with other moves', () => {
+		const mon = { moves: [{ move: 'Ice Shard', percent: '30.0' }] };
+		const set = { moves: ['Fake Out', 'Aqua Jet', 'Tackle', 'Toxic'] };
+		const html = buildMovesSection(mon, { curSet: set });
+		expect(html).toContain('cf-pika-row-disabled');
+		expect(html).not.toContain('data-cf-pika-action');
+	});
+});
+
+describe('buildAbilitiesSection', () => {
+	it('shows the empty-state message when there is no ability data', () => {
+		expect(buildAbilitiesSection({}, { curSet: {} })).toContain('No ability data.');
+	});
+
+	it('filters out zero-percent abilities, falling back to the empty state if none remain', () => {
+		const mon = { abilities: [{ ability: 'Rare Ability', percent: '0.0' }] };
+		expect(buildAbilitiesSection(mon, { curSet: {} })).toContain('No ability data.');
+	});
+
+	it('highlights the ability matching the set\'s current ability, and is always clickable', () => {
+		const mon = { abilities: [{ ability: 'Intimidate', percent: '100.0' }] };
+		const html = buildAbilitiesSection(mon, { curSet: { ability: 'intimidate' } });
+		expect(html).toContain('cf-pika-row-equipped');
+		expect(html).toContain('data-cf-pika-action="ability" data-cf-pika-value="Intimidate"');
+	});
+});
+
+describe('buildNaturesSection', () => {
+	it('shows the empty-state message when there is no nature or spread data', () => {
+		expect(buildNaturesSection({}, { curSet: {} })).toContain('No nature data.');
+	});
+
+	it('uses the natures array directly when present', () => {
+		const mon = { natures: [{ nature: 'Jolly', percent: 60 }] };
+		const html = buildNaturesSection(mon, { curSet: {} });
+		expect(html).toContain('Jolly');
+		expect(html).toContain('60.0%');
+	});
+
+	it('derives natures from spreads by summing percentages when natures is missing, sorted descending', () => {
+		const mon = {
+			spreads: [
+				{ nature: 'Jolly', percent: '15.0' },
+				{ nature: 'Jolly', percent: '10.0' },
+				{ nature: 'Adamant', percent: '5.0' },
+			],
+		};
+		const html = buildNaturesSection(mon, { curSet: {} });
+		expect(html).toContain('25.0%'); // 15.0 + 10.0
+		expect(html.indexOf('Jolly')).toBeLessThan(html.indexOf('Adamant'));
+	});
+
+	it('highlights the nature matching the set\'s current nature as equipped', () => {
+		const mon = { natures: [{ nature: 'Jolly', percent: 60 }] };
+		const html = buildNaturesSection(mon, { curSet: { nature: 'jolly' } });
+		expect(html).toContain('cf-pika-row-equipped');
+	});
+});
+
+describe('buildItemsSection', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('shows the empty-state message when there is no item data', () => {
+		expect(buildItemsSection({}, { curSet: {} })).toContain('No item data.');
+	});
+
+	it('renders an item icon when window.Dex is available', () => {
+		mockDex();
+		const mon = { items: [{ item: 'Choice Scarf', percent: '20.0' }] };
+		const html = buildItemsSection(mon, { curSet: {} });
+		expect(html).toContain('class="itemicon"');
+		expect(html).toContain('Choice Scarf');
+	});
+
+	it('falls back to the spacer icon when window.Dex is unavailable', () => {
+		const mon = { items: [{ item: 'Choice Scarf', percent: '20.0' }] };
+		const html = buildItemsSection(mon, { curSet: {} });
+		expect(html).toContain('cf-pika-icon-spacer');
+	});
+
+	it('highlights the item matching the set\'s current item as equipped', () => {
+		const mon = { items: [{ item: 'Choice Scarf', percent: '20.0' }] };
+		const html = buildItemsSection(mon, { curSet: { item: 'choicescarf' } });
+		expect(html).toContain('cf-pika-row-equipped');
+	});
+});
+
+describe('buildSpreadsSection', () => {
+	it('shows the empty-state message when there is no spread data', () => {
+		expect(buildSpreadsSection({})).toContain('No spread data.');
+	});
+
+	it('omits the Nature column entirely when no spread carries one', () => {
+		const mon = { spreads: [{ ev: '4/236/0/0/76/188', percent: '15.0' }] };
+		expect(buildSpreadsSection(mon)).not.toContain('cf-spread-nature');
+	});
+
+	it('includes a Nature column when at least one spread has one', () => {
+		const mon = { spreads: [{ nature: 'Jolly', ev: '4/236/0/0/76/188', percent: '15.0' }] };
+		const html = buildSpreadsSection(mon);
+		expect(html).toContain('cf-spread-nature');
+		expect(html).toContain('Jolly');
+	});
+
+	it('splits the EV string into one cell per stat', () => {
+		const mon = { spreads: [{ ev: '4/236/0/0/76/188', percent: '15.0' }] };
+		const html = buildSpreadsSection(mon);
+		expect((html.match(/<td>/g) || []).length).toBe(6);
+	});
+});
+
+describe('buildTeammatesSection', () => {
+	afterEach(() => { delete window.Dex; delete window.CF_Pikalytics; });
+
+	it('shows the empty-state message when there is no teammate data', () => {
+		expect(buildTeammatesSection({}, { curSetList: [] })).toContain('No teammate data.');
+	});
+
+	it('prefers percent, then rank, then 1-based list position for the displayed usage figure', () => {
+		const mon = {
+			team: [
+				{ pokemon: 'Rillaboom', percent: '25.0' },
+				{ pokemon: 'Landorus-Therian', rank: 5 },
+				{ pokemon: 'Flutter Mane' }, // neither -> falls back to its position, #3
+			],
+		};
+		const html = buildTeammatesSection(mon, { curSetList: [] });
+		expect(html).toContain('25.0%');
+		expect(html).toContain('#5');
+		expect(html).toContain('#3');
+	});
+
+	it('highlights and disables a teammate already on the team, even with room to spare', () => {
+		const mon = { team: [{ pokemon: 'Rillaboom', percent: '25.0' }] };
+		const tbRoom = { curSetList: [{ species: 'Rillaboom' }], curTeam: { capacity: 6 } };
+		const html = buildTeammatesSection(mon, tbRoom);
+		expect(html).toContain('cf-pika-row-equipped');
+		expect(html).toContain('cf-pika-row-disabled');
+		expect(html).not.toContain('data-cf-pika-action');
+	});
+
+	it('disables (without the equipped look) a teammate suggestion once the team is full', () => {
+		const mon = { team: [{ pokemon: 'Rillaboom', percent: '25.0' }] };
+		const tbRoom = { curSetList: [0, 1, 2, 3, 4, 5].map((i) => ({ species: 'Mon' + i })), curTeam: { capacity: 6 } };
+		const html = buildTeammatesSection(mon, tbRoom);
+		expect(html).toContain('cf-pika-row-disabled');
+		expect(html).not.toContain('cf-pika-row-equipped');
+	});
+
+	it('leaves a teammate suggestion clickable when the team has room and lacks it', () => {
+		const mon = { team: [{ pokemon: 'Rillaboom', percent: '25.0' }] };
+		const tbRoom = { curSetList: [{ species: 'Landorus-Therian' }], curTeam: { capacity: 6 } };
+		const html = buildTeammatesSection(mon, tbRoom);
+		expect(html).toContain('cf-pika-row-clickable');
+		expect(html).toContain('data-cf-pika-action="teammate" data-cf-pika-value="Rillaboom"');
 	});
 });
