@@ -269,7 +269,7 @@
 			CATEGORY_ORDER, DYNAMIC_CATEGORIES,
 			pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
 			buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
-			buildSpreadsSection, buildTeammatesSection,
+			buildSpreadsSection, buildTeammatesSection, patchDexSearch,
 		};
 		return;
 	}
@@ -1016,8 +1016,22 @@
 			const searchType = this.typedSearch && this.typedSearch.searchType;
 			if (searchType === 'pokemon' || searchType === 'move') {
 				CF.lastEngine = this;
-				applyCustomFilters(this);
-				injectTypedFilterSuggestions(this, this.query);
+				// The real find() short-circuits as a no-op (returns false, leaves
+				// this.results untouched) when the query hasn't changed and results are
+				// already populated — from an earlier call this same wrapper already
+				// post-processed. Skipping the block below on that branch matters: both
+				// applyCustomFilters and injectTypedFilterSuggestions mutate
+				// this.results by appending to it, so re-running them against an
+				// already-post-processed array would inject a second cf-speedrow/
+				// "Custom Filters" header on top of the one already there. A real
+				// native path hits exactly this — content.js's own removeFilter patch
+				// (below) calls find('') itself when popping the last custom filter,
+				// and the native chartKeydown handler that invoked removeFilter() then
+				// calls find('') again with the same now-unchanged query.
+				if (changed) {
+					applyCustomFilters(this);
+					injectTypedFilterSuggestions(this, this.query);
+				}
 			}
 			return changed;
 		};
@@ -1831,6 +1845,15 @@
 		let renderToken = 0;
 		let lastRenderKey = null;
 		let lastMon = null;
+		/** Distinguishes *why* lastMon is still null for the current lastRenderKey: 'pending'
+		 *  while the fetch is still in flight (don't retrigger — the in-flight promise will
+		 *  resolve and render on its own), 'empty' once Pikalytics genuinely returned no data
+		 *  for this species (a stable answer — asking again would just get the same answer),
+		 *  or 'failed' once the fetch itself errored. Only 'failed' allows retrying on the next
+		 *  call for the same key (see renderPikalyticsSidebar below) — without this, a transient
+		 *  network hiccup left the sidebar stuck on "Failed to load" until the user switched to
+		 *  a different team slot and back (the only thing that reset lastRenderKey). */
+		let lastFetchState = null;
 		/** Rebuilds sidebarEl's content while keeping each section's own scroll position — a
 		 *  plain `innerHTML =` (as every other render path here still does) throws away the old
 		 *  DOM nodes entirely, resetting every .cf-pika-rows box back to scrollTop 0. Only used
@@ -1865,6 +1888,7 @@
 				ensurePikaPanelEl().innerHTML = '<p class="cf-sidebar-placeholder">Nothing here yet.</p>';
 				lastRenderKey = null;
 				lastMon = null;
+				lastFetchState = null;
 				return;
 			}
 
@@ -1874,22 +1898,30 @@
 			if (key === lastRenderKey) {
 				// Same species/format as the last call. If lastMon is already populated, that's
 				// the click-to-apply/native-edit fast path: just re-derive clickable/disabled/
-				// equipped state against the (possibly just-changed) current set, no refetch. If
-				// lastMon is still null, a fetch for this exact key is either already in flight
-				// or already resolved to "no data"/"failed" — either way there is nothing new to
-				// do, so this must still be an unconditional no-op (not gated on lastMon) or a
-				// second call arriving before the first fetch resolves would otherwise reset the
-				// placeholder back to "Loading…" and fire a redundant duplicate request.
-				if (lastMon) rebuildSidebarPreservingScroll(sidebarEl, buildPikalyticsSidebarHTML(lastMon, tbRoom));
-				return;
+				// equipped state against the (possibly just-changed) current set, no refetch.
+				if (lastMon) {
+					rebuildSidebarPreservingScroll(sidebarEl, buildPikalyticsSidebarHTML(lastMon, tbRoom));
+					return;
+				}
+				// lastMon is still null: either a fetch for this exact key is already in flight
+				// ('pending' — nothing new to do, a duplicate request here would be redundant and
+				// resetting the placeholder back to "Loading…" would be pointless churn), or it
+				// already settled as genuinely empty ('empty' — Pikalytics has no data for this
+				// species; asking again would just get the same answer). Only a settled failure
+				// ('failed') falls through below to retry — a transient network hiccup shouldn't
+				// permanently strand the sidebar on "Failed to load" until the user switches team
+				// slots away and back.
+				if (lastFetchState !== 'failed') return;
 			}
 			lastRenderKey = key;
 			lastMon = null;
+			lastFetchState = 'pending';
 
 			const token = ++renderToken;
 			sidebarEl.innerHTML = '<p class="cf-sidebar-placeholder">Loading Pikalytics data…</p>';
 
 			if (!window.CF_Pikalytics) {
+				lastFetchState = 'empty';
 				sidebarEl.innerHTML = '<p class="cf-sidebar-placeholder">No data for this format.</p>';
 				return;
 			}
@@ -1900,13 +1932,16 @@
 					!(mon.items || []).length && !(mon.natures || []).length &&
 					!(mon.team || []).length && !(mon.spreads || []).length);
 				if (isEmpty) {
+					lastFetchState = 'empty';
 					sidebarEl.innerHTML = `<p class="cf-sidebar-placeholder">No data for ${escapeHTML(speciesName)} in this format.</p>`;
 					return;
 				}
+				lastFetchState = 'success';
 				lastMon = mon;
 				sidebarEl.innerHTML = buildPikalyticsSidebarHTML(mon, tbRoom);
 			}).catch((e) => {
 				if (token !== renderToken) return; // superseded by a newer request
+				lastFetchState = 'failed';
 				console.error('[Better Teambuilder] Pikalytics lookup failed:', e);
 				sidebarEl.innerHTML = '<p class="cf-sidebar-placeholder">Failed to load Pikalytics data.</p>';
 			});
@@ -1927,6 +1962,19 @@
 		 *  a format that's no longer showing (e.g. mid-fetch, or after a failed request). */
 		let lastSpeedTierFormatId = null;
 		let speedTierRenderToken = 0;
+		/** True once a lookup for lastSpeedTierFormatId has settled with nothing to show — either
+		 *  an outright failure, or (functionally the same thing here: getTopUsageList's own doc
+		 *  comment says it "never rejects," so a total failure surfaces as an empty array, not a
+		 *  rejected promise) a resolved-but-empty list. Every format in FORMAT_SLUG_MAP is a real,
+		 *  actively-tracked Pikalytics format, so a genuinely empty result here is never a stable,
+		 *  meaningful answer the way "this one species has no data" is for renderPikalyticsSidebar
+		 *  — it always means the lookup didn't actually work (most commonly: getFormatMeta's
+		 *  discovery fetch failed because the species used to bootstrap it, see speciesHint below,
+		 *  isn't indexed at Pikalytics' AI-pokedex endpoint). Without this flag, `formatId ===
+		 *  lastSpeedTierFormatId` alone permanently blocked any retry for that format — even after
+		 *  switching to a completely different, definitely-indexed species — since nothing but a
+		 *  format change or leaving the teambuilder ever reset lastSpeedTierFormatId. */
+		let lastSpeedTierFailed = false;
 		function renderSpeedTierColumn(tbRoom) {
 			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
 			const speciesHint = tbRoom.curSet && (tbRoom.curSet.species || tbRoom.curSet.name);
@@ -1937,21 +1985,29 @@
 				colEl.innerHTML = speedTierColumnHTML('<p class="cf-sidebar-placeholder">No data.</p>');
 				lastSpeedTierFormatId = null;
 				lastSpeedTierList = null;
+				lastSpeedTierFailed = false;
 				return;
 			}
-			if (formatId === lastSpeedTierFormatId) return; // already loaded/loading for this format
+			// Same format as last time AND that lookup didn't fail: nothing new to do, whether
+			// it's still in flight (lastSpeedTierFailed hasn't had a chance to flip yet) or
+			// already succeeded (lastSpeedTierList is already showing). Only a settled failure
+			// falls through to retry.
+			if (formatId === lastSpeedTierFormatId && !lastSpeedTierFailed) return;
 			lastSpeedTierFormatId = formatId;
 
 			const token = ++speedTierRenderToken;
 			colEl.innerHTML = speedTierColumnHTML('<p class="cf-sidebar-placeholder">Loading…</p>');
 			lastSpeedTierList = null;
+			lastSpeedTierFailed = false;
 
 			window.CF_Pikalytics.getTopUsageList(formatId, speciesHint, 20).then((list) => {
 				if (token !== speedTierRenderToken) return; // superseded by a newer request
+				lastSpeedTierFailed = !list || !list.length;
 				lastSpeedTierList = list;
 				colEl.innerHTML = buildSpeedTierColumnHTML(list);
 			}).catch((e) => {
 				if (token !== speedTierRenderToken) return;
+				lastSpeedTierFailed = true;
 				console.error('[Better Teambuilder] Speed tier usage list lookup failed:', e);
 				colEl.innerHTML = speedTierColumnHTML('<p class="cf-sidebar-placeholder">Failed to load.</p>');
 			});

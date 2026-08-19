@@ -14,7 +14,7 @@ const {
 	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 	pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
 	buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
-	buildSpreadsSection, buildTeammatesSection,
+	buildSpreadsSection, buildTeammatesSection, patchDexSearch,
 } = require('../src/content.js');
 
 /** Minimal window.Dex stand-in for the icon-rendering branches in the Pikalytics sidebar
@@ -575,6 +575,69 @@ describe('buildSpreadsSection', () => {
 		const mon = { spreads: [{ ev: '4/236/0/0/76/188', percent: '15.0' }] };
 		const html = buildSpreadsSection(mon);
 		expect((html.match(/<td>/g) || []).length).toBe(6);
+	});
+});
+
+describe('patchDexSearch — DexSearch.prototype.find idempotency', () => {
+	beforeEach(() => {
+		window.toID = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+		window.CF_MOVE_CATEGORIES = {};
+		// Defined fresh per test (not hoisted to describe scope) so each test's
+		// patchDexSearch() call wraps a pristine, unpatched prototype — patchDexSearch
+		// wraps whatever DexSearch.prototype.find already is, so reusing one class
+		// across tests would compound a fresh wrapper on top of the previous test's.
+		//
+		// Minimal stand-in for the real DexSearch: reproduces just the one contract
+		// this regression test cares about — the real find() (battle-dex-search.ts)
+		// short-circuits to `return false` without touching `this.results` when the
+		// query hasn't changed and results are already populated. `this.results`
+		// starts as a single native ['sortpokemon'] row, the same row
+		// applyCustomFilters docks a ['cf-speedrow'] after.
+		window.DexSearch = class FakeDexSearch {
+			constructor() {
+				this.query = '';
+				this.results = null;
+				this.typedSearch = { searchType: 'pokemon' };
+				this.__cfFilters = [];
+			}
+			find(query) {
+				const q = window.toID(query);
+				if (this.query === q && this.results) return false;
+				this.query = q;
+				this.results = [['sortpokemon']];
+				return true;
+			}
+		};
+		patchDexSearch();
+	});
+
+	afterEach(() => {
+		delete window.toID;
+		delete window.CF_MOVE_CATEGORIES;
+		delete window.DexSearch;
+	});
+
+	it('injects exactly one cf-speedrow after a real (query-changing) find', () => {
+		const engine = new window.DexSearch();
+		engine.find('pikachu');
+		const speedRows = engine.results.filter((row) => row[0] === 'cf-speedrow');
+		expect(speedRows.length).toBe(1);
+	});
+
+	it('does not duplicate the injected cf-speedrow when find() is called again with the same query', () => {
+		const engine = new window.DexSearch();
+		engine.find('pikachu');
+		engine.find('pikachu'); // same query — the real DexSearch.find no-ops on this call
+		const speedRows = engine.results.filter((row) => row[0] === 'cf-speedrow');
+		expect(speedRows.length).toBe(1); // was 2 before the `if (changed)` guard
+	});
+
+	it('still re-processes results when the query genuinely changes', () => {
+		const engine = new window.DexSearch();
+		engine.find('pikachu');
+		engine.find('raichu');
+		const speedRows = engine.results.filter((row) => row[0] === 'cf-speedrow');
+		expect(speedRows.length).toBe(1);
 	});
 });
 
