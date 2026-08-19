@@ -1363,6 +1363,22 @@
 			return { cls, attrs };
 		}
 
+		/** Shared by every Moves/Abilities/Items/Teammates/Natures row below — the outer
+		 *  `<div class="cf-pika-row...">` markup (icon cell, then a `.cf-pika-name` cell, then a
+		 *  `.cf-pika-pct` cell) is byte-identical across all five sections; only what goes inside
+		 *  those three cells differs per section, so that's what each section still builds itself. */
+		function pikaRowDivHTML(cls, attrs, iconHTML, nameHTML, pctHTML) {
+			return `<div class="${cls}"${attrs}>${iconHTML}` +
+				`<span class="cf-pika-name">${nameHTML}</span>` +
+				`<span class="cf-pika-pct">${pctHTML}</span></div>`;
+		}
+
+		/** Moves/Items both fall back to the same blank `.cf-pika-icon-spacer` placeholder when
+		 *  there's no real icon to show, so every row's name column still lines up regardless. */
+		function iconOrSpacer(iconHTML) {
+			return iconHTML || '<span class="cf-pika-icon-spacer"></span>';
+		}
+
 		/** "Other" is Pikalytics' bucket for everything below its per-move cutoff — real
 		 *  aggregate data, not a specific move, so it's kept (dropping it would silently
 		 *  understate usage) but has no `type` of its own, hence the blank spacer. Click-to-
@@ -1377,12 +1393,10 @@
 			const set = tbRoom.curSet;
 			const full = curSetMovesFull(set);
 			const rows = moves.map((m) => {
-				const icon = m.type ? window.Dex.getTypeIcon(m.type) : '<span class="cf-pika-icon-spacer"></span>';
+				const icon = iconOrSpacer(m.type ? window.Dex.getTypeIcon(m.type) : '');
 				const equipped = curSetHasMove(set, m.move);
 				const { cls, attrs } = pikaRowAttrs('move', m.move, equipped, !equipped && full);
-				return `<div class="${cls}"${attrs}>${icon}` +
-					`<span class="cf-pika-name">${escapeHTML(m.move)}</span>` +
-					`<span class="cf-pika-pct">${escapeHTML(m.percent)}%</span></div>`;
+				return pikaRowDivHTML(cls, attrs, icon, escapeHTML(m.move), `${escapeHTML(m.percent)}%`);
 			}).join('');
 			return pikaSectionHTML('Common Moves', rows);
 		}
@@ -1398,8 +1412,7 @@
 			const rows = abilities.map((a) => {
 				const equipped = !!(set && set.ability && toIDSafe(set.ability) === toIDSafe(a.ability));
 				const { cls, attrs } = pikaRowAttrs('ability', a.ability, equipped, false);
-				return `<div class="${cls}"${attrs}><span class="cf-pika-name">${escapeHTML(a.ability)}</span>` +
-					`<span class="cf-pika-pct">${escapeHTML(a.percent)}%</span></div>`;
+				return pikaRowDivHTML(cls, attrs, '', escapeHTML(a.ability), `${escapeHTML(a.percent)}%`);
 			}).join('');
 			return pikaSectionHTML('Common Abilities', rows);
 		}
@@ -1429,8 +1442,8 @@
 				const pct = typeof n.percent === 'number' ? n.percent.toFixed(1) : n.percent;
 				const equipped = !!(set && set.nature && toIDSafe(set.nature) === toIDSafe(n.nature));
 				const { cls, attrs } = pikaRowAttrs('nature', n.nature, equipped, false);
-				return `<div class="${cls}"${attrs}><span class="cf-pika-name"><span class="cf-pika-nature-name">${escapeHTML(n.nature)}</span>${natureModifierHTML(n.nature)}</span>` +
-					`<span class="cf-pika-pct">${escapeHTML(String(pct))}%</span></div>`;
+				const nameHTML = `<span class="cf-pika-nature-name">${escapeHTML(n.nature)}</span>${natureModifierHTML(n.nature)}`;
+				return pikaRowDivHTML(cls, attrs, '', nameHTML, `${escapeHTML(String(pct))}%`);
 			}).join('');
 			return pikaSectionHTML('Common Natures', rows);
 		}
@@ -1443,12 +1456,10 @@
 			const set = tbRoom.curSet;
 			const rows = items.map((it) => {
 				const iconStyle = (it.item && window.Dex) ? window.Dex.getItemIcon(it.item) : '';
-				const icon = iconStyle ? `<span class="itemicon" style="${escapeHTML(iconStyle)}"></span>` : '<span class="cf-pika-icon-spacer"></span>';
+				const icon = iconOrSpacer(iconStyle ? `<span class="itemicon" style="${escapeHTML(iconStyle)}"></span>` : '');
 				const equipped = !!(set && set.item && toIDSafe(set.item) === toIDSafe(it.item));
 				const { cls, attrs } = pikaRowAttrs('item', it.item, equipped, false);
-				return `<div class="${cls}"${attrs}>${icon}` +
-					`<span class="cf-pika-name">${escapeHTML(it.item)}</span>` +
-					`<span class="cf-pika-pct">${escapeHTML(it.percent)}%</span></div>`;
+				return pikaRowDivHTML(cls, attrs, icon, escapeHTML(it.item), `${escapeHTML(it.percent)}%`);
 			}).join('');
 			return pikaSectionHTML('Common Items', rows);
 		}
@@ -1495,17 +1506,21 @@
 			const team = mon.team || [];
 			if (!team.length) return pikaSectionHTML('Common Teammates', '<p class="cf-pika-empty">No teammate data.</p>');
 			const full = curTeamFull(tbRoom);
+			// Same base-species-ID comparison curTeamHasSpecies does per call, just computed once
+			// for the whole team up front instead of re-walking curSetList (and re-resolving each
+			// member's Mega/Primal base species) for every one of the up-to-20 rows below.
+			const teamSpeciesIds = new Set(
+				(tbRoom.curSetList || []).filter((s) => s.species).map((s) => baseSpeciesID(s.species))
+			);
 			const rows = team.map((t, i) => {
-				const iconStyle = window.Dex ? window.Dex.getPokemonIcon(t.pokemon) : '';
+				const icon = `<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(t.pokemon) : '')}"></span>`;
 				let pct;
 				if (t.percent !== undefined && t.percent !== null) pct = `${escapeHTML(String(t.percent))}%`;
 				else if (t.rank !== undefined && t.rank !== null) pct = `#${escapeHTML(String(t.rank))}`;
 				else pct = `#${i + 1}`;
-				const equipped = curTeamHasSpecies(tbRoom, t.pokemon);
+				const equipped = teamSpeciesIds.has(baseSpeciesID(t.pokemon));
 				const { cls, attrs } = pikaRowAttrs('teammate', t.pokemon, equipped, equipped || full);
-				return `<div class="${cls}"${attrs}><span class="picon" style="${escapeHTML(iconStyle)}"></span>` +
-					`<span class="cf-pika-name">${escapeHTML(t.pokemon)}</span>` +
-					`<span class="cf-pika-pct">${pct}</span></div>`;
+				return pikaRowDivHTML(cls, attrs, icon, escapeHTML(t.pokemon), pct);
 			}).join('');
 			return pikaSectionHTML('Common Teammates', rows);
 		}

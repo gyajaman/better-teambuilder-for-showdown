@@ -265,15 +265,16 @@
 	 *  {month, cutoff} per tier 1 — so it can go stale earlier than its own TTL if a new
 	 *  month/cutoff shows up first. Falls back to a stale species entry (rather than nothing)
 	 *  if the refetch fails, e.g. Pikalytics is briefly down. */
-	function getSpeciesData(formatId, speciesName) {
-		const slug = slugFor(formatId);
-		if (!slug) return Promise.resolve(null);
-
-		const querySpecies = resolveQuerySpecies(speciesName);
-		const speciesKey = formatId + '|' + toID(querySpecies);
-
-		return getFormatMeta(slug, querySpecies).then((meta) => {
-			const cached = readEntry(SPECIES_CACHE_PREFIX, speciesKey);
+	/** Shared tier-2 cache/fetch sequence behind getSpeciesData and getUsageList below (see the
+	 *  module doc comment's two-tier cache design) — both need the identical "check format meta
+	 *  -> serve a still-current cached entry -> otherwise fetch, cache, and return the fresh
+	 *  result, falling back to a stale cached entry if the fetch fails" sequence, differing only
+	 *  in which cache prefix/key they read/write and which endpoint they fetch. `fetchFn(meta)`
+	 *  is that one varying piece — call the actual /api/p/ or /api/l/ endpoint and resolve to its
+	 *  parsed result, or null on failure. */
+	function getCachedOrFetch(slug, cachePrefix, cacheKey, querySpeciesHint, fetchFn) {
+		return getFormatMeta(slug, querySpeciesHint).then((meta) => {
+			const cached = readEntry(cachePrefix, cacheKey);
 			if (!meta) return cached ? cached.data : null;
 
 			const cacheIsCurrent = cached &&
@@ -281,12 +282,23 @@
 				(Date.now() - cached.fetchedAt) < CACHE_TTL_MS;
 			if (cacheIsCurrent) return cached.data;
 
-			return fetchSpeciesData(meta.month, slug, meta.cutoff, querySpecies).then((data) => {
+			return fetchFn(meta).then((data) => {
 				if (!data) return cached ? cached.data : null;
-				writeEntry(SPECIES_CACHE_PREFIX, speciesKey, { month: meta.month, cutoff: meta.cutoff, data, fetchedAt: Date.now() });
+				writeEntry(cachePrefix, cacheKey, { month: meta.month, cutoff: meta.cutoff, data, fetchedAt: Date.now() });
 				return data;
 			});
 		});
+	}
+
+	function getSpeciesData(formatId, speciesName) {
+		const slug = slugFor(formatId);
+		if (!slug) return Promise.resolve(null);
+
+		const querySpecies = resolveQuerySpecies(speciesName);
+		const speciesKey = formatId + '|' + toID(querySpecies);
+
+		return getCachedOrFetch(slug, SPECIES_CACHE_PREFIX, speciesKey, querySpecies,
+			(meta) => fetchSpeciesData(meta.month, slug, meta.cutoff, querySpecies));
 	}
 
 	/** Fetches the bulk /api/l/ list purely for its name+rank ordering (see the module doc
@@ -320,21 +332,8 @@
 		const slug = slugFor(formatId);
 		if (!slug) return Promise.resolve(null);
 
-		return getFormatMeta(slug, querySpeciesHint).then((meta) => {
-			const cached = readEntry(USAGE_LIST_CACHE_PREFIX, slug);
-			if (!meta) return cached ? cached.data : null;
-
-			const cacheIsCurrent = cached &&
-				cached.month === meta.month && cached.cutoff === meta.cutoff &&
-				(Date.now() - cached.fetchedAt) < CACHE_TTL_MS;
-			if (cacheIsCurrent) return cached.data;
-
-			return fetchUsageList(meta.month, slug, meta.cutoff).then((list) => {
-				if (!list) return cached ? cached.data : null;
-				writeEntry(USAGE_LIST_CACHE_PREFIX, slug, { month: meta.month, cutoff: meta.cutoff, data: list, fetchedAt: Date.now() });
-				return list;
-			});
-		});
+		return getCachedOrFetch(slug, USAGE_LIST_CACHE_PREFIX, slug, querySpeciesHint,
+			(meta) => fetchUsageList(meta.month, slug, meta.cutoff));
 	}
 
 	/** Returns a Promise resolving to the top `count` most-used Pokémon in a format, each as
