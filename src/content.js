@@ -264,7 +264,7 @@
 			escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
 			curTeamHasSpecies, curTeamFull, parseEVs, natureModifierHTML, speedNatureIndicator,
 			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
-			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter,
+			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 			STAT_LABEL_BY_ID, STAT_IDS, STAT_LABELS,
 			CATEGORY_ORDER, DYNAMIC_CATEGORIES,
 		};
@@ -586,6 +586,27 @@
 	 *  drop it and show only our "Custom Filters" section. If the fallback didn't fire
 	 *  (real prefix matches exist), our section is prepended in front of them as usual —
 	 *  the same slot the "Pokémon"/"Moves"/etc. buckets start at. */
+	/** matchLength (see injectTypedFilterSuggestions below) is measured in toID'd characters —
+	 *  the query has already had spaces/punctuation stripped — but renderRow bolds a substring
+	 *  of the real, un-stripped label via plain `label.substr(matchStart, matchLength)`. For a
+	 *  multi-word/punctuated label ("Hazard Removal", "Ball/Bomb") those two lengths diverge:
+	 *  using the toID length directly as a raw-string offset bolds the wrong characters the
+	 *  moment the match reaches past a stripped space/slash. This walks the raw label counting
+	 *  only the characters that survive toID (letters/digits — matching toID's own
+	 *  `[^a-z0-9]` strip), and returns the raw-string length needed to consume `idLength` of
+	 *  them, so the returned offset always lines up with the real label's characters. */
+	function rawPrefixLengthForIdLength(label, idLength) {
+		if (!idLength) return 0;
+		let idCount = 0;
+		for (let i = 0; i < label.length; i++) {
+			if (/[a-zA-Z0-9]/.test(label[i])) {
+				idCount++;
+				if (idCount === idLength) return i + 1;
+			}
+		}
+		return label.length;
+	}
+
 	function injectTypedFilterSuggestions(engine, query) {
 		if (!query) return;
 		const q = window.toID(query);
@@ -601,10 +622,11 @@
 			if (catId.startsWith(q) || window.toID(cat.label).startsWith(q)) {
 				// matchStart/matchLength: same [type, id, matchStart, matchLength] shape
 				// native rows use to bold the matched substring of the name (see
-				// renderRow below). Our labels are single plain words, so the toID'd
-				// query always lines up with the same character positions in the
-				// display label — a straight prefix match at position 0.
-				suggestions.push(['customfilter', catId, 0, q.length]);
+				// renderRow below) — always a prefix match at position 0, but matchLength
+				// has to be translated from toID'd-character count to a real raw-string
+				// offset (see rawPrefixLengthForIdLength) since several labels below
+				// contain spaces/punctuation that toID strips out.
+				suggestions.push(['customfilter', catId, 0, rawPrefixLengthForIdLength(cat.label, q.length)]);
 			}
 		}
 		if (!suggestions.length) return;

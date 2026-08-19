@@ -11,7 +11,7 @@ const {
 	escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
 	curTeamHasSpecies, curTeamFull, parseEVs, natureModifierHTML, speedNatureIndicator,
 	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
-	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter,
+	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 } = require('../src/content.js');
 
 describe('escapeHTML', () => {
@@ -264,6 +264,32 @@ describe('speedCmpTooltipWidthClass', () => {
 
 	it('clamps to the widest tier rather than returning undefined for an out-of-range count', () => {
 		expect(speedCmpTooltipWidthClass(4)).toBe(' cf-speedcmp-tooltip-widest2');
+	});
+});
+
+describe('rawPrefixLengthForIdLength', () => {
+	it('returns the same length for a single-word label with no stripped characters', () => {
+		expect(rawPrefixLengthForIdLength('Priority', 'priorit'.length)).toBe('priorit'.length);
+	});
+
+	it('skips a space when mapping a toID-character count back onto the raw label', () => {
+		// toID('Hazard Removal') === 'hazardremoval'; typing 'hazardr' (7 id-chars) should
+		// bold "Hazard R" (8 raw chars — the space between the words doesn't count).
+		expect(rawPrefixLengthForIdLength('Hazard Removal', 7)).toBe(8);
+	});
+
+	it('skips punctuation the same way', () => {
+		// toID('Ball/Bomb') === 'ballbomb'; typing 'ballb' (5 id-chars) should bold "Ball/B"
+		// (6 raw chars — the slash doesn't count).
+		expect(rawPrefixLengthForIdLength('Ball/Bomb', 5)).toBe(6);
+	});
+
+	it('returns 0 for a zero-length match', () => {
+		expect(rawPrefixLengthForIdLength('Hazard Removal', 0)).toBe(0);
+	});
+
+	it('returns the full label length when idLength reaches every id-character in it', () => {
+		expect(rawPrefixLengthForIdLength('Hazard Removal', 'hazardremoval'.length)).toBe('Hazard Removal'.length);
 	});
 });
 
