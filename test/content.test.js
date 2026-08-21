@@ -1007,11 +1007,11 @@ describe('buildSimilarTeamRowHTML / buildSimilarTeamsSectionHTML', () => {
 		]);
 	});
 
-	it('caps the section at 10 rows', () => {
+	it('renders every match it\'s given, with no cap of its own — pagination is the caller\'s job', () => {
 		mockDex();
 		const matches = Array.from({ length: 15 }, (_, i) => ({ record: `${i}-0`, pokemon: [{ name: 'Incineroar' }] }));
 		const html = buildSimilarTeamsSectionHTML(matches);
-		expect((html.match(/cf-similarteam-row/g) || []).length).toBe(10);
+		expect((html.match(/cf-similarteam-row/g) || []).length).toBe(15);
 	});
 });
 

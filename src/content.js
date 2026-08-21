@@ -259,6 +259,18 @@
 		return { item: scarf.item, isMega: false };
 	}
 
+	/** How many Similar Teams matches are detail-fetched and rendered per page — the first page
+	 *  loads with the section itself; every later page loads on scroll (see
+	 *  loadMoreSimilarTeams/onSimilarTeamsScroll) rather than fetching detail for aggregateTopTeams'
+	 *  entire result up front, since with the scaled-down `shared >= 1` threshold (see that
+	 *  function's own doc comment) a popular single Pokémon can realistically match dozens of
+	 *  the format's ~200 real teams. */
+	const SIMILAR_TEAMS_PAGE_SIZE = 10;
+	/** Pixels of remaining scroll (scrollHeight - scrollTop - clientHeight) at which the next
+	 *  page starts loading — a small positive margin rather than 0, so the next page is already
+	 *  in flight before the user actually hits the bottom and sees a dead-end. */
+	const SIMILAR_TEAMS_SCROLL_THRESHOLD_PX = 120;
+
 	/** Filters/scores window.CF_Pikalytics.getTopTeams()'s own up-to-200-team list (the
 	 *  format's real featured tournament teams, NOT filtered to any one species — see
 	 *  pikalytics.js's own module comment on Top Teams for how this differs from and improves
@@ -1435,6 +1447,30 @@
 		}
 	}
 
+	/** Pagination on scroll for the Similar Teams section (see loadMoreSimilarTeams, defined
+	 *  inside patchTeambuilderSidebar and bridged out via CF the same way
+	 *  buildSpeedComparisonTooltipHTML is). 'scroll' doesn't bubble, so this has to be a
+	 *  capture-phase document listener (registered at the bottom of this file, alongside every
+	 *  other document-level listener) rather than something attached directly to
+	 *  `.cf-pika-rows` itself, which also wouldn't survive that element being replaced whenever
+	 *  the panel re-renders. `ev.target` is already the scrolling element itself for a real
+	 *  scroll event (not a descendant needing `.closest()` upward) — the `.closest('#cf-pika-panel')`
+	 *  check only exists to rule out the *other* five-or-so `.cf-pika-rows` boxes elsewhere in
+	 *  the sidebar (the six-section per-species grid, the Popular column) sharing the same
+	 *  class name. */
+	function onSimilarTeamsScroll(ev) {
+		const el = ev.target;
+		if (!el || !el.classList || !el.classList.contains('cf-pika-rows')) return;
+		if (!el.closest || !el.closest('#cf-pika-panel')) return;
+		if (el.scrollHeight - el.scrollTop - el.clientHeight > SIMILAR_TEAMS_SCROLL_THRESHOLD_PX) return;
+
+		const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
+		if (!tbRoom || !isBlankSlot(tbRoom)) return;
+		const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
+		if (!formatId || !CF.loadMoreSimilarTeams) return;
+		CF.loadMoreSimilarTeams(tbRoom, formatId);
+	}
+
 	/** Forces a full re-filter + redraw of whatever search box is currently active, the
 	 *  same way applying/removing a typed filter chip already does elsewhere in this file
 	 *  (patchLegacyFilterChips's removeFilter, DexSearch.prototype.addFilter): null out
@@ -1846,19 +1882,19 @@
 			`</div>`;
 	}
 
-	/** Caps at 10 — aggregateTopTeams can return more than that once a roster shares species
-	 *  with a lot of the format's ~200-team pool, and beyond 10 real examples the section stops
-	 *  adding new information (still sorted best-share-first, so the ones dropped are always
-	 *  the least relevant). renderSimilarTeamsPanel already slices to 10 itself before this
-	 *  ever runs (so it only pays for detail-fetching the teams that will actually render); the
-	 *  slice here is just belt-and-suspenders for any other caller. `rosterSpeciesIds`
-	 *  (curRosterSpeciesOrder(tbRoom)) is
-	 *  threaded through to every row so they all align to the same reference order — computed
-	 *  once by the caller rather than per row, since it's identical for every match being
-	 *  rendered together. */
+	/** Renders exactly the matches it's given — no internal cap. Pagination (loading matches
+	 *  a page at a time as the user scrolls, rather than all of aggregateTopTeams' full result
+	 *  at once) is the caller's job (renderSimilarTeamsPanel/loadMoreSimilarTeams): the first
+	 *  call here renders one page's worth via this function, and every later page is appended
+	 *  straight to the existing `.cf-pika-rows` DOM node instead of re-calling this and
+	 *  replacing everything (which would both refetch nothing new *and* reset scroll position
+	 *  back to the top on every page — exactly what "pagination on scroll" shouldn't do).
+	 *  `rosterSpeciesIds` (curRosterSpeciesOrder(tbRoom)) is threaded through to every row so
+	 *  they all align to the same reference order — computed once by the caller rather than per
+	 *  row, since it's identical for every match being rendered together. */
 	function buildSimilarTeamsSectionHTML(matches, rosterSpeciesIds) {
 		if (!matches || !matches.length) return pikaSectionHTML('Similar Teams', '<p class="cf-pika-empty">No similar teams found yet.</p>');
-		const rows = matches.slice(0, 10).map((m, i) => buildSimilarTeamRowHTML(m, i, rosterSpeciesIds)).join('');
+		const rows = matches.map((m, i) => buildSimilarTeamRowHTML(m, i, rosterSpeciesIds)).join('');
 		return pikaSectionHTML('Similar Teams', rows);
 	}
 
@@ -2455,6 +2491,11 @@
 		}
 
 		let lastSimilarTeamsKey = null;
+		/** The full aggregateTopTeams() result for lastSimilarTeamsKey — light detail only
+		 *  (species+item, no ability/moves), never trimmed. lastSimilarTeamsMatches (below) is
+		 *  the prefix of this that's actually been detail-fetched and rendered so far; the two
+		 *  only ever differ while more pages remain to load. */
+		let lastSimilarTeamsAllMatches = null;
 		let lastSimilarTeamsMatches = null;
 		/** Distinguishes *why* lastSimilarTeamsMatches is still null for the current
 		 *  lastSimilarTeamsKey: a fetch still in flight (don't restart it — the in-flight
@@ -2468,7 +2509,24 @@
 		 *  cancelling the one already in flight — confirmed live, this could leave the panel
 		 *  stuck on "Loading…" indefinitely under fast repeated re-renders. */
 		let lastSimilarTeamsFailed = false;
+		/** True only while a loadMoreSimilarTeams() page fetch is actually in flight — guards
+		 *  against a second scroll-triggered call starting an overlapping page fetch before the
+		 *  first one lands, which would otherwise let two pages race to both read the same
+		 *  lastSimilarTeamsMatches.length as their start offset and append duplicate rows. */
+		let lastSimilarTeamsLoadingMore = false;
 		let similarTeamsRenderToken = 0;
+
+		/** Shared by renderSimilarTeamsPanel's first page and loadMoreSimilarTeams' later ones:
+		 *  backfills one match's ability/moves via getTopTeamDetail, falling back to the match's
+		 *  own light pokemon list (species+item only) if that lookup fails — a detail-fetch
+		 *  failure for one team (network hiccup, or a team the detail endpoint doesn't
+		 *  recognize) degrades that one row to "sprites and item badges only"
+		 *  (buildSimilarTeamRowHTML/buildSimilarTeamTooltipHTML already render missing ability/
+		 *  moves as simply absent, not broken) rather than dropping the row entirely. */
+		function fetchAndMergeTeamDetail(formatId, match) {
+			return window.CF_Pikalytics.getTopTeamDetail(formatId, match.tournamentId, match.authorId)
+				.then((detail) => ((detail && Array.isArray(detail.pokemon)) ? Object.assign({}, match, { pokemon: detail.pokemon }) : match));
+		}
 
 		/** Fills #cf-pika-panel on a blank slot (see isBlankSlot) with real tournament teams
 		 *  that share species with the current roster — see aggregateTopTeams for how "similar"
@@ -2476,11 +2534,15 @@
 		 *  the format's whole ~200-team pool (light detail — species+item only, no ability/
 		 *  moves; already cached inside pikalytics.js itself, so a warm call here is cheap),
 		 *  aggregated down to whichever ones actually share species with the roster, then one
-		 *  getTopTeamDetail() call per surviving match (capped to the 10 that will actually
-		 *  render) to backfill ability/moves for just those — see pikalytics.js's own Top Teams
-		 *  module comment for why detail is a separate per-team fetch. Cached here by roster
-		 *  composition (rosterSpeciesKey) so re-renders triggered by something unrelated (a
-		 *  resize, a click elsewhere) don't redo either fetch every time.
+		 *  getTopTeamDetail() call per surviving match in the *first page only*
+		 *  (SIMILAR_TEAMS_PAGE_SIZE) to backfill ability/moves for just those — see
+		 *  pikalytics.js's own Top Teams module comment for why detail is a separate per-team
+		 *  fetch. Every later page loads on scroll instead (loadMoreSimilarTeams), so a species
+		 *  that matches dozens of the 200-team pool doesn't front-load dozens of detail
+		 *  requests before the section can even render. Cached here by roster composition
+		 *  (rosterSpeciesKey) so re-renders triggered by something unrelated (a resize, a click
+		 *  elsewhere) don't redo either fetch, or lose whatever pages had already been scrolled
+		 *  in, every time.
 		 *
 		 *  The reference order every row/tooltip aligns against (alignSimilarTeamPokemon) is
 		 *  read fresh via curRosterSpeciesOrder(tbRoom) at each actual render point below,
@@ -2495,6 +2557,7 @@
 			if (!roster.length) {
 				panelEl.innerHTML = addPokemonPanelWrapHTML(pikaSectionHTML('Similar Teams', '<p class="cf-pika-empty">No Pokémon on your team yet.</p>'));
 				lastSimilarTeamsKey = null;
+				lastSimilarTeamsAllMatches = null;
 				lastSimilarTeamsMatches = null;
 				lastSimilarTeamsFailed = false;
 				// Invalidates any fetch still in flight from before the roster was emptied —
@@ -2506,9 +2569,11 @@
 
 			const key = formatId + '|' + rosterSpeciesKey(tbRoom);
 			if (key === lastSimilarTeamsKey && !lastSimilarTeamsFailed) {
-				// Same roster composition as last time AND that lookup didn't fail: if it's
-				// already resolved, just redraw (cheap) against the current slot order; if
-				// it's still in flight, there's nothing new to do — let it resolve on its own.
+				// Same roster composition as last time AND that lookup didn't fail: if the first
+				// page has already resolved, just redraw (cheap) against the current slot order
+				// — rendering whatever's in lastSimilarTeamsMatches, however many pages that
+				// already grew to via scrolling, not just the first page again. If it's still in
+				// flight, there's nothing new to do — let it resolve on its own.
 				if (lastSimilarTeamsMatches) {
 					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(lastSimilarTeamsMatches, curRosterSpeciesOrder(tbRoom)));
 				}
@@ -2520,6 +2585,7 @@
 			}
 
 			lastSimilarTeamsKey = key;
+			lastSimilarTeamsAllMatches = null;
 			lastSimilarTeamsMatches = null;
 			lastSimilarTeamsFailed = false;
 			const token = ++similarTeamsRenderToken;
@@ -2527,21 +2593,15 @@
 
 			window.CF_Pikalytics.getTopTeams(formatId).then((teams) => {
 				if (token !== similarTeamsRenderToken) return; // superseded by a newer request
-				const matches = aggregateTopTeams(teams, curRosterSpeciesOrder(tbRoom)).slice(0, 10);
-				if (!matches.length) {
-					lastSimilarTeamsMatches = matches;
-					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(matches, curRosterSpeciesOrder(tbRoom)));
+				const allMatches = aggregateTopTeams(teams, curRosterSpeciesOrder(tbRoom));
+				lastSimilarTeamsAllMatches = allMatches;
+				if (!allMatches.length) {
+					lastSimilarTeamsMatches = allMatches;
+					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(allMatches, curRosterSpeciesOrder(tbRoom)));
 					return null;
 				}
-				// A detail-fetch failure for one team (network hiccup, or a team the detail
-				// endpoint doesn't recognize) falls back to that match's own light pokemon
-				// list — buildSimilarTeamRowHTML/buildSimilarTeamTooltipHTML already render a
-				// missing ability/moves as simply absent, not broken, so this degrades to
-				// "sprites and item badges only" for that one row rather than dropping it.
-				return Promise.all(matches.map((m) =>
-					window.CF_Pikalytics.getTopTeamDetail(formatId, m.tournamentId, m.authorId)
-						.then((detail) => ((detail && Array.isArray(detail.pokemon)) ? Object.assign({}, m, { pokemon: detail.pokemon }) : m))
-				)).then((detailedMatches) => {
+				const firstPage = allMatches.slice(0, SIMILAR_TEAMS_PAGE_SIZE);
+				return Promise.all(firstPage.map((m) => fetchAndMergeTeamDetail(formatId, m))).then((detailedMatches) => {
 					if (token !== similarTeamsRenderToken) return;
 					lastSimilarTeamsMatches = detailedMatches;
 					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(detailedMatches, curRosterSpeciesOrder(tbRoom)));
@@ -2553,9 +2613,56 @@
 				panelEl.innerHTML = addPokemonPanelWrapHTML(pikaSectionHTML('Similar Teams', '<p class="cf-pika-empty">Failed to load.</p>'));
 			});
 		}
+
+		/** Pagination on scroll (onSimilarTeamsScroll, below) — appends the next
+		 *  SIMILAR_TEAMS_PAGE_SIZE matches straight onto the existing `.cf-pika-rows` DOM node
+		 *  via insertAdjacentHTML, rather than rebuilding the whole section through
+		 *  renderSimilarTeamsPanel again: a full rebuild would both refetch nothing new *and*
+		 *  reset scroll position back to the top on every page, defeating the point of
+		 *  pagination-on-scroll. A trailing "Loading more…" placeholder is appended before the
+		 *  fetch and removed once it settles either way, so the user always sees *something* at
+		 *  the bottom while a page is in flight rather than a dead scrollbar. No-ops (rather
+		 *  than erroring) if nothing has loaded yet, a page is already in flight, or every match
+		 *  is already loaded — all real, reachable states from a scroll event that can fire at
+		 *  any time. */
+		function loadMoreSimilarTeams(tbRoom, formatId) {
+			if (lastSimilarTeamsLoadingMore || !lastSimilarTeamsAllMatches || !lastSimilarTeamsMatches) return;
+			const start = lastSimilarTeamsMatches.length;
+			if (start >= lastSimilarTeamsAllMatches.length) return;
+
+			const rowsEl = document.querySelector('#cf-pika-panel .cf-pika-rows');
+			if (!rowsEl) return;
+
+			const nextPage = lastSimilarTeamsAllMatches.slice(start, start + SIMILAR_TEAMS_PAGE_SIZE);
+			lastSimilarTeamsLoadingMore = true;
+			const token = similarTeamsRenderToken;
+			const loadingEl = document.createElement('p');
+			loadingEl.className = 'cf-sidebar-placeholder';
+			loadingEl.textContent = 'Loading more…';
+			rowsEl.appendChild(loadingEl);
+
+			Promise.all(nextPage.map((m) => fetchAndMergeTeamDetail(formatId, m))).then((detailed) => {
+				lastSimilarTeamsLoadingMore = false;
+				loadingEl.remove();
+				if (token !== similarTeamsRenderToken) return; // superseded by a newer render
+				const startIdx = lastSimilarTeamsMatches.length;
+				const rosterSpeciesIds = curRosterSpeciesOrder(tbRoom);
+				lastSimilarTeamsMatches = lastSimilarTeamsMatches.concat(detailed);
+				const newRowsHTML = detailed.map((m, i) => buildSimilarTeamRowHTML(m, startIdx + i, rosterSpeciesIds)).join('');
+				rowsEl.insertAdjacentHTML('beforeend', newRowsHTML);
+			}).catch((e) => {
+				lastSimilarTeamsLoadingMore = false;
+				loadingEl.remove();
+				console.error('[Better Teambuilder] Loading more similar teams failed:', e);
+			});
+		}
 		// onMouseOver needs the currently-rendered matches by row index (data-cf-similarteam-idx)
-		// to build the hover tooltip — same CF cross-scope handoff as buildSpeedComparisonTooltipHTML.
+		// to build the hover tooltip; onSimilarTeamsScroll needs to trigger the next page — same
+		// CF cross-scope handoff as buildSpeedComparisonTooltipHTML (both live outside this
+		// closure, since document-level listener registration happens in one place, see the
+		// bottom of this file).
 		CF.getSimilarTeamMatch = (idx) => lastSimilarTeamsMatches && lastSimilarTeamsMatches[idx];
+		CF.loadMoreSimilarTeams = loadMoreSimilarTeams;
 
 		function renderPikalyticsSidebar(tbRoom) {
 			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
@@ -2853,6 +2960,7 @@
 		}
 		document.addEventListener('mouseover', onMouseOver, true);
 		document.addEventListener('mouseout', onMouseOut, true);
+		document.addEventListener('scroll', onSimilarTeamsScroll, true);
 		document.addEventListener('click', onSpeedFilterClick, true);
 		document.addEventListener('input', onSpeedFilterInput, true);
 		document.addEventListener('focusin', onPikaSidebarFocusChange, true);
