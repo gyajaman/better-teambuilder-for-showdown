@@ -259,46 +259,47 @@
 		return { item: scarf.item, isMega: false };
 	}
 
-	/** Merges the sample "real teams featuring this species" lists Pikalytics attaches to every
-	 *  already-added team member's own payload (the `teams` field — up to ~20 real tournament
-	 *  rosters per species, author/event/record/full pokemon list) into one list of teams that
-	 *  share species with the current build. A real team shows up in *every* member's own
-	 *  `teams` list it happens to contain, so how many times the very same team recurs across the
-	 *  roster's combined fetch already *is* its share count — no separate overlap computation
-	 *  needed. Identified by event+author (one team per author per event; Pikalytics doesn't
-	 *  expose a single field guaranteed unique on its own) rather than any one id field.
+	/** Filters/scores window.CF_Pikalytics.getTopTeams()'s own up-to-200-team list (the
+	 *  format's real featured tournament teams, NOT filtered to any one species — see
+	 *  pikalytics.js's own module comment on Top Teams for how this differs from and improves
+	 *  on the older per-species `/api/p/` `team` sample, capped at ~20 and only ever containing
+	 *  teams that happen to include one specific already-added species) down to the ones that
+	 *  share species with the current roster.
+	 *
+	 *  `shared` is a direct intersection count against the roster — how many of THIS team's own
+	 *  Pokémon are also on the roster — rather than the older code's indirect trick of counting
+	 *  how many times the same team recurred across several per-species fetches; a single bulk
+	 *  list makes that recurrence-counting unnecessary, and a direct count is the more obviously
+	 *  correct computation of the same real fact.
 	 *
 	 *  `minShared` scales with roster size: with only one real species added so far there's
 	 *  nothing to require overlap *against* yet (every match would have shared === 1), so 1 is
 	 *  accepted; once there's a second real species, requiring at least 2 is what actually makes
-	 *  "similar" mean something. Sorted by share count first, then by wins parsed out of `record`
-	 *  ("13-2" -> 13) as a tiebreak — both real numbers already on the data, nothing synthesized
-	 *  or blended into a single score. */
-	function aggregateSimilarTeams(teamsLists) {
-		const lists = teamsLists || [];
-		const minShared = lists.length >= 2 ? 2 : 1;
-		const byKey = new Map();
-		lists.forEach((teams) => {
-			(teams || []).forEach((team) => {
-				if (!team || !Array.isArray(team.pokemon)) return;
-				const key = (team.event || team.tournamentId || '') + '|' + (team.author || team.authorId || '');
-				const existing = byKey.get(key);
-				if (existing) existing.shared++;
-				else byKey.set(key, Object.assign({ shared: 1 }, team));
-			});
-		});
-		return Array.from(byKey.values())
+	 *  "similar" mean something. Sorted by share count first, then by wins (recordData.wins,
+	 *  falling back to parsing `record` — "13-2" -> 13 — for entries missing the structured
+	 *  field) as a tiebreak — both real numbers already on the data, nothing synthesized or
+	 *  blended into a single score. */
+	function aggregateTopTeams(teams, rosterSpeciesIds) {
+		const rosterSet = new Set(rosterSpeciesIds || []);
+		if (!rosterSet.size) return [];
+		const minShared = rosterSet.size >= 2 ? 2 : 1;
+
+		const wins = (t) => (t.recordData && typeof t.recordData.wins === 'number') ?
+			t.recordData.wins : (parseInt((t.record || '').split('-')[0], 10) || 0);
+
+		return (teams || [])
+			.filter((team) => team && Array.isArray(team.pokemon))
+			.map((team) => {
+				const shared = team.pokemon.reduce((n, p) =>
+					n + ((p && p.name && rosterSet.has(baseSpeciesID(p.name))) ? 1 : 0), 0);
+				return Object.assign({ shared }, team);
+			})
 			.filter((e) => e.shared >= minShared)
-			.sort((a, b) => {
-				if (b.shared !== a.shared) return b.shared - a.shared;
-				const aWins = parseInt((a.record || '').split('-')[0], 10) || 0;
-				const bWins = parseInt((b.record || '').split('-')[0], 10) || 0;
-				return bWins - aWins;
-			});
+			.sort((a, b) => (b.shared !== a.shared) ? b.shared - a.shared : wins(b) - wins(a));
 	}
 
 	/** The current roster's own species, base-species-ID'd (same normalization
-	 *  curTeamHasSpecies/aggregateSimilarTeams-adjacent code uses everywhere else), in the
+	 *  curTeamHasSpecies/aggregateTopTeams-adjacent code uses everywhere else), in the
 	 *  actual slot order they were added — NOT sorted, unlike rosterSpeciesKey's cache key
 	 *  (which sorts on purpose, since a cache key shouldn't care about order). This is the
 	 *  reference column order alignSimilarTeamPokemon below aligns every match against, so it
@@ -310,7 +311,7 @@
 	/** Reorders one similar team's 6 Pokémon to line up column-by-column with the current
 	 *  roster, so scanning down a column across several rendered rows compares the same "slot"
 	 *  rather than requiring a name-by-name search each time — that's the whole point of
-	 *  surfacing these teams at all (see aggregateSimilarTeams' own doc comment). Species this
+	 *  surfacing these teams at all (see aggregateTopTeams' own doc comment). Species this
 	 *  team shares with the roster are placed at the *same index* the roster itself has them at
 	 *  (`rosterSpeciesIds[i]`).
 	 *
@@ -473,7 +474,7 @@
 			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 			teamDamagingMoveTypes, typeEffectivenessMultiplier, bestTeamCoverageMultiplier, coverageTierClass,
-			topSpeedItemBadge, aggregateSimilarTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
+			topSpeedItemBadge, aggregateTopTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
 			STAT_LABEL_BY_ID, STAT_IDS, STAT_LABELS,
 			CATEGORY_ORDER, DYNAMIC_CATEGORIES,
 			pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
@@ -1801,7 +1802,7 @@
 		return `${num}${['th', 'st', 'nd', 'rd'][num % 10] || 'th'}`;
 	}
 
-	/** One row per aggregateSimilarTeams() match: the team's 6 Pokémon as a strip of sprites,
+	/** One row per aggregateTopTeams() match: the team's 6 Pokémon as a strip of sprites,
 	 *  column-aligned to the current roster's own order (alignSimilarTeamPokemon — an empty
 	 *  roster slot neither the roster nor this team can fill renders as a blank placeholder,
 	 *  cf-similarteam-empty-slot, rather than being skipped, so later columns don't shift and
@@ -1838,10 +1839,13 @@
 			`</div>`;
 	}
 
-	/** Caps at 10 — aggregateSimilarTeams can return more than that once a roster has several
-	 *  members each contributing their own ~20-team sample, and beyond 10 real examples the
-	 *  section stops adding new information (still sorted best-share-first, so the ones dropped
-	 *  are always the least relevant). `rosterSpeciesIds` (curRosterSpeciesOrder(tbRoom)) is
+	/** Caps at 10 — aggregateTopTeams can return more than that once a roster shares species
+	 *  with a lot of the format's ~200-team pool, and beyond 10 real examples the section stops
+	 *  adding new information (still sorted best-share-first, so the ones dropped are always
+	 *  the least relevant). renderSimilarTeamsPanel already slices to 10 itself before this
+	 *  ever runs (so it only pays for detail-fetching the teams that will actually render); the
+	 *  slice here is just belt-and-suspenders for any other caller. `rosterSpeciesIds`
+	 *  (curRosterSpeciesOrder(tbRoom)) is
 	 *  threaded through to every row so they all align to the same reference order — computed
 	 *  once by the caller rather than per row, since it's identical for every match being
 	 *  rendered together. */
@@ -2460,12 +2464,16 @@
 		let similarTeamsRenderToken = 0;
 
 		/** Fills #cf-pika-panel on a blank slot (see isBlankSlot) with real tournament teams
-		 *  that share species with the current roster — see aggregateSimilarTeams for how
-		 *  "similar" is decided. Needs one getSpeciesData() fetch per already-added roster
-		 *  member to read each one's own `teams` field (not necessarily already cached — a
-		 *  member added but never individually re-opened since may never have been fetched),
-		 *  cached here by roster composition (rosterSpeciesKey) so re-renders triggered by
-		 *  something unrelated (a resize, a click elsewhere) don't refetch every time.
+		 *  that share species with the current roster — see aggregateTopTeams for how "similar"
+		 *  is decided. Two-step fetch: one window.CF_Pikalytics.getTopTeams(formatId) call for
+		 *  the format's whole ~200-team pool (light detail — species+item only, no ability/
+		 *  moves; already cached inside pikalytics.js itself, so a warm call here is cheap),
+		 *  aggregated down to whichever ones actually share species with the roster, then one
+		 *  getTopTeamDetail() call per surviving match (capped to the 10 that will actually
+		 *  render) to backfill ability/moves for just those — see pikalytics.js's own Top Teams
+		 *  module comment for why detail is a separate per-team fetch. Cached here by roster
+		 *  composition (rosterSpeciesKey) so re-renders triggered by something unrelated (a
+		 *  resize, a click elsewhere) don't redo either fetch every time.
 		 *
 		 *  The reference order every row/tooltip aligns against (alignSimilarTeamPokemon) is
 		 *  read fresh via curRosterSpeciesOrder(tbRoom) at each actual render point below,
@@ -2499,7 +2507,7 @@
 				}
 				return;
 			}
-			if (!window.CF_Pikalytics) {
+			if (!window.CF_Pikalytics || !window.CF_Pikalytics.getTopTeams) {
 				panelEl.innerHTML = addPokemonPanelWrapHTML(pikaSectionHTML('Similar Teams', '<p class="cf-pika-empty">No data for this format.</p>'));
 				return;
 			}
@@ -2510,11 +2518,27 @@
 			const token = ++similarTeamsRenderToken;
 			panelEl.innerHTML = addPokemonPanelWrapHTML(pikaSectionHTML('Similar Teams', '<p class="cf-sidebar-placeholder">Loading…</p>'));
 
-			Promise.all(roster.map((s) => window.CF_Pikalytics.getSpeciesData(formatId, s.species))).then((mons) => {
+			window.CF_Pikalytics.getTopTeams(formatId).then((teams) => {
 				if (token !== similarTeamsRenderToken) return; // superseded by a newer request
-				const matches = aggregateSimilarTeams(mons.map((m) => (m && m.teams) || []));
-				lastSimilarTeamsMatches = matches;
-				panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(matches, curRosterSpeciesOrder(tbRoom)));
+				const matches = aggregateTopTeams(teams, curRosterSpeciesOrder(tbRoom)).slice(0, 10);
+				if (!matches.length) {
+					lastSimilarTeamsMatches = matches;
+					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(matches, curRosterSpeciesOrder(tbRoom)));
+					return null;
+				}
+				// A detail-fetch failure for one team (network hiccup, or a team the detail
+				// endpoint doesn't recognize) falls back to that match's own light pokemon
+				// list — buildSimilarTeamRowHTML/buildSimilarTeamTooltipHTML already render a
+				// missing ability/moves as simply absent, not broken, so this degrades to
+				// "sprites and item badges only" for that one row rather than dropping it.
+				return Promise.all(matches.map((m) =>
+					window.CF_Pikalytics.getTopTeamDetail(formatId, m.tournamentId, m.authorId)
+						.then((detail) => ((detail && Array.isArray(detail.pokemon)) ? Object.assign({}, m, { pokemon: detail.pokemon }) : m))
+				)).then((detailedMatches) => {
+					if (token !== similarTeamsRenderToken) return;
+					lastSimilarTeamsMatches = detailedMatches;
+					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(detailedMatches, curRosterSpeciesOrder(tbRoom)));
+				});
 			}).catch((e) => {
 				if (token !== similarTeamsRenderToken) return;
 				lastSimilarTeamsFailed = true;
@@ -2534,6 +2558,10 @@
 				lastRenderKey = null;
 				lastMon = null;
 				lastFetchState = null;
+				// Invalidates any per-species fetch still in flight from before this state was
+				// reached — without this, that fetch's token still matched on resolve, so its
+				// (now stale) grid could land here and overwrite this placeholder.
+				renderToken++;
 				return;
 			}
 			if (!speciesName) {
@@ -2547,6 +2575,11 @@
 				lastRenderKey = null;
 				lastMon = null;
 				lastFetchState = null;
+				// Same reasoning as the !formatId branch above — a very reachable path here:
+				// type a species (starting a getSpeciesData fetch), then clear the field again
+				// before it resolves. Without this, that fetch's stale per-species grid could
+				// land on top of the Similar Teams panel this branch just rendered.
+				renderToken++;
 				return;
 			}
 
@@ -2654,6 +2687,12 @@
 				lastSpeedTierBlank = null;
 				lastSpeedTierList = null;
 				lastSpeedTierFailed = false;
+				// Invalidates any fetch still in flight from before this state was reached (e.g.
+				// a brief no-team moment mid team-switch) — without this, that fetch's token
+				// still matched on resolve, so its (now stale) results could land here and
+				// overwrite this "No data" placeholder, the same class of bug fixed in
+				// renderSimilarTeamsPanel's own empty-roster branch above.
+				speedTierRenderToken++;
 				return;
 			}
 			// Same format as last time AND that lookup didn't fail: nothing new to *fetch*,

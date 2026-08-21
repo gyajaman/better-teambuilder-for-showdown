@@ -13,7 +13,7 @@ const {
 	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 	teamDamagingMoveTypes, typeEffectivenessMultiplier, bestTeamCoverageMultiplier, coverageTierClass,
-	topSpeedItemBadge, aggregateSimilarTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
+	topSpeedItemBadge, aggregateTopTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
 	pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
 	buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
 	buildSpreadsSection, buildTeammatesSection,
@@ -851,35 +851,51 @@ describe('topSpeedItemBadge', () => {
 	});
 });
 
-describe('aggregateSimilarTeams', () => {
-	const teamA = { event: 'ev1', author: 'Ash', record: '13-2', pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }] };
-	const teamB = { event: 'ev2', author: 'Misty', record: '9-3', pokemon: [{ name: 'Incineroar' }] };
-	const teamC = { event: 'ev1', author: 'Ash', record: '13-2', pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }] }; // same real team, recurring via a 2nd roster member
+describe('aggregateTopTeams', () => {
+	const teamA = { author: 'Ash', record: '13-2', pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }] };
+	const teamB = { author: 'Misty', record: '9-3', pokemon: [{ name: 'Incineroar' }] };
+	const teamC = { author: 'Brock', record: '5-3', recordData: { wins: 5, losses: 3, ties: 0 }, pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }, { name: 'Rillaboom' }] };
+	const teamD = { author: 'Nobody', record: '1-0', pokemon: [{ name: 'Rillaboom' }] }; // no overlap with the roster at all
 
-	it('counts how many times the same team (by event+author) recurs across the roster\'s fetches as its share count', () => {
-		const matches = aggregateSimilarTeams([[teamA], [teamC]]);
+	it('counts a direct intersection between the team\'s own Pokémon and the roster', () => {
+		const matches = aggregateTopTeams([teamC], ['incineroar', 'garchomp', 'rillaboom']);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].shared).toBe(2);
+		expect(matches[0].shared).toBe(3);
 	});
 
 	it('requires only 1 shared species when the roster has just one real member so far', () => {
-		const matches = aggregateSimilarTeams([[teamA, teamB]]);
+		const matches = aggregateTopTeams([teamA, teamB], ['incineroar']);
 		expect(matches.map((m) => m.author).sort()).toEqual(['Ash', 'Misty']);
 	});
 
 	it('requires at least 2 shared species once the roster has more than one real member', () => {
-		const matches = aggregateSimilarTeams([[teamA], [teamB]]);
+		const matches = aggregateTopTeams([teamA, teamB], ['incineroar', 'garchomp']);
+		expect(matches.map((m) => m.author)).toEqual(['Ash']); // Misty's team only shares Incineroar (1)
+	});
+
+	it('drops teams with zero overlap with the roster entirely', () => {
+		const matches = aggregateTopTeams([teamD], ['incineroar', 'garchomp']);
 		expect(matches).toEqual([]);
 	});
 
-	it('sorts by share count first, then by wins parsed out of the record', () => {
-		const lowWins = { event: 'ev3', author: 'Brock', record: '5-3', pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }] };
-		const matches = aggregateSimilarTeams([[teamA, lowWins], [teamC, lowWins]]);
-		expect(matches.map((m) => m.author)).toEqual(['Ash', 'Brock']);
+	it('sorts by share count first, then by wins (recordData.wins, falling back to parsing `record`)', () => {
+		const matches = aggregateTopTeams([teamA, teamC], ['incineroar', 'garchomp', 'rillaboom']);
+		expect(matches.map((m) => m.author)).toEqual(['Brock', 'Ash']); // Brock shares 3, Ash shares 2
+	});
+
+	it('breaks a share-count tie by wins, preferring recordData.wins over a parsed record', () => {
+		const higherRecordDataWins = Object.assign({}, teamA, { author: 'Gary', record: '1-0', recordData: { wins: 99, losses: 0, ties: 0 } });
+		const matches = aggregateTopTeams([teamA, higherRecordDataWins], ['incineroar', 'garchomp']);
+		expect(matches.map((m) => m.author)).toEqual(['Gary', 'Ash']); // both share 2; Gary's recordData.wins (99) beats Ash's parsed 13
+	});
+
+	it('returns nothing when the roster has no real species yet', () => {
+		expect(aggregateTopTeams([teamA], [])).toEqual([]);
+		expect(aggregateTopTeams([teamA], undefined)).toEqual([]);
 	});
 
 	it('ignores malformed entries without a pokemon array', () => {
-		expect(aggregateSimilarTeams([[{ event: 'ev1', author: 'Ash' }]])).toEqual([]);
+		expect(aggregateTopTeams([{ author: 'Ash' }], ['incineroar'])).toEqual([]);
 	});
 });
 

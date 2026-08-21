@@ -43,19 +43,29 @@ function mon(name, overrides) {
 	}, overrides);
 }
 
-/** Routes a fetch mock by matching against the three real Pikalytics endpoint shapes (see
+/** Routes a fetch mock by matching against the real Pikalytics endpoint shapes (see
  *  pikalytics.js's own module doc comment) rather than exact URLs, so tests read as "what does
- *  this endpoint return" without repeating the full URL-building logic. */
+ *  this endpoint return" without repeating the full URL-building logic. Top Teams' two
+ *  endpoints (`topteams`/`teamDetail`) return real JSON objects via `.json()`, unlike the
+ *  other four (`.text()`, hand-parsed by pikalytics.js itself) — routes.topteams/teamDetail
+ *  handlers should return a plain object/array, not a JSON string. */
 function installFetchMock(routes) {
 	global.fetch = vi.fn((url) => {
 		const u = String(url);
 		let handler;
+		let isJson = false;
 		if (u.includes('/ai/pokedex/')) handler = routes.discover;
 		else if (u.includes('/api/l/')) handler = routes.list;
 		else if (u.includes('/api/p/')) handler = routes.species;
-		if (!handler) return Promise.resolve({ ok: false, text: () => Promise.resolve('') });
+		else if (u.includes('/api/topteams/') && u.includes('/team/')) { handler = routes.teamDetail; isJson = true; }
+		else if (u.includes('/api/topteams/')) { handler = routes.topteams; isJson = true; }
+		if (!handler) return Promise.resolve({ ok: false, text: () => Promise.resolve(''), json: () => Promise.reject(new Error('not ok')) });
 		const result = handler(u);
-		return Promise.resolve({ ok: true, text: () => Promise.resolve(result) });
+		return Promise.resolve({
+			ok: true,
+			text: () => Promise.resolve(isJson ? JSON.stringify(result) : result),
+			json: () => Promise.resolve(isJson ? result : JSON.parse(result)),
+		});
 	});
 	return global.fetch;
 }
@@ -223,5 +233,81 @@ describe('getTopUsageList', () => {
 		installFetchMock({});
 		const list = await CF_Pikalytics.getTopUsageList(UNKNOWN_FORMAT_ID, 'Landorus-Therian', 20);
 		expect(list).toEqual([]);
+	});
+});
+
+describe('getTopTeams', () => {
+	it('fetches the bulk team list directly, with no discovery step (unlike every other endpoint here)', async () => {
+		const fetchMock = installFetchMock({
+			topteams: () => ({ format: SLUG, teams: [{ author: 'Ash', pokemon: [{ name: 'Incineroar' }] }] }),
+		});
+		const teams = await CF_Pikalytics.getTopTeams(FORMAT_ID);
+		expect(teams).toEqual([{ author: 'Ash', pokemon: [{ name: 'Incineroar' }] }]);
+		expect(fetchMock.mock.calls.every((c) => !String(c[0]).includes('/ai/pokedex/'))).toBe(true);
+	});
+
+	it('resolves null with no network request for a format outside the allowlist', async () => {
+		const fetchMock = installFetchMock({});
+		const teams = await CF_Pikalytics.getTopTeams(UNKNOWN_FORMAT_ID);
+		expect(teams).toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('treats a response missing a real `teams` array as no data (e.g. the confirmed-live battledataregmas2 404)', async () => {
+		installFetchMock({ topteams: () => ({ error: 'Unknown top teams format' }) });
+		const teams = await CF_Pikalytics.getTopTeams(FORMAT_ID);
+		expect(teams).toBeNull();
+	});
+
+	it('serves the second lookup from cache — no extra fetch', async () => {
+		const fetchMock = installFetchMock({ topteams: () => ({ teams: [{ author: 'Ash', pokemon: [] }] }) });
+		await CF_Pikalytics.getTopTeams(FORMAT_ID);
+		const callsAfterFirst = fetchMock.mock.calls.length;
+		await CF_Pikalytics.getTopTeams(FORMAT_ID);
+		expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+	});
+});
+
+describe('getTopTeamDetail', () => {
+	it('fetches full per-Pokémon detail for one team by tournamentId/authorId', async () => {
+		installFetchMock({
+			teamDetail: () => ({
+				team: { author: 'Ash', pokemon: [{ name: 'Incineroar', ability: 'Intimidate', moves: [{ name: 'Fake Out', type: 'normal' }] }] },
+			}),
+		});
+		const team = await CF_Pikalytics.getTopTeamDetail(FORMAT_ID, 'limitless-abc', 'ash');
+		expect(team.pokemon[0].ability).toBe('Intimidate');
+	});
+
+	it('resolves null with no network request for a format outside the allowlist', async () => {
+		const fetchMock = installFetchMock({});
+		const team = await CF_Pikalytics.getTopTeamDetail(UNKNOWN_FORMAT_ID, 'limitless-abc', 'ash');
+		expect(team).toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('resolves null (without a network request) when tournamentId or authorId is missing', async () => {
+		const fetchMock = installFetchMock({ teamDetail: () => ({ team: { pokemon: [] } }) });
+		expect(await CF_Pikalytics.getTopTeamDetail(FORMAT_ID, '', 'ash')).toBeNull();
+		expect(await CF_Pikalytics.getTopTeamDetail(FORMAT_ID, 'limitless-abc', '')).toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('treats a team response missing a real `pokemon` array as no data', async () => {
+		installFetchMock({ teamDetail: () => ({ team: { author: 'Ash' } }) });
+		const team = await CF_Pikalytics.getTopTeamDetail(FORMAT_ID, 'limitless-abc', 'ash');
+		expect(team).toBeNull();
+	});
+
+	it('caches per {format, tournamentId, authorId} — a different team on the same format still fetches', async () => {
+		const fetchMock = installFetchMock({
+			teamDetail: (u) => ({ team: { author: u.includes('/ash/') ? 'Ash' : 'Misty', pokemon: [] } }),
+		});
+		await CF_Pikalytics.getTopTeamDetail(FORMAT_ID, 'limitless-abc', 'ash');
+		const callsAfterFirst = fetchMock.mock.calls.length;
+		await CF_Pikalytics.getTopTeamDetail(FORMAT_ID, 'limitless-abc', 'ash'); // same team -> cached
+		expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+		await CF_Pikalytics.getTopTeamDetail(FORMAT_ID, 'limitless-xyz', 'misty'); // different team -> fetches
+		expect(fetchMock.mock.calls.length).toBe(callsAfterFirst + 1);
 	});
 });

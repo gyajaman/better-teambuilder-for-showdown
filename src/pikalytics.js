@@ -359,5 +359,101 @@
 		});
 	}
 
-	window.CF_Pikalytics = { getSpeciesData, getTopUsageList, resolveQuerySpecies, slugFor };
+	// ---------------------------------------------------------------------
+	// Top Teams: a real REST resource behind /api/topteams/, entirely separate from the
+	// /api/p/, /api/l/, /ai/pokedex/ endpoints above and NOT keyed by the {month, cutoff} pair
+	// those need — confirmed live, GET /api/topteams/{slug} 200s directly with no discovery
+	// step, so this gets its own flat single-tier TTL cache rather than reusing getCachedOrFetch
+	// (built specifically around that two-tier month/cutoff staleness problem, which doesn't
+	// exist here).
+	//
+	//   GET /api/topteams/{slug}                          — up to 200 real, currently-featured
+	//                                                        tournament teams for the format,
+	//                                                        each with author/record/tournament
+	//                                                        info and every Pokémon's species +
+	//                                                        item — confirmed live, NOT full
+	//                                                        detail: no ability, no moves. This
+	//                                                        is what the same-name pikalytics.com
+	//                                                        page itself renders as its team
+	//                                                        list/grid; a *lot* more real teams
+	//                                                        than any one species' own /api/p/
+	//                                                        `team` sample (confirmed live: 20
+	//                                                        there vs. 200 here), since it isn't
+	//                                                        filtered to teams containing one
+	//                                                        specific species at all.
+	//   GET /api/topteams/{slug}/team/{tournamentId}/{authorId} — full detail (ability + moves,
+	//                                                        the same shape /api/p/'s own `team`
+	//                                                        entries already carry) for one real
+	//                                                        team from the list above, identified
+	//                                                        by that entry's own tournamentId/
+	//                                                        authorId fields. This is what
+	//                                                        pikalytics.com's own "Details"
+	//                                                        expand fetches lazily on click,
+	//                                                        confirmed live via the network
+	//                                                        request it fires.
+	//
+	// Confirmed live: battledataregmas2 (Reg M-A ranked ladder) 404s on the bulk endpoint
+	// ("Unknown top teams format") while every other FORMAT_SLUG_MAP slug 200s — consistent
+	// with Reg M-A being realistically dead already (see FORMAT_SLUG_MAP's own doc comment).
+	// Treated as "no data" the same as any other unsupported format, not a special case.
+	// ---------------------------------------------------------------------
+	const TOP_TEAMS_CACHE_PREFIX = 'cf_pikalytics_topteams_';
+	const TEAM_DETAIL_CACHE_PREFIX = 'cf_pikalytics_teamdetail_';
+
+	function fetchTopTeams(slug) {
+		return fetch(`https://www.pikalytics.com/api/topteams/${slug}`)
+			.then((r) => (r.ok ? r.json() : null))
+			.catch(() => null)
+			.then((data) => (data && Array.isArray(data.teams)) ? data.teams : null);
+	}
+
+	/** Returns a Promise resolving to the format's up-to-200 real featured teams (light detail
+	 *  — no ability/moves yet, see the module comment above), or null if the format has none
+	 *  (unsupported by FORMAT_SLUG_MAP, or the 404 case). Falls back to a stale cached list
+	 *  (rather than null) if a fresh fetch fails, same "don't throw away a good answer over a
+	 *  transient hiccup" reasoning as getFormatMeta above. */
+	function getTopTeams(formatId) {
+		const slug = slugFor(formatId);
+		if (!slug) return Promise.resolve(null);
+
+		const cached = readEntry(TOP_TEAMS_CACHE_PREFIX, slug);
+		if (cached && (Date.now() - cached.fetchedAt) < CACHE_TTL_MS) return Promise.resolve(cached.data);
+
+		return fetchTopTeams(slug).then((teams) => {
+			if (!teams) return cached ? cached.data : null;
+			writeEntry(TOP_TEAMS_CACHE_PREFIX, slug, { data: teams, fetchedAt: Date.now() });
+			return teams;
+		});
+	}
+
+	function fetchTeamDetail(slug, tournamentId, authorId) {
+		return fetch(`https://www.pikalytics.com/api/topteams/${slug}/team/${encodeURIComponent(tournamentId)}/${encodeURIComponent(authorId)}`)
+			.then((r) => (r.ok ? r.json() : null))
+			.catch(() => null)
+			.then((data) => (data && data.team && Array.isArray(data.team.pokemon)) ? data.team : null);
+	}
+
+	/** Returns a Promise resolving to the full detail (ability + moves per Pokémon) for one
+	 *  team named by its own tournamentId/authorId fields from a getTopTeams() entry, or null.
+	 *  Cached per {slug, tournamentId, authorId} triple — a real team's own build doesn't change
+	 *  once played, so this could in principle cache forever, but reuses the same CACHE_TTL_MS
+	 *  as everything else here rather than inventing a separate policy for one endpoint. */
+	function getTopTeamDetail(formatId, tournamentId, authorId) {
+		const slug = slugFor(formatId);
+		if (!slug || !tournamentId || !authorId) return Promise.resolve(null);
+
+		const key = slug + '|' + tournamentId + '|' + authorId;
+		const cached = readEntry(TEAM_DETAIL_CACHE_PREFIX, key);
+		if (cached && (Date.now() - cached.fetchedAt) < CACHE_TTL_MS) return Promise.resolve(cached.data);
+
+		return fetchTeamDetail(slug, tournamentId, authorId).then((team) => {
+			if (!team) return cached ? cached.data : null;
+			writeEntry(TEAM_DETAIL_CACHE_PREFIX, key, { data: team, fetchedAt: Date.now() });
+			return team;
+		});
+	}
+
+	window.CF_Pikalytics = {
+		getSpeciesData, getTopUsageList, resolveQuerySpecies, slugFor, getTopTeams, getTopTeamDetail,
+	};
 })();
