@@ -9,12 +9,16 @@
  */
 const {
 	escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
-	curTeamHasSpecies, curTeamFull, parseEVs, natureModifierHTML, speedNatureIndicator,
+	curTeamHasSpecies, curTeamFull, isBlankSlot, parseEVs, natureModifierHTML, speedNatureIndicator,
 	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
+	teamDamagingMoveTypes, typeEffectivenessMultiplier, bestTeamCoverageMultiplier, coverageTierClass,
+	topSpeedItemBadge, aggregateSimilarTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
 	pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
 	buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
-	buildSpreadsSection, buildTeammatesSection, patchDexSearch,
+	buildSpreadsSection, buildTeammatesSection,
+	buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
+	buildSpeciesPreviewTooltipHTML, patchDexSearch,
 } = require('../src/content.js');
 
 /** Minimal window.Dex stand-in for the icon-rendering branches in the Pikalytics sidebar
@@ -26,6 +30,39 @@ function mockDex() {
 		getTypeIcon: (type) => `<img class="type-icon" alt="${type}">`,
 		getItemIcon: (item) => `background:url(${item})`,
 		getPokemonIcon: (species) => `background:url(${species})`,
+	};
+}
+
+/** Minimal window.Dex.moves/types/items stand-in for teamDamagingMoveTypes/
+ *  typeEffectivenessMultiplier/topSpeedItemBadge below — a tiny hand-picked slice of the real
+ *  move/type/item tables (not the full Dex) is enough to exercise the multiplier math and
+ *  badge selection without pulling in the real data files. */
+function mockBattleDex() {
+	const moves = {
+		flareblitz: { exists: true, type: 'Fire', category: 'Physical' },
+		fakeout: { exists: true, type: 'Normal', category: 'Physical' },
+		partingshot: { exists: true, type: 'Dark', category: 'Status' },
+		earthquake: { exists: true, type: 'Ground', category: 'Physical' },
+	};
+	const types = {
+		water: { exists: true, damageTaken: { Electric: 1, Fire: 2, Water: 2, Ground: 0 } },
+		fire: { exists: true, damageTaken: { Water: 1, Fire: 2, Ground: 1 } },
+		flying: { exists: true, damageTaken: { Ground: 3, Electric: 1 } },
+	};
+	const items = {
+		'choice scarf': { exists: true, name: 'Choice Scarf' },
+		'blastoisinite': { exists: true, name: 'Blastoisinite', megaStone: { Blastoise: 'Blastoise-Mega' } },
+	};
+	const species = {
+		'blastoise-mega': { exists: true, name: 'Blastoise-Mega', baseStats: { hp: 79, atk: 103, def: 120, spa: 135, spd: 115, spe: 78 } },
+	};
+	window.Dex = {
+		getPokemonIcon: (species) => `background:url(${species})`,
+		getItemIcon: (item) => `background:url(${item})`,
+		moves: { get: (name) => moves[toIDSafe(name)] || { exists: false } },
+		types: { get: (name) => types[String(name).toLowerCase()] || { exists: false } },
+		items: { get: (name) => items[String(name).toLowerCase()] || { exists: false } },
+		species: { get: (name) => species[String(name).toLowerCase()] || { exists: false } },
 	};
 }
 
@@ -685,5 +722,437 @@ describe('buildTeammatesSection', () => {
 		const html = buildTeammatesSection(mon, tbRoom);
 		expect(html).toContain('cf-pika-row-clickable');
 		expect(html).toContain('data-cf-pika-action="teammate" data-cf-pika-value="Rillaboom"');
+	});
+});
+
+describe('isBlankSlot', () => {
+	it('is true for a real, currently-open slot with no species/name yet', () => {
+		expect(isBlankSlot({ curSet: { species: '', name: '' } })).toBe(true);
+	});
+
+	it('is false once a species (or nickname) is set', () => {
+		expect(isBlankSlot({ curSet: { species: 'Incineroar', name: '' } })).toBe(false);
+		expect(isBlankSlot({ curSet: { species: '', name: 'Big Cat' } })).toBe(false);
+	});
+
+	it('is false with no curSet at all (the team-overview screen)', () => {
+		expect(isBlankSlot({ curSet: null })).toBe(false);
+		expect(isBlankSlot({})).toBe(false);
+	});
+});
+
+describe('teamDamagingMoveTypes', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('collects only damaging moves\' types, skipping Status moves and blank/missing sets', () => {
+		mockBattleDex();
+		const tbRoom = {
+			curSetList: [
+				{ species: 'Incineroar', moves: ['Flare Blitz', 'Fake Out', 'Parting Shot', ''] },
+				{ species: '', moves: ['Earthquake'] }, // blank slot itself: no species -> ignored
+				{ species: 'Garchomp', moves: ['Earthquake'] },
+			],
+		};
+		expect(teamDamagingMoveTypes(tbRoom)).toEqual(['Fire', 'Normal', 'Ground']);
+	});
+
+	it('returns an empty list without window.Dex', () => {
+		expect(teamDamagingMoveTypes({ curSetList: [{ species: 'Incineroar', moves: ['Flare Blitz'] }] })).toEqual([]);
+	});
+});
+
+describe('typeEffectivenessMultiplier', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('multiplies per-type factors across a dual-type defender', () => {
+		mockBattleDex();
+		// Water/Flying-ish stand-in: Electric is 2x vs Water and (via the mock) 1x vs Flying -> 2x overall.
+		expect(typeEffectivenessMultiplier('Electric', ['water'])).toBe(2);
+		expect(typeEffectivenessMultiplier('Fire', ['water'])).toBe(0.5);
+		expect(typeEffectivenessMultiplier('Ground', ['flying'])).toBe(0); // immune
+	});
+
+	it('is case-insensitive on the attacking type (damageTaken keys are capitalized)', () => {
+		mockBattleDex();
+		expect(typeEffectivenessMultiplier('electric', ['water'])).toBe(2);
+	});
+
+	it('defaults to neutral (1) without window.Dex or a real defender type', () => {
+		expect(typeEffectivenessMultiplier('Electric', ['water'])).toBe(1);
+	});
+});
+
+describe('bestTeamCoverageMultiplier', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('returns the best (highest) multiplier across every move type, not an average', () => {
+		mockBattleDex();
+		// Fire (0.5x vs water) and a hypothetical Electric (2x vs water) -> best is 2.
+		expect(bestTeamCoverageMultiplier(['Fire', 'Electric'], ['water'])).toBe(2);
+	});
+
+	it('returns null (not 0, not "neutral") with no moves or no defender types to compute from', () => {
+		expect(bestTeamCoverageMultiplier([], ['water'])).toBe(null);
+		expect(bestTeamCoverageMultiplier(['Fire'], [])).toBe(null);
+	});
+});
+
+describe('coverageTierClass', () => {
+	it('maps the discrete type-chart products to the five documented tiers', () => {
+		expect(coverageTierClass(4)).toBe('cf-coverage-quad');
+		expect(coverageTierClass(2)).toBe('cf-coverage-super');
+		expect(coverageTierClass(1)).toBe('');
+		expect(coverageTierClass(0.5)).toBe('cf-coverage-resist');
+		expect(coverageTierClass(0.25)).toBe('cf-coverage-immune');
+		expect(coverageTierClass(0)).toBe('cf-coverage-immune');
+	});
+
+	it('is also the neutral (no) class for "nothing to compute" (null)', () => {
+		expect(coverageTierClass(null)).toBe('');
+	});
+});
+
+describe('topSpeedItemBadge', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('flags a Choice Scarf past the usage threshold', () => {
+		mockBattleDex();
+		const mon = { items: [{ item: 'Choice Scarf', percent: '44.7' }] };
+		expect(topSpeedItemBadge(mon, 'Basculegion')).toEqual({ item: 'Choice Scarf', isMega: false });
+	});
+
+	it('flags a Mega Stone past its own usage threshold, with its forme name', () => {
+		mockBattleDex();
+		const mon = { items: [{ item: 'Blastoisinite', percent: '20.0' }] };
+		expect(topSpeedItemBadge(mon, 'Blastoise')).toEqual({ item: 'Blastoisinite', isMega: true, formeName: 'Blastoise-Mega' });
+	});
+
+	it('returns null below either threshold, or with no relevant item at all', () => {
+		mockBattleDex();
+		expect(topSpeedItemBadge({ items: [{ item: 'Choice Scarf', percent: '1.0' }] }, 'Basculegion')).toBe(null);
+		expect(topSpeedItemBadge({ items: [{ item: 'Leftovers', percent: '80.0' }] }, 'Incineroar')).toBe(null);
+		expect(topSpeedItemBadge(null, 'Incineroar')).toBe(null);
+	});
+
+	it('picks whichever of Scarf/Mega Stone is actually more popular, not Scarf unconditionally', () => {
+		mockBattleDex();
+		// Mega Stone (20%) is more popular here than Scarf (18%) -> Mega should win.
+		const megaWins = { items: [{ item: 'Choice Scarf', percent: '18.0' }, { item: 'Blastoisinite', percent: '20.0' }] };
+		expect(topSpeedItemBadge(megaWins, 'Blastoise').isMega).toBe(true);
+		// Scarf (44.7%) is more popular here than the Mega Stone (20%) -> Scarf should win.
+		const scarfWins = { items: [{ item: 'Choice Scarf', percent: '44.7' }, { item: 'Blastoisinite', percent: '20.0' }] };
+		expect(topSpeedItemBadge(scarfWins, 'Blastoise').isMega).toBe(false);
+	});
+
+	it('breaks an exact tie in Scarf\'s favor', () => {
+		mockBattleDex();
+		const tied = { items: [{ item: 'Choice Scarf', percent: '20.0' }, { item: 'Blastoisinite', percent: '20.0' }] };
+		expect(topSpeedItemBadge(tied, 'Blastoise')).toEqual({ item: 'Choice Scarf', isMega: false });
+	});
+});
+
+describe('aggregateSimilarTeams', () => {
+	const teamA = { event: 'ev1', author: 'Ash', record: '13-2', pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }] };
+	const teamB = { event: 'ev2', author: 'Misty', record: '9-3', pokemon: [{ name: 'Incineroar' }] };
+	const teamC = { event: 'ev1', author: 'Ash', record: '13-2', pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }] }; // same real team, recurring via a 2nd roster member
+
+	it('counts how many times the same team (by event+author) recurs across the roster\'s fetches as its share count', () => {
+		const matches = aggregateSimilarTeams([[teamA], [teamC]]);
+		expect(matches).toHaveLength(1);
+		expect(matches[0].shared).toBe(2);
+	});
+
+	it('requires only 1 shared species when the roster has just one real member so far', () => {
+		const matches = aggregateSimilarTeams([[teamA, teamB]]);
+		expect(matches.map((m) => m.author).sort()).toEqual(['Ash', 'Misty']);
+	});
+
+	it('requires at least 2 shared species once the roster has more than one real member', () => {
+		const matches = aggregateSimilarTeams([[teamA], [teamB]]);
+		expect(matches).toEqual([]);
+	});
+
+	it('sorts by share count first, then by wins parsed out of the record', () => {
+		const lowWins = { event: 'ev3', author: 'Brock', record: '5-3', pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }] };
+		const matches = aggregateSimilarTeams([[teamA, lowWins], [teamC, lowWins]]);
+		expect(matches.map((m) => m.author)).toEqual(['Ash', 'Brock']);
+	});
+
+	it('ignores malformed entries without a pokemon array', () => {
+		expect(aggregateSimilarTeams([[{ event: 'ev1', author: 'Ash' }]])).toEqual([]);
+	});
+});
+
+describe('curRosterSpeciesOrder', () => {
+	it('returns real species in slot order, id-normalized, ignoring the blank slot itself', () => {
+		const tbRoom = { curSetList: [{ species: 'Incineroar' }, { species: '' }, { species: 'Flutter Mane' }] };
+		expect(curRosterSpeciesOrder(tbRoom)).toEqual(['incineroar', 'fluttermane']);
+	});
+});
+
+describe('alignSimilarTeamPokemon', () => {
+	it('places shared species at the roster\'s own index', () => {
+		const pokemon = [{ name: 'Garchomp' }, { name: 'Incineroar' }, { name: 'Rillaboom' }];
+		const roster = ['incineroar', 'garchomp', 'flutter mane'];
+		const aligned = alignSimilarTeamPokemon(pokemon, roster);
+		expect(aligned[0].name).toBe('Incineroar'); // roster[0]
+		expect(aligned[1].name).toBe('Garchomp'); // roster[1]
+	});
+
+	it('loops an unmatched member back into an empty roster slot instead of appending it, keeping the row the same width', () => {
+		const pokemon = [{ name: 'Garchomp' }, { name: 'Incineroar' }, { name: 'Rillaboom' }];
+		const roster = ['incineroar', 'garchomp', 'flutter mane']; // Flutter Mane not on this team
+		const aligned = alignSimilarTeamPokemon(pokemon, roster);
+		expect(aligned).toHaveLength(3); // still 3, not 4 — Rillaboom filled Flutter Mane's slot
+		expect(aligned[2].name).toBe('Rillaboom');
+	});
+
+	it('fills empty slots front to back when there\'s more than one', () => {
+		// Roster: A, B, C, D — team only has D; B and C are extras that should loop into A and B's
+		// own empty slots in order, front slot first, not into whichever slot happens to be nearest.
+		const pokemon = [{ name: 'D' }, { name: 'X' }, { name: 'Y' }];
+		const roster = ['a', 'b', 'c', 'd'];
+		const aligned = alignSimilarTeamPokemon(pokemon, roster);
+		expect(aligned.map((p) => p && p.name)).toEqual(['X', 'Y', null, 'D']);
+	});
+
+	it('still spills past the roster length once there are more extras than empty slots (a not-yet-full roster)', () => {
+		const pokemon = [{ name: 'Incineroar' }, { name: 'Garchomp' }, { name: 'Rillaboom' }, { name: 'Landorus-Therian' }];
+		const roster = ['incineroar']; // only 1 real roster slot so far, 3 extras chasing it
+		const aligned = alignSimilarTeamPokemon(pokemon, roster);
+		expect(aligned).toHaveLength(4); // the 1 roster slot + 3 that had nowhere to loop back into
+		expect(aligned[0].name).toBe('Incineroar');
+		expect(aligned.slice(1).map((p) => p.name)).toEqual(['Garchomp', 'Rillaboom', 'Landorus-Therian']);
+	});
+
+	it('degrades to plain original order when there\'s no roster to align against', () => {
+		const pokemon = [{ name: 'Garchomp' }, { name: 'Incineroar' }];
+		expect(alignSimilarTeamPokemon(pokemon, [])).toEqual(pokemon);
+		expect(alignSimilarTeamPokemon(pokemon, undefined)).toEqual(pokemon);
+	});
+
+	it('sends a repeated roster species past the first match to extras rather than overwriting', () => {
+		const pokemon = [{ name: 'Incineroar', item: 'Sitrus Berry' }, { name: 'Incineroar', item: 'Leftovers' }];
+		const aligned = alignSimilarTeamPokemon(pokemon, ['incineroar']);
+		expect(aligned[0].item).toBe('Sitrus Berry');
+		expect(aligned[1].item).toBe('Leftovers');
+	});
+});
+
+describe('buildSimilarTeamRowHTML / buildSimilarTeamsSectionHTML', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('shows the empty-state message when there are no matches', () => {
+		expect(buildSimilarTeamsSectionHTML([])).toContain('No similar teams found yet.');
+	});
+
+	it('renders one sprite per team member plus the record, indexed for hover lookup, when there\'s no roster to align to', () => {
+		mockDex();
+		const match = { record: '13-2', pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }] };
+		const html = buildSimilarTeamRowHTML(match, 3);
+		expect(html).toContain('data-cf-similarteam-idx="3"');
+		expect(html).toContain('13-2');
+		expect((html.match(/class="picon"/g) || []).length).toBe(2);
+		expect(html).not.toContain('cf-similarteam-empty-slot');
+	});
+
+	it('fills the row with author + placement + tournament, contextualizing the bare record', () => {
+		mockDex();
+		const match = {
+			record: '13-2', author: 'AyushXD', tournamentRanking: 1,
+			tournamentLabel: 'Alpensee x Smogon VGC Tour (Reg M-B) #70',
+			pokemon: [{ name: 'Incineroar' }],
+		};
+		const html = buildSimilarTeamRowHTML(match, 0);
+		expect(html).toContain('<span class="cf-similarteam-author">AyushXD</span>');
+		expect(html).toContain('1st at Alpensee x Smogon VGC Tour (Reg M-B) #70');
+	});
+
+	it('falls back to "Unknown" and omits the tournament line when that data is missing', () => {
+		mockDex();
+		const html = buildSimilarTeamRowHTML({ pokemon: [{ name: 'Incineroar' }] }, 0);
+		expect(html).toContain('<span class="cf-similarteam-author">Unknown</span>');
+		expect(html).not.toContain('cf-similarteam-tournament');
+	});
+
+	it('column-aligns to the roster order, with an empty-slot placeholder for a roster species this team lacks', () => {
+		mockDex();
+		const match = { record: '13-2', pokemon: [{ name: 'Garchomp' }] };
+		const html = buildSimilarTeamRowHTML(match, 0, ['incineroar', 'garchomp']);
+		// roster[0] (Incineroar) unmatched -> placeholder; roster[1] (Garchomp) matched -> real sprite.
+		const spanOrder = [...html.matchAll(/<span class="([^"]*)"/g)].map((m) => m[1]);
+		expect(spanOrder).toEqual([
+			'cf-similarteam-sprites', 'picon cf-similarteam-empty-slot', 'picon',
+			'cf-similarteam-meta', 'cf-similarteam-author', 'cf-pika-pct',
+		]);
+	});
+
+	it('caps the section at 10 rows', () => {
+		mockDex();
+		const matches = Array.from({ length: 15 }, (_, i) => ({ record: `${i}-0`, pokemon: [{ name: 'Incineroar' }] }));
+		const html = buildSimilarTeamsSectionHTML(matches);
+		expect((html.match(/cf-similarteam-row/g) || []).length).toBe(10);
+	});
+});
+
+describe('buildSimilarTeamTooltipHTML', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('is just the teamsheet — each Pokémon\'s item/ability/moves, no author/record/share-count header', () => {
+		mockDex();
+		const match = {
+			author: 'AyushXD', record: '13-2', shared: 2,
+			pokemon: [{ name: 'Incineroar', item: 'Sitrus Berry', ability: 'Intimidate', moves: [{ name: 'Fake Out' }, { name: 'Flare Blitz' }] }],
+		};
+		const html = buildSimilarTeamTooltipHTML(match);
+		expect(html).toContain('Intimidate');
+		expect(html).toContain('Fake Out<br>Flare Blitz');
+		expect(html).not.toContain('AyushXD');
+		expect(html).not.toContain('13-2');
+		expect(html).not.toContain('shared Pokémon');
+		expect(html).not.toContain('<h2>');
+	});
+
+	it('shows the held item as a corner badge on the sprite, not as "@ Item" text', () => {
+		mockDex();
+		const match = { pokemon: [{ name: 'Incineroar', item: 'Sitrus Berry' }] };
+		const html = buildSimilarTeamTooltipHTML(match);
+		expect(html).toContain('cf-speedcmp-sprite');
+		expect(html).toContain('class="itemicon cf-speedcmp-item-badge" style="background:url(Sitrus Berry)"');
+		expect(html).not.toContain('@ Sitrus Berry');
+	});
+
+	it('omits the item badge entirely when there\'s no held item', () => {
+		mockDex();
+		const html = buildSimilarTeamTooltipHTML({ pokemon: [{ name: 'Incineroar' }] });
+		expect(html).not.toContain('cf-speedcmp-item-badge');
+	});
+
+	it('doesn\'t repeat the species name as text — the column\'s own sprite already identifies it', () => {
+		mockDex();
+		const match = { pokemon: [{ name: 'Incineroar', ability: 'Intimidate' }] };
+		const html = buildSimilarTeamTooltipHTML(match);
+		expect(html).not.toContain('<strong>');
+		expect(html).not.toContain('>Incineroar<');
+	});
+
+	it('lays out one column per Pokémon, side by side, instead of stacked rows', () => {
+		mockDex();
+		const match = { pokemon: [{ name: 'Incineroar' }, { name: 'Garchomp' }, { name: 'Sinistcha' }] };
+		const html = buildSimilarTeamTooltipHTML(match);
+		expect(html).toContain('cf-similarteam-tooltip-columns');
+		expect((html.match(/cf-similarteam-tooltip-col"/g) || []).length).toBe(3);
+	});
+
+	it('lists Pokémon in roster-aligned order, dropping unmatched roster slots rather than showing them blank', () => {
+		mockDex();
+		const match = { author: 'Ash', pokemon: [{ name: 'Garchomp' }, { name: 'Incineroar' }] };
+		const html = buildSimilarTeamTooltipHTML(match, ['incineroar', 'garchomp']);
+		expect(html.indexOf('Incineroar')).toBeLessThan(html.indexOf('Garchomp'));
+	});
+});
+
+describe('ordinalLabel', () => {
+	it('appends the right suffix for the common cases', () => {
+		expect(ordinalLabel(1)).toBe('1st');
+		expect(ordinalLabel(2)).toBe('2nd');
+		expect(ordinalLabel(3)).toBe('3rd');
+		expect(ordinalLabel(4)).toBe('4th');
+	});
+
+	it('special-cases 11th/12th/13th rather than following the last-digit rule', () => {
+		expect(ordinalLabel(11)).toBe('11th');
+		expect(ordinalLabel(12)).toBe('12th');
+		expect(ordinalLabel(13)).toBe('13th');
+	});
+
+	it('still applies the last-digit rule past the teens (21st, 22nd, 23rd)', () => {
+		expect(ordinalLabel(21)).toBe('21st');
+		expect(ordinalLabel(22)).toBe('22nd');
+		expect(ordinalLabel(23)).toBe('23rd');
+	});
+
+	it('returns an empty string for a missing/zero/non-numeric placement, not "0th"/"NaNth"', () => {
+		expect(ordinalLabel(undefined)).toBe('');
+		expect(ordinalLabel(0)).toBe('');
+		expect(ordinalLabel('not a number')).toBe('');
+	});
+});
+
+describe('buildSpeciesPreviewTooltipHTML', () => {
+	it('shows top moves/ability/item, excluding win rate and Common Teammates entirely', () => {
+		const mon = {
+			moves: [{ move: 'Fake Out', percent: '99.9' }],
+			abilities: [{ ability: 'Intimidate', percent: '99.8' }],
+			items: [{ item: 'Sitrus Berry', percent: '59.8' }],
+			natures: [{ nature: 'Careful', percent: '40.1' }],
+			spreads: [{ ev: '32/0/14/0/20/0', percent: '6.2', nature: '' }],
+			stats: { hp: 95, atk: 115, def: 90, spa: 80, spd: 90, spe: 60 },
+			winRate: 0.48189114106389547,
+			team: [{ pokemon: 'Sinistcha', rank: 1 }],
+		};
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
+		expect(html).toContain('Incineroar');
+		expect(html).toContain('Fake Out (99.9%)');
+		expect(html).toContain('Intimidate (99.8%)');
+		expect(html).toContain('Sitrus Berry (59.8%)');
+		expect(html).toContain('Spe 60');
+		expect(html).not.toContain('48.1');
+		expect(html).not.toContain('Sinistcha');
+	});
+
+	it('shows Nature and Spread as two separate lines, each with its own percent, not merged into one', () => {
+		// VGC's own top nature (40.1%) and top EV spread (6.2%) are two independently-ranked
+		// facts, not necessarily the same real build — see this function's own doc comment.
+		const mon = {
+			natures: [{ nature: 'Careful', percent: '40.1' }],
+			spreads: [{ ev: '32/0/14/0/20/0', percent: '6.2', nature: '' }],
+		};
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
+		expect(html).toContain('<strong>Nature</strong><br>Careful (40.1%)');
+		expect(html).toContain('<strong>Spread</strong><br>32/0/14/0/20/0 (6.2%)');
+		expect(html).not.toContain('Careful 32/0/14/0/20/0');
+	});
+
+	it('falls back to the spread\'s own nature field, with no percent, when there\'s no standalone natures list', () => {
+		const mon = { spreads: [{ ev: '32/0/14/0/20/0', percent: '6.2', nature: 'Careful' }] };
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
+		expect(html).toContain('<strong>Nature</strong><br>Careful</p>');
+	});
+
+	it('falls back to "No data" per section rather than omitting it', () => {
+		const html = buildSpeciesPreviewTooltipHTML({}, 'Incineroar');
+		expect(html).toContain('No data');
+	});
+
+	it('shows the Mega forme\'s own base stats, right after the base forme\'s, when a Mega Stone is the popular item', () => {
+		mockBattleDex();
+		const mon = {
+			stats: { hp: 79, atk: 83, def: 100, spa: 85, spd: 105, spe: 78 },
+			items: [{ item: 'Blastoisinite', percent: '20.0' }],
+		};
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Blastoise');
+		expect(html).toContain('HP 79 &nbsp; Atk 83 &nbsp; Def 100 &nbsp; SpA 85 &nbsp; SpD 105 &nbsp; Spe 78'); // base stats, still shown
+		expect(html).toContain('<strong>Blastoise-Mega</strong><br>HP 79 &nbsp; Atk 103 &nbsp; Def 120 &nbsp; SpA 135 &nbsp; SpD 115 &nbsp; Spe 78');
+	});
+
+	it('omits the Mega stats block when the popular item isn\'t a Mega Stone', () => {
+		mockBattleDex();
+		const mon = {
+			stats: { hp: 79, atk: 83, def: 100, spa: 85, spd: 105, spe: 78 },
+			items: [{ item: 'Choice Scarf', percent: '44.7' }],
+		};
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Blastoise');
+		expect(html).not.toContain('Blastoise-Mega');
+	});
+
+	it('omits the Mega stats block when no item clears its popularity threshold at all', () => {
+		mockBattleDex();
+		const mon = {
+			stats: { hp: 79, atk: 83, def: 100, spa: 85, spd: 105, spe: 78 },
+			items: [{ item: 'Blastoisinite', percent: '5.0' }],
+		};
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Blastoise');
+		expect(html).not.toContain('Blastoise-Mega');
 	});
 });

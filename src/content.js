@@ -137,6 +137,213 @@
 		return team.length >= capacity;
 	}
 
+	/** True for the one state the Add Pokémon column/panel (renderSimilarTeamsPanel, the
+	 *  "Popular" speed-tier column) key off of: a real, currently-open slot (tbRoom.curSet
+	 *  truthy — same thing updateSplitState's editingAPokemon already checked before either
+	 *  render function was even called) that has no species/name yet, i.e. the moment right
+	 *  after clicking "Add Pokémon", before a species has been typed or picked. Distinct from
+	 *  "not editing anything at all" (curSet falsy, the team-overview screen), which the split
+	 *  turns off for entirely and never reaches either render function. */
+	function isBlankSlot(tbRoom) {
+		return !!(tbRoom && tbRoom.curSet && !(tbRoom.curSet.species || tbRoom.curSet.name));
+	}
+
+	/** Every damaging move currently on every already-added team member (Status moves carry a
+	 *  `type` too but deal no damage, so they'd falsely inflate coverage) — the raw input to
+	 *  bestTeamCoverageMultiplier below. Reads straight from Dex.moves, not Pikalytics: this is
+	 *  about the *real* moves already on your own sets, not a usage statistic. */
+	function teamDamagingMoveTypes(tbRoom) {
+		const types = [];
+		if (!window.Dex) return types;
+		(tbRoom.curSetList || []).forEach((set) => {
+			if (!set || !set.species || !set.moves) return;
+			set.moves.forEach((moveName) => {
+				if (!moveName) return;
+				const move = window.Dex.moves.get(moveName);
+				if (move && move.exists && move.type && move.category !== 'Status') types.push(move.type);
+			});
+		});
+		return types;
+	}
+
+	/** Standard type-chart multiplier for one attacking type against a (possibly dual-type)
+	 *  defender, via Dex.types' own damageTaken table (battle-dex.ts) rather than a hand-copied
+	 *  chart — damageTaken is keyed by the *capitalized* attacking type name (confirmed live:
+	 *  Dex.types.get('water').damageTaken['Electric'] === 1, ['electric'] === undefined), so the
+	 *  input is normalized to that case regardless of how it arrived (Dex.moves' own `.type` is
+	 *  already capitalized, but this is cheap insurance either way). damageTaken's own values are
+	 *  an index (0-3) into the real multiplier, not the multiplier itself — see
+	 *  DAMAGE_TAKEN_MULTIPLIERS below (mirrors battle-tooltips.ts's own `[1, 2, 0.5, 0]` mapping).
+	 *  A dual-type defender's overall multiplier is the product across both of its types, same as
+	 *  the real games' own damage formula. */
+	const DAMAGE_TAKEN_MULTIPLIERS = [1, 2, 0.5, 0];
+	function typeEffectivenessMultiplier(attackType, defenderTypes) {
+		if (!window.Dex || !attackType) return 1;
+		const cap = attackType.charAt(0).toUpperCase() + attackType.slice(1).toLowerCase();
+		let mult = 1;
+		(defenderTypes || []).forEach((dType) => {
+			const typeData = window.Dex.types.get(dType);
+			if (!typeData || !typeData.exists || !typeData.damageTaken) return;
+			const code = typeData.damageTaken[cap];
+			mult *= DAMAGE_TAKEN_MULTIPLIERS[code || 0];
+		});
+		return mult;
+	}
+
+	/** The best (highest) multiplier any already-added team member's real moves can land on a
+	 *  given defender — not an average or a "how many moves work," just whether the team has
+	 *  *a* way to hit hard, since a single strong option is what actually matters when picking a
+	 *  6th teammate to round out coverage. Returns null (no color, not "neutral") when there's
+	 *  nothing to compute from yet — an empty team, or every added member still moveless. */
+	function bestTeamCoverageMultiplier(moveTypes, defenderTypes) {
+		if (!moveTypes || !moveTypes.length || !defenderTypes || !defenderTypes.length) return null;
+		let best = 0;
+		moveTypes.forEach((t) => {
+			const mult = typeEffectivenessMultiplier(t, defenderTypes);
+			if (mult > best) best = mult;
+		});
+		return best;
+	}
+
+	/** Discrete type-chart products only ever land on {0, .25, .5, 1, 2, 4} (each of a dual-type
+	 *  defender's two per-type multipliers is one of {0, .5, 1, 2}), so plain threshold buckets
+	 *  are exact here, not an approximation. Empty string (no extra class, i.e. the box's default
+	 *  neutral styling) for both "genuinely neutral" (1x) and "nothing to compute" (null) — see
+	 *  bestTeamCoverageMultiplier's own doc comment for why the latter isn't its own color. */
+	function coverageTierClass(mult) {
+		if (mult === null || mult === undefined) return '';
+		if (mult >= 4) return 'cf-coverage-quad';
+		if (mult >= 2) return 'cf-coverage-super';
+		if (mult >= 1) return '';
+		if (mult >= 0.5) return 'cf-coverage-resist';
+		return 'cf-coverage-immune';
+	}
+
+	/** Small corner badge on a "Popular" row (buildSpeedTierColumnHTML) flagging a species
+	 *  whose Pikalytics data shows it's commonly built with a Speed-relevant item — Choice Scarf,
+	 *  or (the most popular of) its own Mega Stone(s) — past the same thresholds
+	 *  (CF_SETTINGS.scarfThresholdPercent/megaThresholdPercent) buildSpeedComparisonTooltipHTML
+	 *  already uses to decide whether those items are common enough to be worth a dedicated "what
+	 *  if" column there. A species can't run both at once, so whichever one actually clears its
+	 *  own threshold *and* has the higher real usage percent wins — not "Scarf always wins if
+	 *  present," which used to pick Scarf over a Mega Stone run far more often even when the
+	 *  Mega was clearly the more common build. Returns null (no badge) rather than a "neither is
+	 *  common" marker — same "don't invent data" rule as every other badge/color in this file.
+	 *  Returns `{ item, isMega, formeName }` rather than a bare item name — buildSpeedTierColumnHTML
+	 *  needs to know it's a Mega Stone (and which forme) to swap the row's Speed stat to the Mega
+	 *  forme's own base stat. */
+	function topSpeedItemBadge(mon, speciesName) {
+		if (!mon) return null;
+		const scarf = (mon.items || []).find((it) =>
+			toIDSafe(it.item) === 'choicescarf' && (parseFloat(it.percent) || 0) >= CF_SETTINGS.scarfThresholdPercent);
+		const scarfPercent = scarf ? (parseFloat(scarf.percent) || 0) : -1;
+
+		let bestMega = null;
+		if (window.Dex) {
+			for (const it of (mon.items || [])) {
+				const itemData = window.Dex.items.get(it.item);
+				const forme = itemData && itemData.megaStone && itemData.megaStone[speciesName];
+				if (!forme) continue;
+				const percent = parseFloat(it.percent) || 0;
+				if (percent < CF_SETTINGS.megaThresholdPercent) continue;
+				if (!bestMega || percent > bestMega.percent) bestMega = { item: it.item, percent, formeName: forme };
+			}
+		}
+
+		if (!scarf && !bestMega) return null;
+		// A tie goes to Scarf rather than the Mega Stone — an arbitrary but deterministic
+		// tiebreak for a case real usage data essentially never produces exactly.
+		if (bestMega && bestMega.percent > scarfPercent) {
+			return { item: bestMega.item, isMega: true, formeName: bestMega.formeName };
+		}
+		return { item: scarf.item, isMega: false };
+	}
+
+	/** Merges the sample "real teams featuring this species" lists Pikalytics attaches to every
+	 *  already-added team member's own payload (the `teams` field — up to ~20 real tournament
+	 *  rosters per species, author/event/record/full pokemon list) into one list of teams that
+	 *  share species with the current build. A real team shows up in *every* member's own
+	 *  `teams` list it happens to contain, so how many times the very same team recurs across the
+	 *  roster's combined fetch already *is* its share count — no separate overlap computation
+	 *  needed. Identified by event+author (one team per author per event; Pikalytics doesn't
+	 *  expose a single field guaranteed unique on its own) rather than any one id field.
+	 *
+	 *  `minShared` scales with roster size: with only one real species added so far there's
+	 *  nothing to require overlap *against* yet (every match would have shared === 1), so 1 is
+	 *  accepted; once there's a second real species, requiring at least 2 is what actually makes
+	 *  "similar" mean something. Sorted by share count first, then by wins parsed out of `record`
+	 *  ("13-2" -> 13) as a tiebreak — both real numbers already on the data, nothing synthesized
+	 *  or blended into a single score. */
+	function aggregateSimilarTeams(teamsLists) {
+		const lists = teamsLists || [];
+		const minShared = lists.length >= 2 ? 2 : 1;
+		const byKey = new Map();
+		lists.forEach((teams) => {
+			(teams || []).forEach((team) => {
+				if (!team || !Array.isArray(team.pokemon)) return;
+				const key = (team.event || team.tournamentId || '') + '|' + (team.author || team.authorId || '');
+				const existing = byKey.get(key);
+				if (existing) existing.shared++;
+				else byKey.set(key, Object.assign({ shared: 1 }, team));
+			});
+		});
+		return Array.from(byKey.values())
+			.filter((e) => e.shared >= minShared)
+			.sort((a, b) => {
+				if (b.shared !== a.shared) return b.shared - a.shared;
+				const aWins = parseInt((a.record || '').split('-')[0], 10) || 0;
+				const bWins = parseInt((b.record || '').split('-')[0], 10) || 0;
+				return bWins - aWins;
+			});
+	}
+
+	/** The current roster's own species, base-species-ID'd (same normalization
+	 *  curTeamHasSpecies/aggregateSimilarTeams-adjacent code uses everywhere else), in the
+	 *  actual slot order they were added — NOT sorted, unlike rosterSpeciesKey's cache key
+	 *  (which sorts on purpose, since a cache key shouldn't care about order). This is the
+	 *  reference column order alignSimilarTeamPokemon below aligns every match against, so it
+	 *  has to be the real order, not a normalized one. */
+	function curRosterSpeciesOrder(tbRoom) {
+		return (tbRoom.curSetList || []).filter((s) => s && s.species).map((s) => baseSpeciesID(s.species));
+	}
+
+	/** Reorders one similar team's 6 Pokémon to line up column-by-column with the current
+	 *  roster, so scanning down a column across several rendered rows compares the same "slot"
+	 *  rather than requiring a name-by-name search each time — that's the whole point of
+	 *  surfacing these teams at all (see aggregateSimilarTeams' own doc comment). Species this
+	 *  team shares with the roster are placed at the *same index* the roster itself has them at
+	 *  (`rosterSpeciesIds[i]`).
+	 *
+	 *  Anything the team has that isn't on the roster at all (`extras`) loops back into whatever
+	 *  roster slots were left empty, front to back, rather than tacking every extra on past the
+	 *  end of the row — a real 6-mon team and a full 6-slot roster always leave exactly as many
+	 *  empty slots as they have extras (whatever didn't match takes the place of whatever wasn't
+	 *  matched), so this keeps every row the same width instead of some rows running one or two
+	 *  columns longer than the rest, which is what made the section read as staggered/offsetting
+	 *  row to row rather than as a clean grid. A slot only stays `null` (rendered as an empty
+	 *  placeholder — see buildSimilarTeamRowHTML) when there are genuinely more empty roster
+	 *  slots than extras to fill them with — a shorter, not-yet-full roster is the only case that
+	 *  can happen; any leftover past that (more extras than empty slots) still spills after the
+	 *  roster-length slots, in whatever order Pikalytics originally returned it. A roster species
+	 *  repeated on one team (shouldn't happen in a real, legal team, but nothing here assumes it
+	 *  can't) only fills the first matching slot; every later occurrence is treated as an extra
+	 *  rather than overwriting an already-filled slot. */
+	function alignSimilarTeamPokemon(pokemon, rosterSpeciesIds) {
+		const ids = rosterSpeciesIds || [];
+		const slots = ids.map(() => null);
+		const extras = [];
+		(pokemon || []).forEach((p) => {
+			if (!p || !p.name) return;
+			const idx = ids.indexOf(baseSpeciesID(p.name));
+			if (idx !== -1 && !slots[idx]) slots[idx] = p;
+			else extras.push(p);
+		});
+		for (let i = 0; i < slots.length && extras.length; i++) {
+			if (!slots[i]) slots[i] = extras.shift();
+		}
+		return slots.concat(extras);
+	}
+
 	/** Single source of truth for Showdown's own HP/Atk/Def/SpA/SpD/Spe stat order/labels —
 	 *  STAT_IDS and STAT_LABELS (used by parseEVs below and by buildSpreadsSection/
 	 *  natureModifierHTML below) are both derived from this one object rather than each
@@ -262,14 +469,18 @@
 	if (typeof module !== 'undefined' && module.exports) {
 		module.exports = {
 			escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
-			curTeamHasSpecies, curTeamFull, parseEVs, natureModifierHTML, speedNatureIndicator,
+			curTeamHasSpecies, curTeamFull, isBlankSlot, parseEVs, natureModifierHTML, speedNatureIndicator,
 			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
+			teamDamagingMoveTypes, typeEffectivenessMultiplier, bestTeamCoverageMultiplier, coverageTierClass,
+			topSpeedItemBadge, aggregateSimilarTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
 			STAT_LABEL_BY_ID, STAT_IDS, STAT_LABELS,
 			CATEGORY_ORDER, DYNAMIC_CATEGORIES,
 			pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
 			buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
-			buildSpreadsSection, buildTeammatesSection, patchDexSearch,
+			buildSpreadsSection, buildTeammatesSection,
+			buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
+			buildSpeciesPreviewTooltipHTML, patchDexSearch,
 		};
 		return;
 	}
@@ -387,6 +598,24 @@
 		tbRoom.save();
 	}
 
+	/** Fills the currently-open blank slot (the "Popular" column, see isBlankSlot) with the
+	 *  clicked species — unlike applyTeammate above, this completes the slot already open rather
+	 *  than adding a new one, since that's the slot being looked at when this list is even
+	 *  showing. Goes through Showdown's own setPokemon() (confirmed live: the exact entry point
+	 *  the native species search box itself calls) rather than a plain `set.species = ...`
+	 *  write, so it picks up the same defaults a real pick would — format-appropriate level,
+	 *  default gender/ability, a required item if the species has exactly one — instead of
+	 *  leaving the set half-filled. setPokemon() already calls updateSetTop() itself; save() is
+	 *  the one thing it doesn't do on its own, matching every other click-to-apply handler here.
+	 *  Guarded to only ever act on a genuinely still-blank slot, since a stale render (e.g. a
+	 *  double-click) could otherwise re-fire after the first click already filled it. */
+	function applySpeciesToBlankSlot(tbRoom, speciesName) {
+		const set = tbRoom.curSet;
+		if (!set || set.species || typeof tbRoom.setPokemon !== 'function') return;
+		tbRoom.setPokemon(speciesName);
+		tbRoom.save();
+	}
+
 	/** Clicking a sidebar row while a chart text input (move1-4/ability/item/pokemon) has focus
 	 *  fires that input's native blur handler (chartChange, bound to `blur .chartinput`) BEFORE
 	 *  our own click handler runs — browsers blur the previously-focused element as part of a
@@ -421,6 +650,7 @@
 			case 'nature': applySetField(tbRoom, 'nature', value); break;
 			case 'spread': applySpread(tbRoom, el.dataset.cfPikaNature || '', el.dataset.cfPikaEv); break;
 			case 'teammate': applyTeammate(tbRoom, value); break;
+			case 'addspecies': applySpeciesToBlankSlot(tbRoom, value); break;
 		}
 	}
 
@@ -1138,9 +1368,40 @@
 		}
 
 		const speedRow = ev.target.closest ? ev.target.closest('.cf-speedtier-row') : null;
-		if (speedRow && CF.buildSpeedComparisonTooltipHTML) {
-			const html = CF.buildSpeedComparisonTooltipHTML(speedRow);
-			if (html) Tooltip.show(speedRow, html);
+		if (speedRow) {
+			// On a blank slot ("Popular" mode) this row has no real ally to compare Speed
+			// against, so a species preview (its own moves/item/ability/spread) is shown
+			// instead — CF.buildAddPokemonPreviewTooltipHTML itself returns null outside that
+			// state, falling through to the ordinary Speed comparison popup unchanged.
+			if (CF.buildAddPokemonPreviewTooltipHTML) {
+				const previewHtml = CF.buildAddPokemonPreviewTooltipHTML(speedRow);
+				if (previewHtml) {
+					Tooltip.show(speedRow, previewHtml);
+					return;
+				}
+			}
+			if (CF.buildSpeedComparisonTooltipHTML) {
+				const html = CF.buildSpeedComparisonTooltipHTML(speedRow);
+				if (html) Tooltip.show(speedRow, html);
+			}
+			return;
+		}
+
+		const similarTeamRow = ev.target.closest ? ev.target.closest('.cf-similarteam-row') : null;
+		// buildSimilarTeamTooltipHTML is a plain top-level function (unlike
+		// buildAddPokemonPreviewTooltipHTML/buildSpeedComparisonTooltipHTML above, it doesn't
+		// close over any patchTeambuilderSidebar-local state) — called directly, same as
+		// buildFilterMatchTooltipHTML near the top of this function. Only the *lookup* by row
+		// index (CF.getSimilarTeamMatch) needs the CF cross-scope handoff, since
+		// lastSimilarTeamsMatches itself lives inside that closure.
+		if (similarTeamRow && CF.getSimilarTeamMatch) {
+			const idx = parseInt(similarTeamRow.getAttribute('data-cf-similarteam-idx'), 10);
+			const match = CF.getSimilarTeamMatch(idx);
+			// Recomputed fresh here rather than reusing whatever renderSimilarTeamsPanel last
+			// aligned against — cheap, and stays correct if the roster changed since that render
+			// (e.g. a click-to-apply elsewhere) without needing its own cache invalidation.
+			const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
+			if (match && tbRoom) Tooltip.show(similarTeamRow, buildSimilarTeamTooltipHTML(match, curRosterSpeciesOrder(tbRoom)));
 		}
 	}
 
@@ -1155,6 +1416,13 @@
 		const speedRow = ev.target.closest ? ev.target.closest('.cf-speedtier-row') : null;
 		if (speedRow) {
 			if (ev.relatedTarget && speedRow.contains(ev.relatedTarget)) return;
+			Tooltip.hide();
+			return;
+		}
+
+		const similarTeamRow = ev.target.closest ? ev.target.closest('.cf-similarteam-row') : null;
+		if (similarTeamRow) {
+			if (ev.relatedTarget && similarTeamRow.contains(ev.relatedTarget)) return;
 			Tooltip.hide();
 		}
 	}
@@ -1520,6 +1788,172 @@
 		return pikaSectionHTML('Common Teammates', rows);
 	}
 
+	/** "1st"/"2nd"/"3rd"/"4th"/"11th"/"21st"/... from a plain placement number —
+	 *  buildSimilarTeamRowHTML's own tournamentRanking label. The 11-13 special case matters:
+	 *  without it, the generic last-digit rule would misname 11th/12th/13th as "11st"/"12nd"/
+	 *  "13rd". Returns '' for a missing/non-numeric/zero placement rather than "0th" or "NaNth"
+	 *  — the row just omits the placement clause entirely in that case (see the join below). */
+	function ordinalLabel(n) {
+		const num = parseInt(n, 10);
+		if (!num) return '';
+		const rem100 = num % 100;
+		if (rem100 >= 11 && rem100 <= 13) return `${num}th`;
+		return `${num}${['th', 'st', 'nd', 'rd'][num % 10] || 'th'}`;
+	}
+
+	/** One row per aggregateSimilarTeams() match: the team's 6 Pokémon as a strip of sprites,
+	 *  column-aligned to the current roster's own order (alignSimilarTeamPokemon — an empty
+	 *  roster slot neither the roster nor this team can fill renders as a blank placeholder,
+	 *  cf-similarteam-empty-slot, rather than being skipped, so later columns don't shift and
+	 *  lose their alignment), plus the context that actually explains *why* this team is worth
+	 *  looking at and what its record even means: who built it, where they placed, and at what
+	 *  event — filling what would otherwise be a lot of dead horizontal space next to a short
+	 *  sprite strip. Full per-Pokémon detail (item/ability/moves) stays in the hover tooltip
+	 *  (buildSimilarTeamTooltipHTML), not inline, so the row itself stays a compact glance.
+	 *  `idx` is this match's position in the same `matches` array the caller keeps around for
+	 *  hover lookups (see renderSimilarTeamsPanel's lastSimilarTeamsMatches) — not a stable id,
+	 *  just an index into whatever's currently rendered, which is exactly what's needed since
+	 *  both are rebuilt together on every render. */
+	function buildSimilarTeamRowHTML(match, idx, rosterSpeciesIds) {
+		const aligned = alignSimilarTeamPokemon(match.pokemon, rosterSpeciesIds);
+		const sprites = aligned.map((p) => p ?
+			`<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(p.name) : '')}"></span>` :
+			`<span class="picon cf-similarteam-empty-slot"></span>`
+		).join('');
+
+		const author = match.author || match.authorId || 'Unknown';
+		const placement = ordinalLabel(match.tournamentRanking);
+		const tournament = match.tournamentLabel || '';
+		// "1st at Alpensee x Smogon VGC Tour (Reg M-B) #70", or just whichever half is actually
+		// present — both are optional fields on the underlying Pikalytics payload.
+		const placementLine = placement && tournament ? `${placement} at ${tournament}` : (placement || tournament);
+
+		return `<div class="cf-similarteam-row" data-cf-similarteam-idx="${idx}">` +
+			`<span class="cf-similarteam-sprites">${sprites}</span>` +
+			`<span class="cf-similarteam-meta">` +
+				`<span class="cf-similarteam-author">${escapeHTML(author)}</span>` +
+				(placementLine ? `<span class="cf-similarteam-tournament" title="${escapeHTML(placementLine)}">${escapeHTML(placementLine)}</span>` : '') +
+			`</span>` +
+			`<span class="cf-pika-pct">${escapeHTML(match.record || '')}</span>` +
+			`</div>`;
+	}
+
+	/** Caps at 10 — aggregateSimilarTeams can return more than that once a roster has several
+	 *  members each contributing their own ~20-team sample, and beyond 10 real examples the
+	 *  section stops adding new information (still sorted best-share-first, so the ones dropped
+	 *  are always the least relevant). `rosterSpeciesIds` (curRosterSpeciesOrder(tbRoom)) is
+	 *  threaded through to every row so they all align to the same reference order — computed
+	 *  once by the caller rather than per row, since it's identical for every match being
+	 *  rendered together. */
+	function buildSimilarTeamsSectionHTML(matches, rosterSpeciesIds) {
+		if (!matches || !matches.length) return pikaSectionHTML('Similar Teams', '<p class="cf-pika-empty">No similar teams found yet.</p>');
+		const rows = matches.slice(0, 10).map((m, i) => buildSimilarTeamRowHTML(m, i, rosterSpeciesIds)).join('');
+		return pikaSectionHTML('Similar Teams', rows);
+	}
+
+	/** Full team-sheet hover popup for one buildSimilarTeamRowHTML row — just the roster itself
+	 *  (each of the team's 6 Pokémon with item/ability/moves, the same shape building that
+	 *  Pokémon yourself would show), no author/tournament/record header: that context now lives
+	 *  in the row itself (buildSimilarTeamRowHTML), so repeating it here would just be the same
+	 *  three facts a second time. Read-only: no click-to-apply here, this is someone else's real
+	 *  team shown for reference, not a template.
+	 *
+	 *  One column per Pokémon, all 6 side by side in a single row, rather than one stacked
+	 *  paragraph per Pokémon — mirrors the row's own sprite strip (buildSimilarTeamRowHTML) and
+	 *  makes the same roster-aligned column position (alignSimilarTeamPokemon) legible in the
+	 *  tooltip too, not just the compact row. Same alignment, just without the row's own blank
+	 *  placeholders — an empty roster slot has nothing to list here, so it's dropped
+	 *  (`.filter(Boolean)`) rather than rendered as an empty column. */
+	function buildSimilarTeamTooltipHTML(match, rosterSpeciesIds) {
+		const ordered = alignSimilarTeamPokemon(match.pokemon, rosterSpeciesIds).filter(Boolean);
+		const columns = ordered.map((p) => {
+			// Held item as a corner badge on the sprite (cf-speedcmp-sprite/cf-speedcmp-item-badge
+			// — the same pairing already used for the ally's Scarf badge and the "Popular" row's
+			// own item badge) rather than "@ Item" text, since the item is a property of this
+			// specific Pokémon, same as its species — showing it as a badge on the sprite keeps it
+			// visually tied to the right icon instead of floating as a separate text line.
+			const itemBadge = (p.item && window.Dex) ?
+				`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(p.item))}"></span>` : '';
+			const sprite = `<span class="cf-speedcmp-sprite">` +
+				`<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(p.name) : '')}"></span>` +
+				itemBadge +
+				`</span>`;
+			const abilityText = p.ability ? `<em>${escapeHTML(p.ability)}</em>` : '';
+			const moveNames = (p.moves || []).map((m) => escapeHTML(typeof m === 'string' ? m : (m && m.name) || ''));
+			return `<div class="cf-similarteam-tooltip-col">` +
+				sprite +
+				(abilityText ? `<span>${abilityText}</span>` : '') +
+				(moveNames.length ? `<span class="cf-similarteam-tooltip-moves">${moveNames.join('<br>')}</span>` : '') +
+				`</div>`;
+		}).join('');
+		return `<div class="cf-tooltip cf-similarteam-tooltip"><div class="cf-similarteam-tooltip-columns">${columns}</div></div>`;
+	}
+
+	/** Hover preview for a "Popular" row (buildSpeedTierColumnHTML, blank-slot state) — a
+	 *  condensed read of the exact same per-species payload the full 6-section grid shows once
+	 *  the species is actually picked (see buildPikalyticsSidebarHTML), so hovering previews what
+	 *  selecting it would show rather than presenting different data. Deliberately excludes
+	 *  win rate (confounded by mirror matches and team/skill variance — see the conversation this
+	 *  was scoped in) and Common Teammates (already shown per-species once you actually add it,
+	 *  so repeating it here would just be the same list one click early). Top few of each
+	 *  category only — this is a glance, not the full grid.
+	 *
+	 *  Nature and Spread are shown as two separate lines, each with its own usage percent, not
+	 *  merged into one "Careful 32/0/14/0/20/0 (6.2%)"-style line — confirmed live, VGC's own
+	 *  `natures` and `spreads` are two independently-ranked lists (a spread entry's own `nature`
+	 *  field is empty for these formats; see buildSpreadsSection's `hasNature` check), so the
+	 *  #1 nature and #1 EV spread aren't necessarily ever run together on the same real set. A
+	 *  single combined line with one percent would misrepresent that percent as covering both,
+	 *  when it's really only the EV spread's own ranking.
+	 *
+	 *  Also shows the Mega forme's own base stats, right under the base forme's, when a Mega
+	 *  Stone is actually the species' popular item (topSpeedItemBadge — same "is this actually
+	 *  relevant" check buildSpeedTierColumnHTML's own Speed-stat swap already uses, so this
+	 *  tooltip and that row's Speed number stay consistent about which forme is the one worth
+	 *  showing). Read from Dex.species directly, not Pikalytics — the per-species payload here is
+	 *  queried under the base species name (see pikalytics.js's own resolveQuerySpecies), so it
+	 *  never carries the Mega forme's own base stats itself. */
+	function buildSpeciesPreviewTooltipHTML(mon, speciesName) {
+		const moveText = (mon.moves || []).slice(0, 4)
+			.map((m) => `${escapeHTML(m.move)} (${escapeHTML(m.percent)}%)`).join(', ') || 'No data';
+		const abilityText = (mon.abilities || []).slice(0, 2)
+			.map((a) => `${escapeHTML(a.ability)} (${escapeHTML(a.percent)}%)`).join(', ') || 'No data';
+		const itemText = (mon.items || []).slice(0, 2)
+			.map((it) => `${escapeHTML(it.item)} (${escapeHTML(it.percent)}%)`).join(', ') || 'No data';
+		const topSpread = (mon.spreads || [])[0];
+		const topNature = (mon.natures || [])[0];
+		// Falls back to the spread's own `nature` field only when there's no standalone
+		// `natures` list at all (a format-shape gap, not the VGC norm) — with no percent
+		// attached in that case, since there'd be nothing real to attach it to.
+		const natureText = topNature ? `${escapeHTML(topNature.nature)} (${escapeHTML(topNature.percent)}%)` :
+			((topSpread && topSpread.nature) ? escapeHTML(topSpread.nature) : 'No data');
+		const spreadText = topSpread ? `${escapeHTML(topSpread.ev)} (${escapeHTML(topSpread.percent)}%)` : 'No data';
+		const statsText = mon.stats ?
+			STAT_IDS.map((id) => `${STAT_LABEL_BY_ID[id]} ${mon.stats[id]}`).join(' &nbsp; ') : '';
+
+		const badge = topSpeedItemBadge(mon, speciesName);
+		let megaStatsText = '';
+		let megaFormeName = '';
+		if (badge && badge.isMega && window.Dex) {
+			const megaSpecies = window.Dex.species.get(badge.formeName);
+			if (megaSpecies && megaSpecies.exists && megaSpecies.baseStats) {
+				megaFormeName = badge.formeName;
+				megaStatsText = STAT_IDS.map((id) => `${STAT_LABEL_BY_ID[id]} ${megaSpecies.baseStats[id]}`).join(' &nbsp; ');
+			}
+		}
+
+		return `<div class="cf-tooltip cf-addpokemon-preview-tooltip">` +
+			`<h2>${escapeHTML(speciesName)}</h2>` +
+			(statsText ? `<p class="tooltip-section">${statsText}</p>` : '') +
+			(megaStatsText ? `<p class="tooltip-section"><strong>${escapeHTML(megaFormeName)}</strong><br>${megaStatsText}</p>` : '') +
+			`<p class="tooltip-section"><strong>Moves</strong><br>${moveText}</p>` +
+			`<p class="tooltip-section"><strong>Ability</strong><br>${abilityText}</p>` +
+			`<p class="tooltip-section"><strong>Item</strong><br>${itemText}</p>` +
+			`<p class="tooltip-section"><strong>Nature</strong><br>${natureText}</p>` +
+			`<p class="tooltip-section"><strong>Spread</strong><br>${spreadText}</p>` +
+			`</div>`;
+	}
+
 	function patchTeambuilderSidebar() {
 		if (!window.app || typeof window.app.updateLayout !== 'function' || !window.TeambuilderRoom ||
 			typeof window.TeambuilderRoom.prototype.update !== 'function' ||
@@ -1581,22 +2015,115 @@
 		 *  outer `.cf-pika-section` div — #cf-speedtier-col carries that class directly instead
 		 *  (see ensureTeambuilderSidebarEl) since it's a real element with its own id, not a
 		 *  disposable wrapper. Same header/row classes end up meaning the same fonts, colors,
-		 *  padding, and border as every other section — nothing bespoke to keep in sync. */
-		function speedTierColumnHTML(rowsHTML) {
-			return `<h3 class="cf-pika-header">Speed</h3><div class="cf-pika-rows">${rowsHTML}</div>`;
+		 *  padding, and border as every other section — nothing bespoke to keep in sync.
+		 *
+		 *  On a blank slot (isBlankSlot — "Add Pokémon", before a species is picked yet) this
+		 *  column repurposes itself as "Popular": the header changes, every box gets a
+		 *  type-coverage-colored border (does *any* already-added team member's real damaging
+		 *  moves hit this one hard? — bestTeamCoverageMultiplier/coverageTierClass, purely a
+		 *  fact about your own moves' types, not a judgment call), a corner badge for whichever of
+		 *  Choice Scarf or a Mega Stone is actually the more commonly run item (topSpeedItemBadge
+		 *  — real usage percent decides which one wins, not "Scarf always wins if present"), and
+		 *  its expected Speed stat (top spread + top nature, the same computation
+		 *  buildSpeedComparisonTooltipHTML already does for the hover popup, just always shown
+		 *  here instead of only on hover). When the badge is a Mega Stone, the shown Speed stat
+		 *  is the *Mega forme's* own base Speed rather than the base forme's — usually
+		 *  meaningfully different, and that's the number actually relevant to a Speed
+		 *  comparison once you know it's commonly Mega'd — with the base forme's own Speed kept
+		 *  alongside it, dimmed in parentheses, rather than dropped. Every row becomes
+		 *  a click-to-fill target for that same still-open slot (applySpeciesToBlankSlot via the
+		 *  'addspecies' action). There's no real ally Pokémon yet to usefully compare Speed
+		 *  against one-on-one (buildSpeedComparisonTooltipHTML already no-ops without one), but
+		 *  the *expected* Speed stat and "most popular in this format" are both still exactly
+		 *  what they say regardless. Species already on the team get the equipped look
+		 *  (cf-pika-row-equipped, no data-cf-pika-action) rather than cf-pika-row-disabled —
+		 *  deliberately NOT the same treatment buildTeammatesSection gives an equipped teammate
+		 *  (equipped AND disabled together there): cf-pika-row-disabled's `pointer-events: none`
+		 *  would block hover here too, and unlike a plain teammate suggestion this row's hover
+		 *  preview (buildAddPokemonPreviewTooltipHTML) is exactly as useful for a species
+		 *  already on the team as for any other — there's no reason to lose it just because
+		 *  clicking wouldn't do anything. Team-full is never a reason to disable here either
+		 *  way, since clicking fills the slot already open rather than adding a new one. */
+		function speedTierColumnHTML(headerText, rowsHTML) {
+			return `<h3 class="cf-pika-header">${escapeHTML(headerText)}</h3><div class="cf-pika-rows">${rowsHTML}</div>`;
 		}
-		function buildSpeedTierColumnHTML(list) {
-			if (!list || !list.length) return speedTierColumnHTML('<p class="cf-sidebar-placeholder">No data.</p>');
+		function buildSpeedTierColumnHTML(list, tbRoom) {
+			const blank = isBlankSlot(tbRoom);
+			const header = blank ? 'Popular' : 'Speed';
+			if (!list || !list.length) return speedTierColumnHTML(header, '<p class="cf-sidebar-placeholder">No data.</p>');
+
+			const moveTypes = blank ? teamDamagingMoveTypes(tbRoom) : null;
 			const rows = list.map((entry) => {
 				const iconStyle = window.Dex ? window.Dex.getPokemonIcon(entry.name) : '';
 				const rankCls = entry.rank >= 1 && entry.rank <= 3 ? ` cf-speedtier-rank-${entry.rank}` : '';
-				return `<div class="cf-speedtier-row" data-cf-species="${escapeHTML(entry.name)}">` +
-					`<div class="cf-speedtier-box">` +
+				let rowCls = 'cf-speedtier-row';
+				let rowAttrs = ` data-cf-species="${escapeHTML(entry.name)}"`;
+				let boxCls = 'cf-speedtier-box';
+				let badgeHTML = '';
+				let speedHTML = '';
+
+				if (blank) {
+					const alreadyOnTeam = curTeamHasSpecies(tbRoom, entry.name);
+					if (alreadyOnTeam) {
+						rowCls += ' cf-pika-row-equipped';
+					} else {
+						rowCls += ' cf-pika-row-clickable';
+						rowAttrs += ` data-cf-pika-action="addspecies" data-cf-pika-value="${escapeHTML(entry.name)}"`;
+					}
+
+					if (entry.mon) {
+						const mult = bestTeamCoverageMultiplier(moveTypes, entry.mon.types);
+						const tierCls = coverageTierClass(mult);
+						if (tierCls) boxCls += ' ' + tierCls;
+
+						const badge = topSpeedItemBadge(entry.mon, entry.name);
+						if (badge && window.Dex) {
+							badgeHTML = `<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(badge.item))}"></span>`;
+						}
+
+						const topSpread = (entry.mon.spreads || [])[0];
+						if (topSpread && tbRoom && typeof tbRoom.getStat === 'function') {
+							const topNature = (entry.mon.natures || [])[0];
+							const natureName = (topNature && topNature.nature) || '';
+							const speEv = parseEVs(topSpread.ev).spe;
+							const baseSet = {
+								species: entry.name,
+								evs: { spe: speEv },
+								nature: natureName,
+								ivs: { spe: 31 },
+								level: 50,
+							};
+							const baseSpe = tbRoom.getStat('spe', baseSet);
+							const evText = formatSpeedEvText(speEv, speedNatureIndicator(natureName));
+
+							// The popular item being a Mega Stone (not Scarf) means the Mega
+							// forme's own base Speed — usually different, sometimes very
+							// different, from the base forme's — is what a real Speed
+							// comparison against this row actually needs; the base forme's own
+							// number is kept alongside it, dimmed, rather than dropped, since
+							// it's still a real fact about the species (and what it'd be
+							// running any *other* item).
+							if (badge && badge.isMega) {
+								const megaSet = { species: badge.formeName, evs: { spe: speEv }, nature: natureName, ivs: { spe: 31 }, level: 50 };
+								const megaSpe = tbRoom.getStat('spe', megaSet);
+								speedHTML = `<div class="cf-speedtier-speed">${megaSpe}` +
+									`<span class="cf-speedtier-speed-base">(${baseSpe})</span>` +
+									`<span class="cf-speedtier-speed-ev">${escapeHTML(evText)}</span></div>`;
+							} else {
+								speedHTML = `<div class="cf-speedtier-speed">${baseSpe}<span class="cf-speedtier-speed-ev">${escapeHTML(evText)}</span></div>`;
+							}
+						}
+					}
+				}
+
+				return `<div class="${rowCls}"${rowAttrs}>` +
+					`<div class="${boxCls}">` +
 						`<span class="picon" style="${escapeHTML(iconStyle)}"></span>` +
 						`<span class="cf-speedtier-rank${rankCls}">${escapeHTML(String(entry.rank))}</span>` +
-					`</div></div>`;
+						badgeHTML +
+					`</div>${speedHTML}</div>`;
 			}).join('');
-			return speedTierColumnHTML(rows);
+			return speedTierColumnHTML(header, rows);
 		}
 
 		/** Minimum Pikalytics usage percent for Choice Scarf/Mega Stone before
@@ -1810,6 +2337,25 @@
 		// CF.lastEngine already uses for patchDexSearch -> onMouseOver.
 		CF.buildSpeedComparisonTooltipHTML = buildSpeedComparisonTooltipHTML;
 
+		/** Blank-slot counterpart to buildSpeedComparisonTooltipHTML above, tried first by
+		 *  onMouseOver (see the dispatch there) — returns null outside a blank slot so that
+		 *  branch falls through to the ordinary Speed comparison popup unchanged. Looks the
+		 *  hovered row's species up in lastSpeedTierList (populated by renderSpeedTierColumn)
+		 *  the same way buildSpeedComparisonTooltipHTML already does, since the row's own
+		 *  `mon` payload — already fetched for the coverage color / item badge / expected Speed
+		 *  this row is already showing — is exactly what buildSpeciesPreviewTooltipHTML needs
+		 *  too; no extra fetch. */
+		function buildAddPokemonPreviewTooltipHTML(rowEl) {
+			const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
+			if (!isBlankSlot(tbRoom)) return null;
+			const speciesName = rowEl.getAttribute('data-cf-species');
+			if (!speciesName) return null;
+			const entry = lastSpeedTierList && lastSpeedTierList.find((e) => e.name === speciesName);
+			if (!entry || !entry.mon) return null;
+			return buildSpeciesPreviewTooltipHTML(entry.mon, speciesName);
+		}
+		CF.buildAddPokemonPreviewTooltipHTML = buildAddPokemonPreviewTooltipHTML;
+
 		/** Laid out as a 3-row x 2-col grid (.cf-pika-grid, style.css) rather than one long
 		 *  scrolling column — DOM order here IS grid row-major order (row 1: Moves/Abilities,
 		 *  row 2: Items/Teammates, row 3: Natures/Spreads), since the grid has no explicit
@@ -1874,18 +2420,130 @@
 			});
 		}
 
+		/** Single-cell override of the six-section `.cf-pika-grid` (style.css) — reusing that
+		 *  class rather than a bespoke one means the Similar Teams section standing alone in
+		 *  #cf-pika-panel gets the exact same `height: 100%` fill + internal-scroll behavior the
+		 *  real six-section grid already relies on (see that class's own comment: a lone
+		 *  `.cf-pika-section` dropped straight into #cf-pika-panel, a plain block container,
+		 *  wouldn't get a bounded height to scroll within at all otherwise), just with the 2x3
+		 *  track template collapsed to a single cell. */
+		function addPokemonPanelWrapHTML(innerHTML) {
+			return `<div class="cf-pika-grid" style="grid-template-columns:1fr;grid-template-rows:1fr;">${innerHTML}</div>`;
+		}
+
+		/** Identifies the current roster's species composition (Mega/Primal collapsed to base,
+		 *  same as everywhere else this file compares team membership) for renderSimilarTeamsPanel's
+		 *  own cache key — order-independent (sorted) since which slot a species sits in doesn't
+		 *  change which real teams share it. */
+		function rosterSpeciesKey(tbRoom) {
+			return (tbRoom.curSetList || [])
+				.filter((s) => s && s.species)
+				.map((s) => baseSpeciesID(s.species))
+				.sort()
+				.join(',');
+		}
+
+		let lastSimilarTeamsKey = null;
+		let lastSimilarTeamsMatches = null;
+		/** Distinguishes *why* lastSimilarTeamsMatches is still null for the current
+		 *  lastSimilarTeamsKey: a fetch still in flight (don't restart it — the in-flight
+		 *  promise will resolve and render on its own) vs. a settled failure (only this case
+		 *  allows retrying on the next call for the same key). Same "pending vs. failed" split
+		 *  renderPikalyticsSidebar's own lastFetchState and renderSpeedTierColumn's own
+		 *  lastSpeedTierFailed already use — without it, the cache-hit check below had no way
+		 *  to tell "still loading" apart from "nothing cached yet," so *any* re-render while a
+		 *  fetch was pending (e.g. rapid resize events, with no debounce on that listener) fell
+		 *  through to the fetch block below and restarted the request under a new token,
+		 *  cancelling the one already in flight — confirmed live, this could leave the panel
+		 *  stuck on "Loading…" indefinitely under fast repeated re-renders. */
+		let lastSimilarTeamsFailed = false;
+		let similarTeamsRenderToken = 0;
+
+		/** Fills #cf-pika-panel on a blank slot (see isBlankSlot) with real tournament teams
+		 *  that share species with the current roster — see aggregateSimilarTeams for how
+		 *  "similar" is decided. Needs one getSpeciesData() fetch per already-added roster
+		 *  member to read each one's own `teams` field (not necessarily already cached — a
+		 *  member added but never individually re-opened since may never have been fetched),
+		 *  cached here by roster composition (rosterSpeciesKey) so re-renders triggered by
+		 *  something unrelated (a resize, a click elsewhere) don't refetch every time.
+		 *
+		 *  The reference order every row/tooltip aligns against (alignSimilarTeamPokemon) is
+		 *  read fresh via curRosterSpeciesOrder(tbRoom) at each actual render point below,
+		 *  rather than captured once into a variable up here and reused inside the async
+		 *  callback — reordering existing slots doesn't change rosterSpeciesKey (sorted, so
+		 *  order-independent) and so doesn't invalidate the cache/restart the fetch, but the
+		 *  order itself can still have changed by the time that fetch resolves; reading it at
+		 *  render time instead of fetch-start time keeps the alignment correct either way. */
+		function renderSimilarTeamsPanel(tbRoom, formatId) {
+			const panelEl = ensurePikaPanelEl();
+			const roster = (tbRoom.curSetList || []).filter((s) => s && s.species);
+			if (!roster.length) {
+				panelEl.innerHTML = addPokemonPanelWrapHTML(pikaSectionHTML('Similar Teams', '<p class="cf-pika-empty">No Pokémon on your team yet.</p>'));
+				lastSimilarTeamsKey = null;
+				lastSimilarTeamsMatches = null;
+				lastSimilarTeamsFailed = false;
+				// Invalidates any fetch still in flight from before the roster was emptied —
+				// without this, that fetch's own token still matched on resolve, so its (now
+				// stale) results would overwrite this "no team" message once it landed.
+				similarTeamsRenderToken++;
+				return;
+			}
+
+			const key = formatId + '|' + rosterSpeciesKey(tbRoom);
+			if (key === lastSimilarTeamsKey && !lastSimilarTeamsFailed) {
+				// Same roster composition as last time AND that lookup didn't fail: if it's
+				// already resolved, just redraw (cheap) against the current slot order; if
+				// it's still in flight, there's nothing new to do — let it resolve on its own.
+				if (lastSimilarTeamsMatches) {
+					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(lastSimilarTeamsMatches, curRosterSpeciesOrder(tbRoom)));
+				}
+				return;
+			}
+			if (!window.CF_Pikalytics) {
+				panelEl.innerHTML = addPokemonPanelWrapHTML(pikaSectionHTML('Similar Teams', '<p class="cf-pika-empty">No data for this format.</p>'));
+				return;
+			}
+
+			lastSimilarTeamsKey = key;
+			lastSimilarTeamsMatches = null;
+			lastSimilarTeamsFailed = false;
+			const token = ++similarTeamsRenderToken;
+			panelEl.innerHTML = addPokemonPanelWrapHTML(pikaSectionHTML('Similar Teams', '<p class="cf-sidebar-placeholder">Loading…</p>'));
+
+			Promise.all(roster.map((s) => window.CF_Pikalytics.getSpeciesData(formatId, s.species))).then((mons) => {
+				if (token !== similarTeamsRenderToken) return; // superseded by a newer request
+				const matches = aggregateSimilarTeams(mons.map((m) => (m && m.teams) || []));
+				lastSimilarTeamsMatches = matches;
+				panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(matches, curRosterSpeciesOrder(tbRoom)));
+			}).catch((e) => {
+				if (token !== similarTeamsRenderToken) return;
+				lastSimilarTeamsFailed = true;
+				console.error('[Better Teambuilder] Similar teams lookup failed:', e);
+				panelEl.innerHTML = addPokemonPanelWrapHTML(pikaSectionHTML('Similar Teams', '<p class="cf-pika-empty">Failed to load.</p>'));
+			});
+		}
+		// onMouseOver needs the currently-rendered matches by row index (data-cf-similarteam-idx)
+		// to build the hover tooltip — same CF cross-scope handoff as buildSpeedComparisonTooltipHTML.
+		CF.getSimilarTeamMatch = (idx) => lastSimilarTeamsMatches && lastSimilarTeamsMatches[idx];
+
 		function renderPikalyticsSidebar(tbRoom) {
 			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
 			const speciesName = tbRoom.curSet && (tbRoom.curSet.species || tbRoom.curSet.name);
-			if (!formatId || !speciesName) {
+			if (!formatId) {
+				ensurePikaPanelEl().innerHTML = '<p class="cf-sidebar-placeholder">Nothing here yet.</p>';
+				lastRenderKey = null;
+				lastMon = null;
+				lastFetchState = null;
+				return;
+			}
+			if (!speciesName) {
 				// A freshly-added blank team slot (right after "Add Pokémon", before a species
 				// is typed) has a truthy curSet with an empty .species — updateSplitState's
 				// editingAPokemon check only looks at curSet's truthiness, so the split still
-				// turns on and this function still gets called. Without clearing here, the
-				// sidebar would keep showing whichever species was rendered last, appearing
-				// "stuck" until something else (switching slots and back) forced a real
-				// re-render — nothing short of reloading the extension would clear it otherwise.
-				ensurePikaPanelEl().innerHTML = '<p class="cf-sidebar-placeholder">Nothing here yet.</p>';
+				// turns on and this function still gets called. Shows real teams that share
+				// species with the roster built so far (renderSimilarTeamsPanel) instead of
+				// leaving the panel showing whichever species was rendered last.
+				renderSimilarTeamsPanel(tbRoom, formatId);
 				lastRenderKey = null;
 				lastMon = null;
 				lastFetchState = null;
@@ -1975,28 +2633,53 @@
 		 *  switching to a completely different, definitely-indexed species — since nothing but a
 		 *  format change or leaving the teambuilder ever reset lastSpeedTierFormatId. */
 		let lastSpeedTierFailed = false;
+		/** Whether the last render was for a blank slot — tracked alongside
+		 *  lastSpeedTierFormatId (not folded into one composite key) because the two need
+		 *  different staleness rules: a format change always means genuinely new data to fetch,
+		 *  but a blank-state flip within the *same* format (e.g. picking a species finishes the
+		 *  slot, or backing out of that pick reopens a blank one) is just redrawing the exact
+		 *  same already-fetched lastSpeedTierList with a different header/coloring/clickability
+		 *  — no refetch needed, see the branch below. */
+		let lastSpeedTierBlank = null;
 		function renderSpeedTierColumn(tbRoom) {
 			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
 			const speciesHint = tbRoom.curSet && (tbRoom.curSet.species || tbRoom.curSet.name);
 			const colEl = document.getElementById('cf-speedtier-col');
 			if (!colEl) return;
+			const blank = isBlankSlot(tbRoom);
 
 			if (!formatId || !window.CF_Pikalytics || !window.CF_Pikalytics.getTopUsageList) {
-				colEl.innerHTML = speedTierColumnHTML('<p class="cf-sidebar-placeholder">No data.</p>');
+				colEl.innerHTML = speedTierColumnHTML(blank ? 'Popular' : 'Speed', '<p class="cf-sidebar-placeholder">No data.</p>');
 				lastSpeedTierFormatId = null;
+				lastSpeedTierBlank = null;
 				lastSpeedTierList = null;
 				lastSpeedTierFailed = false;
 				return;
 			}
-			// Same format as last time AND that lookup didn't fail: nothing new to do, whether
-			// it's still in flight (lastSpeedTierFailed hasn't had a chance to flip yet) or
-			// already succeeded (lastSpeedTierList is already showing). Only a settled failure
-			// falls through to retry.
-			if (formatId === lastSpeedTierFormatId && !lastSpeedTierFailed) return;
+			// Same format as last time AND that lookup didn't fail: nothing new to *fetch*,
+			// whether it's still in flight (lastSpeedTierFailed hasn't had a chance to flip yet)
+			// or already succeeded (lastSpeedTierList is already showing). Still redrawn from the
+			// already-fetched list (cheap, no refetch) whenever `blank` is true — unlike the
+			// "Speed" comparison view, blank-slot rendering (coverage coloring, already-on-team
+			// disabling, click targets) reads live tbRoom.curSetList, which can change without
+			// `blank` itself ever flipping (e.g. switching from one team to a same-format, empty
+			// one while both happen to be sitting on a blank "Add Pokémon" slot) — confirmed
+			// live: without this, the column kept showing the previous team's coverage
+			// colors/disabled species after switching teams. Also redrawn on a blank-state flip
+			// even when *not* currently blank, to redraw once back to the plain "Speed" header/
+			// non-clickable rows.
+			if (formatId === lastSpeedTierFormatId && !lastSpeedTierFailed) {
+				if (lastSpeedTierList && (blank || blank !== lastSpeedTierBlank)) {
+					lastSpeedTierBlank = blank;
+					colEl.innerHTML = buildSpeedTierColumnHTML(lastSpeedTierList, tbRoom);
+				}
+				return;
+			}
 			lastSpeedTierFormatId = formatId;
+			lastSpeedTierBlank = blank;
 
 			const token = ++speedTierRenderToken;
-			colEl.innerHTML = speedTierColumnHTML('<p class="cf-sidebar-placeholder">Loading…</p>');
+			colEl.innerHTML = speedTierColumnHTML(blank ? 'Popular' : 'Speed', '<p class="cf-sidebar-placeholder">Loading…</p>');
 			lastSpeedTierList = null;
 			lastSpeedTierFailed = false;
 
@@ -2004,12 +2687,12 @@
 				if (token !== speedTierRenderToken) return; // superseded by a newer request
 				lastSpeedTierFailed = !list || !list.length;
 				lastSpeedTierList = list;
-				colEl.innerHTML = buildSpeedTierColumnHTML(list);
+				colEl.innerHTML = buildSpeedTierColumnHTML(list, tbRoom);
 			}).catch((e) => {
 				if (token !== speedTierRenderToken) return;
 				lastSpeedTierFailed = true;
 				console.error('[Better Teambuilder] Speed tier usage list lookup failed:', e);
-				colEl.innerHTML = speedTierColumnHTML('<p class="cf-sidebar-placeholder">Failed to load.</p>');
+				colEl.innerHTML = speedTierColumnHTML(isBlankSlot(tbRoom) ? 'Popular' : 'Speed', '<p class="cf-sidebar-placeholder">Failed to load.</p>');
 			});
 		}
 

@@ -198,6 +198,13 @@ a[data-entry^="custom|"] .movedesccol {
 	border-radius: 5px;
 	box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
 }
+/* "Popular" row hover preview (content.js buildSpeciesPreviewTooltipHTML) — a touch wider than
+ * the base 300px so its Moves/Ability/Item lines (several comma-separated entries each) have a
+ * bit more room before wrapping, without going as wide as the table-shaped speedcmp/similar-team
+ * tooltips below. */
+#cf-tooltipwrapper .cf-tooltip.cf-addpokemon-preview-tooltip {
+	width: 380px;
+}
 #cf-tooltipwrapper .cf-tooltip h2 {
 	padding: 2px 4px;
 	margin: 0;
@@ -520,8 +527,42 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 }
 .cf-speedtier-row {
 	display: flex;
+	flex-direction: column;
+	align-items: center;
 	justify-content: center;
 	padding: 4px 0;
+	/* Transparent by default so it's invisible outside the blank-slot state below — matches
+	 * .cf-pika-row's own base border, which is what makes cf-pika-row-equipped's border-color
+	 * (below) actually show once applied instead of having no border-width/style to color. */
+	border: 1px solid transparent;
+	border-radius: 4px;
+}
+/* Blank-slot ("Popular") state only — content.js buildSpeedTierColumnHTML adds
+ * cf-pika-row-clickable (a species not yet on the team) or cf-pika-row-equipped (one already on
+ * it) directly onto .cf-speedtier-row, the exact same classes every other click-to-apply row in
+ * this file already uses, so clicking/highlighting Just Works without new rules here (see those
+ * classes' own definitions below — cursor:pointer, or a border/background highlight with no
+ * pointer-events restriction). Deliberately cf-pika-row-equipped, not cf-pika-row-disabled, for
+ * an already-on-team row — see buildSpeedTierColumnHTML's own comment for why: disabled's
+ * `pointer-events: none` would also block the hover preview this row still needs. This is only
+ * the one extra touch neither of those generic classes covers — a hover highlight on the box
+ * itself, since .cf-speedtier-box doesn't share `.cf-pika-row`'s own `:hover` background (that
+ * rule is scoped to that exact class, deliberately not reused here — a boxed sprite reads
+ * differently from a text row, same reasoning as the square-corners comment below). */
+/* Explicit rather than trusting inheritance from the row's own cursor:pointer (.cf-pika-row-
+ * clickable, below) — .cf-speedtier-box/.cf-speedtier-speed are separate child elements, and a
+ * plain inherited cursor is easy to lose track of once more child markup gets added later, so
+ * this states the intent directly on the parts a hovering mouse actually lands on. */
+.cf-speedtier-row.cf-pika-row-clickable {
+	cursor: pointer;
+}
+.cf-speedtier-row.cf-pika-row-clickable:hover .cf-speedtier-box {
+	border-color: #7A9BC2;
+	background: #EAF1F8;
+}
+.dark .cf-speedtier-row.cf-pika-row-clickable:hover .cf-speedtier-box {
+	border-color: #7A9BC2;
+	background: rgba(122, 155, 194, .2);
 }
 /* Square corners on purpose (border-radius: 0, unlike .cf-pika-row's rounded 4px) — a boxed
  * icon reads differently from a clickable list row, which is also why this doesn't borrow
@@ -582,6 +623,92 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 .cf-speedtier-rank-3 {
 	background: rgba(205, 127, 50, .85);
 	color: #3A2510;
+}
+/* Blank-slot ("Popular") state only — content.js buildSpeedTierColumnHTML/
+ * coverageTierClass adds exactly one of these four onto .cf-speedtier-box (alongside its default
+ * border-color/background above) to show, at a glance, the best type-effectiveness any already-
+ * added team member's real damaging moves can land on that box's species — 5 tiers total, the
+ * 5th ("neutral") being the box's own already-existing default styling, not a class of its own
+ * (see coverageTierClass's own comment for why null/neutral share the same "no extra class"
+ * treatment). Border-only, not a filled background, so the sprite itself stays fully legible —
+ * these are meant to be read as a border color at a glance across 20 boxes, not as a solid tile.
+ * Purple/green/orange/red rather than this file's more common blue/gray tones since these four
+ * need to read as a distinct, ordered scale from across the whole column, not blend in with the
+ * rest of the sidebar's chrome. */
+.cf-speedtier-box.cf-coverage-quad {
+	border-color: #9B59B6;
+	border-width: 2px;
+	background: rgba(155, 89, 182, .12);
+}
+.cf-speedtier-box.cf-coverage-super {
+	border-color: #2E9E44;
+	border-width: 2px;
+	background: rgba(46, 158, 68, .12);
+}
+.cf-speedtier-box.cf-coverage-resist {
+	border-color: #D08A1E;
+	border-width: 2px;
+	background: rgba(208, 138, 30, .12);
+}
+.cf-speedtier-box.cf-coverage-immune {
+	border-color: #C0392B;
+	border-width: 2px;
+	background: rgba(192, 57, 43, .12);
+}
+.dark .cf-speedtier-box.cf-coverage-quad {
+	border-color: #B980D1;
+	background: rgba(185, 128, 209, .18);
+}
+.dark .cf-speedtier-box.cf-coverage-super {
+	border-color: #5CBF74;
+	background: rgba(92, 191, 116, .18);
+}
+.dark .cf-speedtier-box.cf-coverage-resist {
+	border-color: #E0A94A;
+	background: rgba(224, 169, 74, .18);
+}
+.dark .cf-speedtier-box.cf-coverage-immune {
+	border-color: #E0685A;
+	background: rgba(224, 104, 90, .18);
+}
+/* Expected Speed stat (content.js buildSpeedTierColumnHTML: top spread's Speed EVs + top
+ * nature, run through the same tbRoom.getStat the real Stats panel uses) sitting under the box
+ * — blank-slot state only, same as the coverage colors above. Bold number first so it reads at
+ * a glance down the whole column; the EV/nature annotation underneath is the same muted, smaller
+ * treatment .cf-speedcmp-evinfo already uses in the Speed-comparison tooltip's own title, reused
+ * here rather than invented fresh. */
+.cf-speedtier-speed {
+	margin-top: 2px;
+	text-align: center;
+	font-family: Verdana, sans-serif;
+	font-size: 9px;
+	font-weight: bold;
+	color: #333333;
+}
+.dark .cf-speedtier-speed {
+	color: #DDDDDD;
+}
+.cf-speedtier-speed-ev {
+	display: block;
+	font-size: 8px;
+	font-weight: normal;
+	color: #777777;
+}
+.dark .cf-speedtier-speed-ev {
+	color: #AAAAAA;
+}
+/* Base forme's own Speed, shown alongside the Mega forme's when content.js buildSpeedTierColumnHTML
+ * swaps the main number to the Mega forme's stat (the popular item badge is a Mega Stone, not
+ * Scarf) — inline (not display:block, unlike .cf-speedtier-speed-ev above) so it sits right next
+ * to the Mega number itself rather than dropping to its own line, and dimmed the same muted tone
+ * as the EV line so the Mega number stays the visually dominant figure. */
+.cf-speedtier-speed-base {
+	font-size: 8px;
+	font-weight: normal;
+	color: #777777;
+}
+.dark .cf-speedtier-speed-base {
+	color: #AAAAAA;
 }
 /* Takes whatever width #cf-speedtier-col doesn't need; .cf-pika-grid inside (style.css below)
  * still separately caps itself at --cf-teambuilder-max-width, so this flex item can be wider
@@ -835,6 +962,134 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 	font-size: 9pt;
 }
 .dark .cf-pika-empty {
+	color: #AAAAAA;
+}
+
+/* Similar Teams section (content.js renderSimilarTeamsPanel/buildSimilarTeamRowHTML) — the
+ * blank-slot right-hand panel content, real tournament rosters sharing species with the current
+ * build. Each row is its own shape (a strip of up to 6 .picon sprites, not the single icon +
+ * name + pct three-cell layout every other section's .cf-pika-row uses), so it gets its own
+ * class rather than reusing .cf-pika-row — but the same border/padding/hover treatment as that
+ * class, for the same "reads as one clickable-ish list" look. No cursor:pointer and no
+ * data-cf-pika-action: hovering shows the full team sheet (buildSimilarTeamTooltipHTML), but
+ * there's nothing to click through to — these are someone else's real teams shown for
+ * reference, not templates. */
+.cf-similarteam-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 38px;
+	padding: 7px 10px;
+	margin: 0 5px 5px 5px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+}
+.cf-similarteam-row:hover {
+	border-color: #D8D8D8;
+	background: #F8F8F8;
+}
+.dark .cf-similarteam-row:hover {
+	border-color: #777777;
+	background: rgba(100, 100, 100, .5);
+}
+/* Fixed to its own content width (not 1 1 auto — that used to stretch this to fill the whole
+ * row, leaving .cf-similarteam-meta's author/tournament text with nowhere to sit) so the sprite
+ * strip stays a compact block on the left and .cf-similarteam-meta gets whatever's left. */
+.cf-similarteam-sprites {
+	display: flex;
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+}
+/* Author + placement/tournament (content.js buildSimilarTeamRowHTML) — fills the wide gap a bare
+ * sprite-strip-plus-record row otherwise left empty (a 6-sprite strip is ~240px, #cf-pika-panel
+ * can run to --cf-teambuilder-max-width, 653px), and answers the two questions a bare "13-2"
+ * record couldn't on its own: who built this, and at what event. Stacked two lines rather than
+ * run together on one, so the author name (the more scannable of the two down a whole column of
+ * rows) stays visually distinct from the longer, more variable tournament text under it. */
+.cf-similarteam-meta {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 3px;
+	flex: 1 1 auto;
+	min-width: 0;
+	margin-left: 8px;
+	line-height: 1.35;
+}
+.cf-similarteam-author {
+	font-weight: bold;
+	font-size: 9pt;
+}
+/* Truncated with an ellipsis + the full text in `title` (same pattern as
+ * a[data-entry^="custom|"] .movedesccol above) rather than wrapping — tournament names run long
+ * and unpredictable, and letting this row grow taller than its sprites would break the section's
+ * otherwise-uniform row height. */
+.cf-similarteam-tournament {
+	display: block;
+	font-size: 8pt;
+	color: #777777;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.dark .cf-similarteam-tournament {
+	color: #AAAAAA;
+}
+/* content.js alignSimilarTeamPokemon: a roster slot this team doesn't share with the current
+ * build. Kept as a same-sized empty box (not just skipped) so every rendered row's Nth sprite is
+ * the same roster slot across the whole section — a faint dashed outline reads as "nothing here"
+ * without competing with the real sprites around it. .picon already supplies the 40x30 box this
+ * sits inside (no background-image set, unlike a real sprite's inline style="background:...")
+ * — only the placeholder outline is added here. */
+.cf-similarteam-empty-slot {
+	box-sizing: border-box;
+	border: 1px dashed #CCCCCC;
+	border-radius: 2px;
+}
+.dark .cf-similarteam-empty-slot {
+	border-color: #555555;
+}
+/* Hover tooltip (content.js buildSimilarTeamTooltipHTML) — one column per Pokémon, all up to 6
+ * side by side in a single row, rather than the base .cf-tooltip's stacked-paragraph shape —
+ * mirrors buildSimilarTeamRowHTML's own sprite strip, so the same roster-aligned column position
+ * reads the same way in both the compact row and the detailed hover. Considerably wider than the
+ * base 300px .cf-tooltip (see #cf-tooltipwrapper .cf-tooltip above) to fit 6 columns, each still
+ * needing enough width for a real move name without wrapping mid-word. */
+#cf-tooltipwrapper .cf-tooltip.cf-similarteam-tooltip {
+	width: 620px;
+}
+.cf-similarteam-tooltip-columns {
+	display: flex;
+	padding: 8px 6px;
+}
+/* Centered, stacked column content (icon, name, item, ability, moves) — text-align:center rather
+ * than left, since a centered icon above left-aligned text under it would read as misaligned.
+ * flex: 1 1 0 (not auto) so all 6 columns split the row exactly evenly regardless of how much
+ * text any one of them happens to hold. Divider between columns (not around the outer edges —
+ * :not(:last-child)) reads as "6 separate things," the same job a table's column rules would do,
+ * without drawing a full table. */
+.cf-similarteam-tooltip-col {
+	flex: 1 1 0;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 3px;
+	padding: 0 6px;
+	text-align: center;
+	font-size: 8pt;
+	line-height: 1.35;
+}
+.cf-similarteam-tooltip-col:not(:last-child) {
+	border-right: 1px solid #D8D8D8;
+}
+.dark .cf-similarteam-tooltip-col:not(:last-child) {
+	border-right-color: #555555;
+}
+.cf-similarteam-tooltip-moves {
+	color: #666666;
+}
+.dark .cf-similarteam-tooltip-moves {
 	color: #AAAAAA;
 }
 /* Nature name + "(+Atk/-SpA)" annotation (content.js buildNaturesSection/buildSpreadsSection,
