@@ -272,17 +272,24 @@
 	 *  list makes that recurrence-counting unnecessary, and a direct count is the more obviously
 	 *  correct computation of the same real fact.
 	 *
-	 *  `minShared` scales with roster size: with only one real species added so far there's
-	 *  nothing to require overlap *against* yet (every match would have shared === 1), so 1 is
-	 *  accepted; once there's a second real species, requiring at least 2 is what actually makes
-	 *  "similar" mean something. Sorted by share count first, then by wins (recordData.wins,
-	 *  falling back to parsing `record` — "13-2" -> 13 — for entries missing the structured
-	 *  field) as a tiebreak — both real numbers already on the data, nothing synthesized or
-	 *  blended into a single score. */
+	 *  Accepts any real overlap at all (shared >= 1) — deliberately NOT scaled up to "2 once the
+	 *  roster has 2+ species," despite that being the right call under the older per-species
+	 *  design this replaced (there, every candidate team was already pre-filtered to contain
+	 *  *some* roster species by construction — it came from that species' own `/api/p/` sample
+	 *  — so "shared >= 1" was trivially true for all of them and only "shared >= 2" meant
+	 *  anything). This list isn't pre-filtered at all; it's the format's whole ~200-team pool,
+	 *  so "shared >= 1" is already a real, meaningful filter on its own. Requiring 2 once the
+	 *  roster has more than one species hid every team that happened to share just your most
+	 *  popular single Pokémon with nothing shown for it even when that Pokémon appears in
+	 *  dozens of the 200 — confirmed live (Swampert: plenty of real teams run it, but almost
+	 *  none of those also happen to run whatever else was on the roster). Sorted by share count
+	 *  first (so a team matching more of the roster still surfaces above a single-species one),
+	 *  then by wins (recordData.wins, falling back to parsing `record` — "13-2" -> 13 — for
+	 *  entries missing the structured field) as a tiebreak — both real numbers already on the
+	 *  data, nothing synthesized or blended into a single score. */
 	function aggregateTopTeams(teams, rosterSpeciesIds) {
 		const rosterSet = new Set(rosterSpeciesIds || []);
 		if (!rosterSet.size) return [];
-		const minShared = rosterSet.size >= 2 ? 2 : 1;
 
 		const wins = (t) => (t.recordData && typeof t.recordData.wins === 'number') ?
 			t.recordData.wins : (parseInt((t.record || '').split('-')[0], 10) || 0);
@@ -294,7 +301,7 @@
 					n + ((p && p.name && rosterSet.has(baseSpeciesID(p.name))) ? 1 : 0), 0);
 				return Object.assign({ shared }, team);
 			})
-			.filter((e) => e.shared >= minShared)
+			.filter((e) => e.shared >= 1)
 			.sort((a, b) => (b.shared !== a.shared) ? b.shared - a.shared : wins(b) - wins(a));
 	}
 

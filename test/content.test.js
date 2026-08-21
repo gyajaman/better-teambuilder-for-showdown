@@ -863,14 +863,18 @@ describe('aggregateTopTeams', () => {
 		expect(matches[0].shared).toBe(3);
 	});
 
-	it('requires only 1 shared species when the roster has just one real member so far', () => {
-		const matches = aggregateTopTeams([teamA, teamB], ['incineroar']);
-		expect(matches.map((m) => m.author).sort()).toEqual(['Ash', 'Misty']);
+	it('accepts any real overlap (shared >= 1), regardless of roster size', () => {
+		// Deliberately not scaled up to "requires 2 once the roster has 2+ species" — unlike the
+		// old per-species design this replaced, this list isn't pre-filtered to contain any
+		// roster species at all, so shared >= 1 is already a meaningful filter; requiring 2 hid
+		// every genuinely popular single-species match (confirmed live: Swampert).
+		const matches = aggregateTopTeams([teamA, teamB], ['incineroar', 'garchomp']);
+		expect(matches.map((m) => m.author).sort()).toEqual(['Ash', 'Misty']); // Misty's team only shares Incineroar (1), still included
 	});
 
-	it('requires at least 2 shared species once the roster has more than one real member', () => {
-		const matches = aggregateTopTeams([teamA, teamB], ['incineroar', 'garchomp']);
-		expect(matches.map((m) => m.author)).toEqual(['Ash']); // Misty's team only shares Incineroar (1)
+	it('still ranks a team sharing more of the roster above one sharing less, via the sort — not by dropping it', () => {
+		const matches = aggregateTopTeams([teamB, teamA], ['incineroar', 'garchomp']);
+		expect(matches.map((m) => m.author)).toEqual(['Ash', 'Misty']); // Ash shares 2, Misty shares 1 — both present, Ash first
 	});
 
 	it('drops teams with zero overlap with the roster entirely', () => {
