@@ -2605,6 +2605,7 @@
 					if (token !== similarTeamsRenderToken) return;
 					lastSimilarTeamsMatches = detailedMatches;
 					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(detailedMatches, curRosterSpeciesOrder(tbRoom)));
+					fillSimilarTeamsIfNotScrollable(tbRoom, formatId);
 				});
 			}).catch((e) => {
 				if (token !== similarTeamsRenderToken) return;
@@ -2624,7 +2625,8 @@
 		 *  the bottom while a page is in flight rather than a dead scrollbar. No-ops (rather
 		 *  than erroring) if nothing has loaded yet, a page is already in flight, or every match
 		 *  is already loaded — all real, reachable states from a scroll event that can fire at
-		 *  any time. */
+		 *  any time. Calls fillSimilarTeamsIfNotScrollable again once the new page lands, same
+		 *  as the first page's own render does — see that function's own doc comment for why. */
 		function loadMoreSimilarTeams(tbRoom, formatId) {
 			if (lastSimilarTeamsLoadingMore || !lastSimilarTeamsAllMatches || !lastSimilarTeamsMatches) return;
 			const start = lastSimilarTeamsMatches.length;
@@ -2650,11 +2652,31 @@
 				lastSimilarTeamsMatches = lastSimilarTeamsMatches.concat(detailed);
 				const newRowsHTML = detailed.map((m, i) => buildSimilarTeamRowHTML(m, startIdx + i, rosterSpeciesIds)).join('');
 				rowsEl.insertAdjacentHTML('beforeend', newRowsHTML);
+				fillSimilarTeamsIfNotScrollable(tbRoom, formatId);
 			}).catch((e) => {
 				lastSimilarTeamsLoadingMore = false;
 				loadingEl.remove();
 				console.error('[Better Teambuilder] Loading more similar teams failed:', e);
 			});
+		}
+
+		/** Pagination-on-scroll only ever loads a *later* page in response to an actual `scroll`
+		 *  event on `.cf-pika-rows` — but that event can only ever fire once the box is already
+		 *  tall enough to need scrolling in the first place. Confirmed live: with a small enough
+		 *  match count (or a tall enough sidebar), the first page's rows can fit entirely within
+		 *  the visible area without ever overflowing `.cf-pika-rows` at all — no scrollbar ever
+		 *  appears, no `scroll` event ever fires, and pagination silently stalls on page 1 no
+		 *  matter how many more matches exist. Called right after every page renders (both the
+		 *  first, in renderSimilarTeamsPanel, and every later one, in loadMoreSimilarTeams): if
+		 *  the box still doesn't overflow after this page and more match data remains, this loads
+		 *  the next page immediately rather than waiting for a scroll that may never come — and,
+		 *  since it's called again after that page too, keeps doing so until either the box
+		 *  actually becomes scrollable (at which point onSimilarTeamsScroll takes over) or every
+		 *  match has been loaded. */
+		function fillSimilarTeamsIfNotScrollable(tbRoom, formatId) {
+			const rowsEl = document.querySelector('#cf-pika-panel .cf-pika-rows');
+			if (!rowsEl || rowsEl.scrollHeight > rowsEl.clientHeight) return;
+			loadMoreSimilarTeams(tbRoom, formatId);
 		}
 		// onMouseOver needs the currently-rendered matches by row index (data-cf-similarteam-idx)
 		// to build the hover tooltip; onSimilarTeamsScroll needs to trigger the next page — same
@@ -2790,7 +2812,20 @@
 		let lastSpeedTierBlank = null;
 		function renderSpeedTierColumn(tbRoom) {
 			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
-			const speciesHint = tbRoom.curSet && (tbRoom.curSet.species || tbRoom.curSet.name);
+			// Falls back to any already-added roster member's species when the currently-open
+			// slot is blank (curSet.species/.name empty) — confirmed live: an empty species
+			// hint sends discoverMonthAndCutoff's discovery fetch to Pikalytics' plain FORMAT
+			// overview page (no species in the URL) rather than a per-species one, and that
+			// page has "**Data Date**" but no "{slug}-{cutoff}" pattern anywhere on it, so the
+			// cutoff regex never matches and the whole discovery throws — silently emptying
+			// out the "Popular" list on the very first "Add Pokémon" click of a cold format
+			// (before any real species has ever been queried in it), even though the roster
+			// already has a perfectly good real species sitting right there to discover
+			// through instead. Only genuinely unrecoverable when the roster itself is *also*
+			// empty (no species anywhere to discover through at all) — same case
+			// renderSimilarTeamsPanel already shows "No Pokémon on your team yet." for.
+			const speciesHint = (tbRoom.curSet && (tbRoom.curSet.species || tbRoom.curSet.name)) ||
+				((tbRoom.curSetList || []).find((s) => s && s.species) || {}).species;
 			const colEl = document.getElementById('cf-speedtier-col');
 			if (!colEl) return;
 			const blank = isBlankSlot(tbRoom);
