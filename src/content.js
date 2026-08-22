@@ -1611,7 +1611,13 @@
 		if (_speedInputTimer) clearTimeout(_speedInputTimer);
 		_speedInputTimer = setTimeout(() => {
 			_speedInputTimer = null;
+			// If the user already clicked/tabbed elsewhere before this fired, refreshSearch's
+			// rebuild must not steal focus back to the (now-recreated) speed input out from
+			// under whatever they're doing now — only restore focus/cursor when this box was
+			// still the thing focused the instant the debounce actually ran.
+			const hadFocus = document.activeElement === input;
 			refreshSearch();
+			if (!hadFocus) return;
 			const newInput = document.querySelector('.cf-speedval-input');
 			if (newInput) {
 				newInput.focus();
@@ -2928,7 +2934,19 @@
 				// already grew to via scrolling, not just the first page again. If it's still in
 				// flight, there's nothing new to do — let it resolve on its own.
 				if (lastSimilarTeamsMatches) {
+					// Reachable from a plain window resize (updateSplitState re-renders on every
+					// one) with no roster change at all, so this redraw needs the same two things
+					// the actual fetch paths (above, and loadMoreSimilarTeams) already get right:
+					// preserve scroll position instead of snapping back to the top, and re-check
+					// whether the box still needs more pages loaded — a resize can make an
+					// already-scrolled box tall enough to stop overflowing, which would otherwise
+					// silently stall pagination since no more `scroll` events would ever fire.
+					const oldRowsEl = panelEl.querySelector('.cf-pika-rows');
+					const oldScrollTop = oldRowsEl ? oldRowsEl.scrollTop : 0;
 					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(lastSimilarTeamsMatches, curRosterSpeciesOrder(tbRoom)));
+					const newRowsEl = panelEl.querySelector('.cf-pika-rows');
+					if (newRowsEl && oldScrollTop) newRowsEl.scrollTop = oldScrollTop;
+					fillSimilarTeamsIfNotScrollable(tbRoom, formatId);
 				}
 				return;
 			}

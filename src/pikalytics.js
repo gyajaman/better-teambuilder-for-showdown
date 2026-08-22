@@ -316,7 +316,11 @@
 				if (!Array.isArray(data)) return null;
 				const list = data
 					.filter((entry) => entry && entry.name)
-					.map((entry) => ({ name: entry.name, rank: parseInt(entry.rank, 10) || 0 }));
+					.map((entry) => ({ name: entry.name, rank: parseInt(entry.rank, 10) }))
+					// An entry with a missing/unparseable rank would otherwise default to a
+					// value that sorts it ahead of the genuine #1 (see below) — drop it
+					// instead of letting it corrupt the ordering.
+					.filter((entry) => Number.isFinite(entry.rank));
 				list.sort((a, b) => a.rank - b.rank);
 				return list;
 			})
@@ -401,7 +405,7 @@
 	const TEAM_DETAIL_CACHE_PREFIX = 'cf_pikalytics_teamdetail_';
 
 	function fetchTopTeams(slug) {
-		return fetch(`https://www.pikalytics.com/api/topteams/${slug}`)
+		return fetch(`https://pikalytics.com/api/topteams/${slug}`)
 			.then((r) => (r.ok ? r.json() : null))
 			.catch(() => null)
 			.then((data) => (data && Array.isArray(data.teams)) ? data.teams : null);
@@ -427,7 +431,7 @@
 	}
 
 	function fetchTeamDetail(slug, tournamentId, authorId) {
-		return fetch(`https://www.pikalytics.com/api/topteams/${slug}/team/${encodeURIComponent(tournamentId)}/${encodeURIComponent(authorId)}`)
+		return fetch(`https://pikalytics.com/api/topteams/${slug}/team/${encodeURIComponent(tournamentId)}/${encodeURIComponent(authorId)}`)
 			.then((r) => (r.ok ? r.json() : null))
 			.catch(() => null)
 			.then((data) => (data && data.team && Array.isArray(data.team.pokemon)) ? data.team : null);
