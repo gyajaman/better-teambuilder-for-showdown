@@ -18,11 +18,13 @@
 
 	const closeSideRoomsCheckbox = document.getElementById('closeSideRoomsOnLoad');
 	const scarfThresholdInput = document.getElementById('scarfThresholdPercent');
+	const ironballThresholdInput = document.getElementById('ironballThresholdPercent');
 	const megaThresholdInput = document.getElementById('megaThresholdPercent');
 
 	chrome.storage.sync.get(CF_DEFAULT_SETTINGS, (items) => {
 		closeSideRoomsCheckbox.checked = !!items.closeSideRoomsOnLoad;
 		scarfThresholdInput.value = items.scarfThresholdPercent;
+		ironballThresholdInput.value = items.ironballThresholdPercent;
 		megaThresholdInput.value = items.megaThresholdPercent;
 	});
 
@@ -30,11 +32,11 @@
 		chrome.storage.sync.set({ closeSideRoomsOnLoad: closeSideRoomsCheckbox.checked }, flashSaved);
 	});
 
-	/** Shared by both percent inputs: clamps to 0-100 and falls back to the field's own default
-	 *  on empty/non-numeric input, rather than ever writing NaN or an out-of-range value into
-	 *  sync storage — content.js's CF_SETTINGS.scarfThresholdPercent/megaThresholdPercent
-	 *  (see its own doc comment) trusts these to already be sane numbers, with no clamping of
-	 *  its own on the read side. */
+	/** Shared by all three percent inputs: clamps to 0-100 and falls back to the field's own
+	 *  default on empty/non-numeric input, rather than ever writing NaN or an out-of-range value
+	 *  into sync storage — content.js's CF_SETTINGS.scarfThresholdPercent/ironballThresholdPercent/
+	 *  megaThresholdPercent (see its own doc comment) trusts these to already be sane numbers,
+	 *  with no clamping of its own on the read side. */
 	function bindPercentInput(input, key, defaultValue) {
 		input.addEventListener('change', () => {
 			let value = parseFloat(input.value);
@@ -45,5 +47,6 @@
 		});
 	}
 	bindPercentInput(scarfThresholdInput, 'scarfThresholdPercent', CF_DEFAULT_SETTINGS.scarfThresholdPercent);
+	bindPercentInput(ironballThresholdInput, 'ironballThresholdPercent', CF_DEFAULT_SETTINGS.ironballThresholdPercent);
 	bindPercentInput(megaThresholdInput, 'megaThresholdPercent', CF_DEFAULT_SETTINGS.megaThresholdPercent);
 })();

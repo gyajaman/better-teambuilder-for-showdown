@@ -69,7 +69,7 @@ Hovering a Pokémon in the Speed Tiers column opens a popup comparing its expect
 - **Ally** column — your real EVs, nature, and currently-held item.
 - **Foe** column — the hovered species' base Speed stat plus its single most common EV spread and nature. Never includes an item, since Pikalytics' "most common item" is a population statistic, not a fact about a specific build.
 - Nine scenario rows: a baseline, then Tailwind, paralysis, and a −1/−2 stage drop, each applied to one side at a time.
-- Conditional columns, shown only when relevant: one **Mega** column per Mega Stone that crosses its usage threshold (a species can have more than one viable Mega Stone), and a **Scarf** column for the same idea with Choice Scarf. Each is badged with the real item icon and its actual usage percentage.
+- Conditional columns, shown only when relevant: one **Mega** column per Mega Stone that crosses its usage threshold (a species can have more than one viable Mega Stone), a **Scarf** column for the same idea with Choice Scarf, and an **Iron Ball** column for the same idea again with Iron Ball. Each is badged with the real item icon and its actual usage percentage.
 
 ## Add Pokémon screen
 
@@ -96,7 +96,7 @@ Shows "No Pokémon on your team yet" until at least one real slot has a species 
 Click the extension's icon in the toolbar to open its popup, which holds:
 
 - **Auto-close side rooms on load** — closes any chat/side rooms Showdown restores from your last session as soon as the page loads. On by default.
-- **Scarf/Mega thresholds** — the minimum Pikalytics usage percent before the Speed comparison popup's conditional Scarf/Mega columns show at all. 5%/15% by default, and adjustable since these are starting guesses rather than researched numbers.
+- **Scarf/Iron Ball/Mega thresholds** — the minimum Pikalytics usage percent before the Speed comparison popup's conditional Scarf/Iron Ball/Mega columns show at all. 5%/5%/15% by default, and adjustable since these are starting guesses rather than researched numbers.
 
 Changes take effect the next time you reload the Showdown tab.
 

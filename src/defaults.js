@@ -12,9 +12,13 @@
 const CF_DEFAULT_SETTINGS = {
 	closeSideRoomsOnLoad: true,
 	// Minimum Pikalytics usage percent before the Speed comparison hover popup's conditional
-	// "what if it ran Scarf/its Mega Stone" columns bother showing at all — see content.js's
-	// own doc comment on that threshold check for why these are starting guesses rather than
-	// researched numbers, and now user-adjustable instead of hardcoded for that exact reason.
+	// "what if it ran Scarf/Iron Ball/its Mega Stone" columns bother showing at all — see
+	// content.js's own doc comment on that threshold check for why these are starting guesses
+	// rather than researched numbers, and now user-adjustable instead of hardcoded for that
+	// exact reason. Iron Ball's own default is expected to clear far less often than Scarf's in
+	// practice (a Trick Room-oriented item, nowhere near as universal a pick) — same threshold
+	// value as Scarf regardless, since there's no principled reason to pre-judge it stricter.
 	scarfThresholdPercent: 5,
+	ironballThresholdPercent: 5,
 	megaThresholdPercent: 15,
 };

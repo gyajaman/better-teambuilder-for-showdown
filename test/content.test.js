@@ -9,7 +9,7 @@
  */
 const {
 	escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
-	curTeamHasSpecies, curTeamFull, isBlankSlot, parseEVs, natureModifierHTML, speedNatureIndicator,
+	curTeamHasSpecies, curTeamFull, isBlankSlot, isTeamOverview, parseEVs, natureModifierHTML, speedNatureIndicator,
 	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 	teamDamagingMoveTypes, typeEffectivenessMultiplier, bestTeamCoverageMultiplier, coverageTierClass,
@@ -17,6 +17,8 @@ const {
 	pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
 	buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
 	buildSpreadsSection, buildTeammatesSection,
+	computeSpeedSpectrumEntries, computeSpeedSpectrumDomain, resolveSpeedSpectrumSpecies,
+	assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
 	buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
 	buildSpeciesPreviewTooltipHTML, patchDexSearch,
 } = require('../src/content.js');
@@ -308,14 +310,15 @@ describe('speedCmpTooltipWidthClass', () => {
 		expect(speedCmpTooltipWidthClass(0)).toBe('');
 	});
 
-	it('returns the wide/widest/widest2 tiers for 1/2/3 conditional columns', () => {
+	it('returns the wide/widest/widest2/widest3 tiers for 1/2/3/4 conditional columns', () => {
 		expect(speedCmpTooltipWidthClass(1)).toBe(' cf-speedcmp-tooltip-wide');
 		expect(speedCmpTooltipWidthClass(2)).toBe(' cf-speedcmp-tooltip-widest');
 		expect(speedCmpTooltipWidthClass(3)).toBe(' cf-speedcmp-tooltip-widest2');
+		expect(speedCmpTooltipWidthClass(4)).toBe(' cf-speedcmp-tooltip-widest3');
 	});
 
 	it('clamps to the widest tier rather than returning undefined for an out-of-range count', () => {
-		expect(speedCmpTooltipWidthClass(4)).toBe(' cf-speedcmp-tooltip-widest2');
+		expect(speedCmpTooltipWidthClass(5)).toBe(' cf-speedcmp-tooltip-widest3');
 	});
 });
 
@@ -725,6 +728,292 @@ describe('buildTeammatesSection', () => {
 	});
 });
 
+describe('computeSpeedSpectrumEntries', () => {
+	it('skips slots with no species (blank slots, the extra empty slot Showdown appends)', () => {
+		const tbRoom = {
+			curSetList: [{ species: 'Incineroar', name: '' }, { species: '' }, null],
+			getStat: () => 100,
+		};
+		const entries = computeSpeedSpectrumEntries(tbRoom);
+		expect(entries).toHaveLength(1);
+		expect(entries[0].species).toBe('Incineroar');
+	});
+
+	it('falls back to species for the display name when there is no nickname', () => {
+		const tbRoom = { curSetList: [{ species: 'Incineroar', name: '' }], getStat: () => 100 };
+		expect(computeSpeedSpectrumEntries(tbRoom)[0].name).toBe('Incineroar');
+	});
+
+	it('prefers a real nickname when the set has one', () => {
+		const tbRoom = { curSetList: [{ species: 'Incineroar', name: 'Big Cat' }], getStat: () => 100 };
+		expect(computeSpeedSpectrumEntries(tbRoom)[0].name).toBe('Big Cat');
+	});
+
+	it('reads the real Speed stat via tbRoom.getStat, the same method every other Speed number in this file uses', () => {
+		const set = { species: 'Ninjask' };
+		const getStat = vi.fn((stat, s) => (stat === 'spe' && s === set ? 188 : 0));
+		const tbRoom = { curSetList: [set], getStat };
+		expect(computeSpeedSpectrumEntries(tbRoom)[0].speed).toBe(188);
+		expect(getStat).toHaveBeenCalledWith('spe', set);
+	});
+
+	it('resolves a Mega-Stone holder to the Mega forme for species/name/speed alike', () => {
+		mockBattleDex();
+		const set = { species: 'Blastoise', item: 'Blastoisinite', name: '' };
+		const getStat = vi.fn((stat, s) => (s.species === 'Blastoise-Mega' ? 78 : -1));
+		const tbRoom = { curSetList: [set], getStat };
+		expect(computeSpeedSpectrumEntries(tbRoom)).toEqual([{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', speed: 78, hasScarf: false, hasIronBall: false }]);
+		delete window.Dex;
+	});
+
+	it('applies a real held Choice Scarf to the plotted speed — this is what makes the dot actually move when one is equipped', () => {
+		const set = { species: 'Incineroar', item: 'Choice Scarf' };
+		const tbRoom = { curSetList: [set], getStat: () => 100 };
+		const entry = computeSpeedSpectrumEntries(tbRoom)[0];
+		expect(entry.speed).toBe(150); // floor(100 * 1.5)
+		expect(entry.hasScarf).toBe(true);
+	});
+
+	it('applies a real held Iron Ball to the plotted speed too, via the same modifier path', () => {
+		const set = { species: 'Incineroar', item: 'Iron Ball' };
+		const tbRoom = { curSetList: [set], getStat: () => 100 };
+		const entry = computeSpeedSpectrumEntries(tbRoom)[0];
+		expect(entry.speed).toBe(50); // floor(100 * 0.5)
+		expect(entry.hasScarf).toBe(false);
+	});
+
+	it('leaves speed unmodified and hasScarf false with no held item', () => {
+		const set = { species: 'Incineroar' };
+		const tbRoom = { curSetList: [set], getStat: () => 100 };
+		const entry = computeSpeedSpectrumEntries(tbRoom)[0];
+		expect(entry.speed).toBe(100);
+		expect(entry.hasScarf).toBe(false);
+	});
+});
+
+describe('resolveSpeedSpectrumSpecies', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('leaves a plain set alone with no matching item', () => {
+		expect(resolveSpeedSpectrumSpecies({ species: 'Incineroar', item: 'Leftovers' })).toEqual({ species: 'Incineroar', isMega: false });
+		expect(resolveSpeedSpectrumSpecies({ species: 'Incineroar' })).toEqual({ species: 'Incineroar', isMega: false });
+	});
+
+	it('resolves to the Mega forme when the held item is a matching Mega Stone', () => {
+		mockBattleDex();
+		expect(resolveSpeedSpectrumSpecies({ species: 'Blastoise', item: 'Blastoisinite' })).toEqual({ species: 'Blastoise-Mega', isMega: true });
+	});
+
+	it('is a no-op when species is already the Mega forme itself (megaStone is keyed by the base species)', () => {
+		mockBattleDex();
+		expect(resolveSpeedSpectrumSpecies({ species: 'Blastoise-Mega', item: 'Blastoisinite' })).toEqual({ species: 'Blastoise-Mega', isMega: false });
+	});
+});
+
+describe('assignSpeedSpectrumLanes', () => {
+	const posOf = (speed) => speed; // identity — lets test positions double as plain percentages
+
+	it('keeps widely separated entries in the same lane (no collision to avoid)', () => {
+		const entries = [{ species: 'Torkoal', speed: 10 }, { species: 'Ninjask', speed: 90 }];
+		const lanes = assignSpeedSpectrumLanes(entries, posOf).map((e) => e.lane);
+		expect(lanes).toEqual([0, 0]);
+	});
+
+	it('opens a second lane only for entries too close to the first lane\'s last placement', () => {
+		const entries = [{ species: 'A', speed: 100 }, { species: 'B', speed: 101 }];
+		const lanes = assignSpeedSpectrumLanes(entries, posOf).map((e) => e.lane);
+		expect(lanes).toEqual([0, 1]);
+	});
+
+	it('reuses lane 0 once it clears the gap again, rather than always advancing to a new lane', () => {
+		// B is too close to A (lane 1), C is far from both A and B — first-fit should slot it
+		// back into lane 0 instead of opening an unnecessary third lane.
+		const entries = [{ species: 'A', speed: 100 }, { species: 'B', speed: 101 }, { species: 'C', speed: 130 }];
+		const lanes = assignSpeedSpectrumLanes(entries, posOf).map((e) => e.lane);
+		expect(lanes).toEqual([0, 1, 0]);
+	});
+
+	it('opens as many lanes as a tight cluster genuinely needs, not a fixed cap', () => {
+		const entries = [100, 101, 102, 103, 104].map((speed, i) => ({ species: 'M' + i, speed }));
+		const lanes = assignSpeedSpectrumLanes(entries, posOf).map((e) => e.lane);
+		expect(new Set(lanes).size).toBeGreaterThan(2); // would be capped at 2 under the old row toggle
+	});
+
+	it('does not mutate the input array', () => {
+		const entries = [{ species: 'Torkoal', speed: 10 }];
+		assignSpeedSpectrumLanes(entries, posOf);
+		expect(entries[0]).not.toHaveProperty('lane');
+	});
+});
+
+describe('computeSpeedSpectrumDomain', () => {
+	// Real base Speeds for the four hardcoded reference species (content.js's own
+	// SPEED_SPECTRUM_FASTEST_NON_MEGA/etc, researched by hand — see that const's own comment):
+	// Dragapult 142, Alakazam-Mega 150, Torkoal 20, Sableye-Mega 20.
+	function fakeGetStat(stat, set, ev, natureMult) {
+		const base = { Dragapult: 142, 'Alakazam-Mega': 150, Torkoal: 20, 'Sableye-Mega': 20 }[set.species];
+		if (base === undefined) throw new Error('unexpected reference species: ' + set.species);
+		return natureMult === 0.9 || natureMult === 1.1 ? base : -1; // sanity: always called with a real override
+	}
+
+	it('takes the format-wide fastest non-Mega, Scarfed, as the ceiling — beats the fastest Mega', () => {
+		// Scarfed Dragapult: floor(142 * 1.5) = 213, vs. Alakazam-Mega's plain 150.
+		const domain = computeSpeedSpectrumDomain({ getStat: fakeGetStat });
+		expect(domain.max).toBe(213);
+		expect(domain).toMatchObject({ maxSpecies: 'Dragapult', maxIsMega: false });
+	});
+
+	it('takes the format-wide slowest non-Mega, Iron-Balled, as the floor — beats the slowest Mega', () => {
+		// Iron-Balled Torkoal: floor(20 * 0.5) = 10, vs. Sableye-Mega's plain 20.
+		const domain = computeSpeedSpectrumDomain({ getStat: fakeGetStat });
+		expect(domain.min).toBe(10);
+		expect(domain).toMatchObject({ minSpecies: 'Torkoal', minIsMega: false });
+	});
+
+	it('never applies Scarf/Iron Ball to a Mega candidate', () => {
+		const getStat = vi.fn(fakeGetStat);
+		computeSpeedSpectrumDomain({ getStat });
+		// Both Mega calls resolve to a bare 150/20 with no further modification — confirmed by
+		// the ceiling/floor assertions above already reflecting the un-multiplied Mega values
+		// whenever they win; this just confirms getStat itself was actually asked for them.
+		expect(getStat).toHaveBeenCalledWith('spe', { species: 'Alakazam-Mega', level: 50 }, 32, 1.1);
+		expect(getStat).toHaveBeenCalledWith('spe', { species: 'Sableye-Mega', level: 50 }, 0, 0.9);
+	});
+
+	it('picks whichever candidate (Mega or Scarf/Iron-Balled non-Mega) is actually more extreme, not always one or the other', () => {
+		// Flip the usual outcome: make the Mega candidates the more extreme ones this time.
+		const getStat = (stat, set) => ({ Dragapult: 100, 'Alakazam-Mega': 500, Torkoal: 100, 'Sableye-Mega': 1 }[set.species]);
+		const domain = computeSpeedSpectrumDomain({ getStat });
+		expect(domain).toMatchObject({ maxSpecies: 'Alakazam-Mega', maxIsMega: true });
+		expect(domain).toMatchObject({ minSpecies: 'Sableye-Mega', minIsMega: true });
+	});
+});
+
+describe('buildSpeedSpectrumHTML', () => {
+	beforeEach(() => mockDex());
+	afterEach(() => { delete window.Dex; });
+
+	// Realistic default: neither bound comes from a Mega winner, so both would normally show
+	// their own item badge (Iron Ball/Scarf) — tests that care specifically about *entry-level*
+	// badges override minIsMega/maxIsMega to true to isolate them from the bound's own badges.
+	function fakeDomain(min, max, overrides) {
+		return Object.assign({ min, minSpecies: 'Torkoal', minIsMega: false, max, maxSpecies: 'Ninjask', maxIsMega: false }, overrides);
+	}
+
+	it('shows the empty-state message with no roster at all', () => {
+		expect(buildSpeedSpectrumHTML([], null)).toContain('No Pokémon on your team yet.');
+	});
+
+	it('positions an entry along the given domain, not a padded range derived from itself', () => {
+		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: 'Incineroar', speed: 100 }], fakeDomain(50, 150));
+		expect(html).toContain('left:50.0%');
+		expect(html).toContain('>50<');
+		expect(html).toContain('>150<');
+	});
+
+	it('never lets the low bound render as negative even if the domain somehow is', () => {
+		const html = buildSpeedSpectrumHTML([{ species: 'Torkoal', name: 'Torkoal', speed: 10 }], fakeDomain(-5, 40));
+		expect(html).toContain('>0<');
+	});
+
+	it('stacks a lone team Pokémon in the single lane closest to the track (top:0)', () => {
+		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: 'Incineroar', speed: 100 }], fakeDomain(50, 150));
+		expect(html).toContain('top:0px');
+	});
+
+	it('shows the real species/nickname and exact Speed number in the hover title', () => {
+		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: 'Big Cat', speed: 87 }], fakeDomain(50, 150));
+		expect(html).toContain('title="Big Cat: 87 Speed"');
+	});
+
+	it('escapes a nickname used in the hover title', () => {
+		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: '<script>', speed: 87 }], fakeDomain(50, 150));
+		expect(html).not.toContain('title="<script>: 87 Speed"');
+		expect(html).toContain('&lt;script&gt;');
+	});
+
+	it('opens a second lane (top:46px) for a Pokémon too close in Speed to overlap otherwise', () => {
+		const html = buildSpeedSpectrumHTML([
+			{ species: 'A', name: 'A', speed: 100 },
+			{ species: 'B', name: 'B', speed: 101 },
+		], fakeDomain(50, 150));
+		expect(html).toContain('top:0px');
+		expect(html).toContain('top:46px');
+	});
+
+	it('shows the Choice Scarf/Iron Ball badge on an entry that has one, and never on one that does not', () => {
+		// Both bounds forced Mega here specifically to isolate entry-level badges from the
+		// bound's own — see the dedicated bound-badge tests below for those.
+		const html = buildSpeedSpectrumHTML([
+			{ species: 'Incineroar', name: 'Incineroar', speed: 150, hasScarf: true, hasIronBall: false },
+			{ species: 'Ninjask', name: 'Ninjask', speed: 90, hasScarf: false, hasIronBall: true },
+			{ species: 'Torkoal', name: 'Torkoal', speed: 60, hasScarf: false, hasIronBall: false },
+		], fakeDomain(50, 200, { minIsMega: true, maxIsMega: true }));
+		expect((html.match(/cf-speedcmp-item-badge/g) || [])).toHaveLength(2);
+	});
+
+	it('clamps a real entry outside the given domain to the nearest edge instead of rendering off it', () => {
+		// e.g. a real Iron Ball holder can fall below the plain 0-EV/negative-nature floor.
+		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: 'Incineroar', speed: 20 }], fakeDomain(50, 150));
+		expect(html).toContain('left:0.0%');
+		expect(html).not.toContain('left:-');
+	});
+
+	it('positions threshold markers at the track\'s own left:0%/100%, a small fixed gap below it', () => {
+		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: 'Incineroar', speed: 100 }], fakeDomain(50, 150));
+		const trackTop = Number(html.match(/cf-speedspectrum-track" style="top:(\d+)px"/)[1]);
+		const thresholds = [...html.matchAll(/cf-speedspectrum-threshold" style="left:(\d+)%;top:(\d+)px/g)];
+		expect(thresholds).toHaveLength(2);
+		const lefts = thresholds.map((m) => Number(m[1])).sort((a, b) => a - b);
+		expect(lefts).toEqual([0, 100]);
+		// Both sit at the same small, fixed gap below the track — not far away at the bottom of
+		// a much taller diagram, and not vertically centered on the track's own line either.
+		thresholds.forEach((m) => expect(Number(m[2]) - trackTop).toBe(8));
+	});
+
+	it('shares the exact same coordinate space as the roster icons — a real entry at the domain edge lines up with the threshold marker', () => {
+		// speed:150 sits exactly at the domain max, so it should land at left:100.0%, the same
+		// horizontal position speedSpectrumThresholdHTML uses for the ceiling marker itself.
+		const html = buildSpeedSpectrumHTML([{ species: 'Dragapult', name: 'Dragapult', speed: 150 }], fakeDomain(50, 150));
+		expect(html).toContain('cf-speedspectrum-icon" style="left:100.0%');
+		expect(html).toContain('cf-speedspectrum-threshold" style="left:100%');
+	});
+
+	it('shows a sprite of the winning species at each threshold marker', () => {
+		const html = buildSpeedSpectrumHTML(
+			[{ species: 'Incineroar', name: 'Incineroar', speed: 100 }],
+			fakeDomain(50, 150, { minSpecies: 'Torkoal', maxSpecies: 'Ninjask' })
+		);
+		expect(html).toContain('cf-speedspectrum-threshold');
+		expect(html).toContain('background:url(Torkoal)');
+		expect(html).toContain('background:url(Ninjask)');
+	});
+
+	it('badges a non-Mega bound winner with Iron Ball on the floor and Choice Scarf on the ceiling', () => {
+		const html = buildSpeedSpectrumHTML(
+			[{ species: 'Incineroar', name: 'Incineroar', speed: 100 }],
+			fakeDomain(50, 150, { minIsMega: false, maxIsMega: false })
+		);
+		expect((html.match(/cf-speedcmp-item-badge/g) || [])).toHaveLength(2);
+	});
+
+	it('never badges a Mega bound winner — holding the Mega Stone is already implicit', () => {
+		const html = buildSpeedSpectrumHTML(
+			[{ species: 'Incineroar', name: 'Incineroar', speed: 100 }],
+			fakeDomain(50, 150, { minIsMega: true, maxIsMega: true })
+		);
+		expect(html).not.toContain('cf-speedcmp-item-badge');
+	});
+
+	it('never renders a legend, a tick, or a popular/team distinction — just the roster', () => {
+		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: 'Incineroar', speed: 100 }], fakeDomain(50, 150));
+		expect(html).not.toContain('legend');
+		expect(html).not.toContain('cf-speedspectrum-tick');
+		expect(html).not.toContain('cf-speedspectrum-icon-team');
+		expect(html).not.toContain('cf-speedspectrum-icon-popular');
+	});
+});
+
 describe('isBlankSlot', () => {
 	it('is true for a real, currently-open slot with no species/name yet', () => {
 		expect(isBlankSlot({ curSet: { species: '', name: '' } })).toBe(true);
@@ -738,6 +1027,27 @@ describe('isBlankSlot', () => {
 	it('is false with no curSet at all (the team-overview screen)', () => {
 		expect(isBlankSlot({ curSet: null })).toBe(false);
 		expect(isBlankSlot({})).toBe(false);
+	});
+});
+
+describe('isTeamOverview', () => {
+	it('is true once a team is open with no slot being edited', () => {
+		expect(isTeamOverview({ curTeam: { name: 'Untitled 1', format: 'gen9' }, curSet: null })).toBe(true);
+	});
+
+	it('is false on the outer "all your teams" list screen, even though curSet is null there too', () => {
+		expect(isTeamOverview({ curTeam: null, curSet: null })).toBe(false);
+		expect(isTeamOverview({ curSet: null })).toBe(false);
+	});
+
+	it('is false once a slot is being edited, blank or filled', () => {
+		expect(isTeamOverview({ curTeam: { name: 'Untitled 1' }, curSet: { species: '', name: '' } })).toBe(false);
+		expect(isTeamOverview({ curTeam: { name: 'Untitled 1' }, curSet: { species: 'Incineroar' } })).toBe(false);
+	});
+
+	it('is false with no tbRoom at all', () => {
+		expect(isTeamOverview(null)).toBe(false);
+		expect(isTeamOverview({})).toBe(false);
 	});
 });
 

@@ -288,11 +288,19 @@ a[data-entry^="custom|"] .movedesccol {
 #cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip-widest {
 	width: 500px;
 }
-/* All three at once — Mega X, Mega Y, AND popular Scarf usage. Rare, but content.js's
- * buildSpeedComparisonTooltipHTML doesn't cap how many conditional columns can show at
- * once, so this needs to exist rather than the table silently overflowing its card. */
+/* Three at once — Mega X, Mega Y, and popular Scarf (or Iron Ball) usage. Rare, but
+ * content.js's buildSpeedComparisonTooltipHTML doesn't cap how many conditional columns can
+ * show at once, so this needs to exist rather than the table silently overflowing its card. */
 #cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip-widest2 {
 	width: 580px;
+}
+/* All four — Mega X, Mega Y, popular Scarf usage, AND popular Iron Ball usage. Vanishingly
+ * rare (Scarf and Iron Ball can't coexist on any *one* real set, but nothing stops both
+ * clearing their own threshold at the population level across different real builds of the
+ * same species) — kept anyway for the same "don't let the table silently overflow" reason as
+ * every tier below it, following the same +80px-per-tier progression. */
+#cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip-widest3 {
+	width: 660px;
 }
 .cf-speedcmp-table {
 	width: 100%;
@@ -524,6 +532,14 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 	 * now read as equal. */
 	padding: 12px 6px 12px 21px;
 	box-sizing: border-box;
+}
+/* Team-overview screen (content.js updateSplitState/renderTeamOverviewPanel) — nothing is
+ * assigned to this column there, so it's hidden outright rather than left showing an empty
+ * placeholder next to the Speed Spread panel. #cf-pika-panel's own `flex: 1 1 auto` (above)
+ * already expands to take the freed width on its own once this is gone, same as any flex
+ * layout losing a sibling — no extra width rule needed on either element for this. */
+body.cf-teambuilder-team-overview #cf-speedtier-col {
+	display: none;
 }
 .cf-speedtier-row {
 	display: flex;
@@ -1092,6 +1108,69 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 .dark .cf-similarteam-tooltip-moves {
 	color: #AAAAAA;
 }
+
+/* Speed Spread section (content.js buildSpeedSpectrumHTML) — the team-overview screen's main
+ * panel content: real per-member Speed stats laid out on a low-to-high horizontal spectrum, so
+ * how bunched or spread the team's Speed tiers are reads at a glance from the icons' spacing
+ * alone. Height is computed in JS per render (however many lanes assignSpeedSpectrumLanes
+ * actually needed, not a fixed guess) and set as an inline style, same reason every icon's own
+ * left/top below is inline rather than a CSS class — position:relative is what makes those
+ * percentage/pixel values mean something (relative to *this* box, not the page). */
+.cf-speedspectrum {
+	position: relative;
+	margin: 12px 4px 28px 4px;
+}
+/* content.js sets `left`/`right` inline, both equal to SPEED_SPECTRUM_LABEL_RESERVE — the
+ * margin a threshold marker's sprite (speedSpectrumThresholdHTML, anchored exactly at this
+ * area's own left:0%/100% edges) needs to hang half outside the track's own span without
+ * clipping against .cf-speedspectrum's outer edge. Its own position:absolute is what makes it
+ * the percentage basis for the track/icons/threshold markers all nested inside it — the roster
+ * icons and the threshold markers sharing this exact same coordinate space is what makes a real
+ * roster Pokémon built to match the format's own ceiling/floor actually line up with the
+ * marker, instead of the marker floating in a separately-positioned outer margin. */
+.cf-speedspectrum-track-area {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+}
+/* The baseline itself — content.js sets its own `top` inline (trackY, the roster block's
+ * computed height plus a fixed gap) since that number depends on how many lanes the roster
+ * needed this render, not a constant. z-index unnecessary: icons come later in source order, so
+ * they already paint on top of this regardless. */
+.cf-speedspectrum-track {
+	position: absolute;
+	left: 0;
+	right: 0;
+	height: 2px;
+	background: #AAAAAA;
+}
+.dark .cf-speedspectrum-track {
+	background: #666666;
+}
+/* content.js sets `left`/`top` inline per icon (percentage left from its real Speed position,
+ * pixel top from assignSpeedSpectrumLanes' lane assignment) since both depend on this render's
+ * own data, not something a CSS class can express. translateX(-50%) centers the icon *on* its
+ * left:NN% point rather than starting the icon's own left edge there. Also reused verbatim
+ * (plain class combination, cf-speedspectrum-icon cf-speedspectrum-threshold) for the two
+ * threshold markers (content.js speedSpectrumThresholdHTML) at the track's own left:0%/100% —
+ * same box/centering, just content in the opposite order (value then sprite, not sprite then
+ * value) so the number still ends up the element closest to the track on either side of it. */
+.cf-speedspectrum-icon {
+	position: absolute;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	transform: translateX(-50%);
+}
+.cf-speedspectrum-value {
+	color: #777777;
+	font-size: 8pt;
+	white-space: nowrap;
+}
+.dark .cf-speedspectrum-value {
+	color: #AAAAAA;
+}
+
 /* Nature name + "(+Atk/-SpA)" annotation (content.js buildNaturesSection/buildSpreadsSection,
  * natureModifierHTML). The name gets a fixed min-width (9ch — long enough for every real
  * nature name, e.g. "Adamant"/"Bashful"/"Relaxed") so the modifier that follows always starts

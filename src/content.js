@@ -78,16 +78,19 @@
 	// since it runs in the page's own MAIN-world JS realm (see manifest.json) rather than the
 	// isolated world/popup defaults.js is loaded into (see defaults.js's own doc
 	// comment for why the other two files DO share it).
-	const DEFAULT_SETTINGS = { closeSideRoomsOnLoad: true, scarfThresholdPercent: 5, megaThresholdPercent: 15 };
+	const DEFAULT_SETTINGS = {
+		closeSideRoomsOnLoad: true, scarfThresholdPercent: 5, ironballThresholdPercent: 5, megaThresholdPercent: 15,
+	};
 
 	/** Reassigned to the real synced settings object once waitForSideRoomSettings (near the
 	 *  bottom of this file) resolves — starts out as DEFAULT_SETTINGS so anything reading it
 	 *  before that (there shouldn't be anything, in practice, but this is cheap insurance) gets
 	 *  sane values rather than undefined. buildSpeedComparisonTooltipHTML
 	 *  (patchTeambuilderSidebar, below) reads CF_SETTINGS.scarfThresholdPercent/
-	 *  megaThresholdPercent fresh on every hover rather than capturing a value at page load, so
-	 *  a setting change takes effect on the very next hover after a page reload — no need to
-	 *  re-open the teambuilder, just reload once after saving the popup's settings. */
+	 *  ironballThresholdPercent/megaThresholdPercent fresh on every hover rather than capturing a
+	 *  value at page load, so a setting change takes effect on the very next hover after a page
+	 *  reload — no need to re-open the teambuilder, just reload once after saving the popup's
+	 *  settings. */
 	let CF_SETTINGS = DEFAULT_SETTINGS;
 
 	function escapeHTML(text) {
@@ -139,13 +142,26 @@
 
 	/** True for the one state the Add Pokémon column/panel (renderSimilarTeamsPanel, the
 	 *  "Popular" speed-tier column) key off of: a real, currently-open slot (tbRoom.curSet
-	 *  truthy — same thing updateSplitState's editingAPokemon already checked before either
-	 *  render function was even called) that has no species/name yet, i.e. the moment right
+	 *  truthy — same thing updateSplitState's `active` branch already requires before either
+	 *  render function is even reached) that has no species/name yet, i.e. the moment right
 	 *  after clicking "Add Pokémon", before a species has been typed or picked. Distinct from
-	 *  "not editing anything at all" (curSet falsy, the team-overview screen), which the split
-	 *  turns off for entirely and never reaches either render function. */
+	 *  "not editing anything at all" (curSet falsy, isTeamOverview's own team-overview screen
+	 *  below), which reaches renderTeamOverviewPanel instead of either of these two. */
 	function isBlankSlot(tbRoom) {
 		return !!(tbRoom && tbRoom.curSet && !(tbRoom.curSet.species || tbRoom.curSet.name));
+	}
+
+	/** True on the team-overview screen: a team is open (tbRoom.curTeam truthy) but no slot
+	 *  within it is being edited (tbRoom.curSet falsy) — the screen showing all 6 roster icons
+	 *  together. curSet alone isn't enough to detect this, confirmed live: it's also null on
+	 *  the outer "all your teams" list screen, before any specific team has been opened at all
+	 *  — curTeam is what actually distinguishes the two (null on the list screen, set to
+	 *  {name, format, ...} the moment a team is opened, back to null on returning to the list).
+	 *  updateSplitState still separately checks window.app.curRoom === tbRoom before treating
+	 *  this as active — this only covers the curTeam/curSet half of that condition, same as
+	 *  isBlankSlot only covering its own half. */
+	function isTeamOverview(tbRoom) {
+		return !!(tbRoom && tbRoom.curTeam && !tbRoom.curSet);
 	}
 
 	/** Every damaging move currently on every already-added team member (Status moves carry a
@@ -372,6 +388,72 @@
 	const STAT_IDS = Object.keys(STAT_LABEL_BY_ID);
 	const STAT_LABELS = Object.values(STAT_LABEL_BY_ID);
 
+	/** buildSpeedSpectrumHTML's own tuning constants — declared up here rather than next to that
+	 *  function (down near the other section builders) because they have to be assigned before
+	 *  the module.exports early-return guard below, same reasoning as this file's other
+	 *  module-scope consts: a `const` that's still unassigned when that `return` fires stays in
+	 *  the temporal dead zone forever for any closure that references it later (see the guard's
+	 *  own comment). */
+	/** Greedy lane-packing gap threshold (assignSpeedSpectrumLanes): an icon only opens a new
+	 *  lane once every existing lane's most-recently-placed icon is closer than this to it (in
+	 *  percent of track *area* width, i.e. after cf-speedspectrum-track-area's own
+	 *  SPEED_SPECTRUM_LABEL_RESERVE inset — narrower than the full panel) — so e.g. three icons
+	 *  bunched together spread across three lanes only if they genuinely need to, not fewer
+	 *  (overlapping) or more (wasted vertical space). Grounded in the actual .picon width (40px,
+	 *  Showdown's own sprite size), but this can't be computed exactly without a live DOM
+	 *  measurement this pure function doesn't have — no longer capped at 653px on this screen and
+	 *  free to grow much wider on a large monitor (see renderTeamOverviewPanel's own comment on
+	 *  skipping addPokemonPanelWrapHTML), so 40px is a shrinking fraction of the track area the
+	 *  wider it gets. Cut down twice now on direct feedback that it was still too conservative
+	 *  (was 10, then 6) — if a wide window still spreads icons out more than their actual 40px
+	 *  width needs, this is the number to cut further; there's no way to get it exactly right
+	 *  for every window size without passing the track area's real measured width in. */
+	const SPEED_SPECTRUM_MIN_GAP_PCT = 4;
+	/** Pixel height of one icon lane (sprite + value label stacked), stacked upward from the
+	 *  track — assignSpeedSpectrumLanes decides how many lanes a given render actually needs. */
+	const SPEED_SPECTRUM_LANE_HEIGHT = 46;
+	/** Vertical clearance between the track and the nearest lane above it — kept tight
+	 *  deliberately (was 18, cut down here) since a large gap here was just dead space between
+	 *  the icons and the line they're plotted against. */
+	const SPEED_SPECTRUM_TRACK_GAP = 8;
+	/** Vertical room a threshold marker (speedSpectrumThresholdHTML) needs below its own `top`
+	 *  (already offset from the track by SPEED_SPECTRUM_TRACK_GAP, mirroring the gap the roster
+	 *  icons use above it) — the value text's own line, a small gap, the sprite's real height
+	 *  (.picon is 30px tall), and a few px for its item badge's own negative bottom offset
+	 *  (cf-speedcmp-item-badge, style.css) poking past it. */
+	const SPEED_SPECTRUM_THRESHOLD_HEIGHT = 44;
+	/** getStat's own evOverride param for the domain floor/ceiling (computeSpeedSpectrumDomain)
+	 *  — Champions VGC's real EV scale is 0-32 (see parseEVs' own comment), so these are the two
+	 *  actual legal extremes, not arbitrary round numbers. */
+	const SPEED_SPECTRUM_MIN_EV = 0;
+	const SPEED_SPECTRUM_MAX_EV = 32;
+	/** getStat's own natureOverride param — a direct multiplier (see TeambuilderRoom.getStat's
+	 *  own source: natureOverride replaces the plus/minus nature lookup entirely when given),
+	 *  not a nature name, so these are Showdown's real minus/plus nature multipliers themselves,
+	 *  not this file inventing a rate. */
+	const SPEED_SPECTRUM_NEGATIVE_NATURE_MULT = 0.9;
+	const SPEED_SPECTRUM_POSITIVE_NATURE_MULT = 1.1;
+	/** Horizontal space reserved on each side of the track for the domain-bound labels
+	 *  (buildSpeedSpectrumHTML) — the track itself (and every icon's own left:NN% position) is
+	 *  inset by this much via cf-speedspectrum-track-area, so the labels sit in the margin that
+	 *  frees up beside the line rather than directly on top of its two ends. Wide enough for the
+	 *  bound's own config sprite (.picon is 40px wide, plus a few px for its item badge's own
+	 *  negative right offset poking past it) — the widest thing that actually needs to fit here,
+	 *  wider than a 3-digit Speed number on its own would need. */
+	const SPEED_SPECTRUM_LABEL_RESERVE = 48;
+
+	/** The real fastest/slowest legal Pokémon in the format itself — hand-researched once
+	 *  against Showdown's own Champions-format species/tier data (BattleTeambuilderTable
+	 *  .champions), then confirmed directly for both Reg A and Reg B (they share an identical
+	 *  legal roster — confirmed, not assumed). See computeSpeedSpectrumDomain's own doc comment
+	 *  for the full reasoning on why this is hardcoded rather than computed live. Base Speeds,
+	 *  for reference: Dragapult 142, Alakazam-Mega 150 (tied with Aerodactyl-Mega), Torkoal 20,
+	 *  Sableye-Mega 20 (tied with Camerupt-Mega). */
+	const SPEED_SPECTRUM_FASTEST_NON_MEGA = 'Dragapult';
+	const SPEED_SPECTRUM_FASTEST_MEGA = 'Alakazam-Mega';
+	const SPEED_SPECTRUM_SLOWEST_NON_MEGA = 'Torkoal';
+	const SPEED_SPECTRUM_SLOWEST_MEGA = 'Sableye-Mega';
+
 	/** EVs in Champions VGC run 0-32 (not the old 0-252 scale — confirmed live), enforced by
 	 *  every native EV control (statChange/statSlide in client-teambuilder.js both clamp to
 	 *  `usesStatPoints ? 32 : 252`). Pikalytics' own data should already be in range, but this
@@ -462,16 +544,19 @@
 		return stat;
 	}
 
-	/** Maps "how many conditional columns (Mega + Scarf) is buildSpeedComparisonTooltipHTML
-	 *  actually rendering" to the CSS class that widens #cf-tooltipwrapper .cf-tooltip enough to
-	 *  fit them (see style.css's cf-speedcmp-tooltip-wide/-widest/-widest2 rules, each sized for
-	 *  one more column than the last). Clamped via Math.min, NOT `array[n] || fallback` — the
-	 *  n===0 entry is the empty string '', which is falsy, so an `||` fallback would wrongly
-	 *  replace the correct "no extra columns" case with the widest tier instead of leaving it
-	 *  alone (confirmed live: every tooltip with zero conditional columns — most of them, any
-	 *  species without a real Mega Stone or popular Scarf usage — rendered stretched to the
-	 *  widest tier with nothing on the right side to fill it). */
-	const SPEED_CMP_WIDTH_TIER_CLASSES = ['', ' cf-speedcmp-tooltip-wide', ' cf-speedcmp-tooltip-widest', ' cf-speedcmp-tooltip-widest2'];
+	/** Maps "how many conditional columns (Mega + Scarf + Iron Ball) is
+	 *  buildSpeedComparisonTooltipHTML actually rendering" to the CSS class that widens
+	 *  #cf-tooltipwrapper .cf-tooltip enough to fit them (see style.css's
+	 *  cf-speedcmp-tooltip-wide/-widest/-widest2/-widest3 rules, each sized for one more column
+	 *  than the last). Clamped via Math.min, NOT `array[n] || fallback` — the n===0 entry is the
+	 *  empty string '', which is falsy, so an `||` fallback would wrongly replace the correct
+	 *  "no extra columns" case with the widest tier instead of leaving it alone (confirmed live:
+	 *  every tooltip with zero conditional columns — most of them, any species without a real
+	 *  Mega Stone or popular Scarf/Iron Ball usage — rendered stretched to the widest tier with
+	 *  nothing on the right side to fill it). */
+	const SPEED_CMP_WIDTH_TIER_CLASSES = [
+		'', ' cf-speedcmp-tooltip-wide', ' cf-speedcmp-tooltip-widest', ' cf-speedcmp-tooltip-widest2', ' cf-speedcmp-tooltip-widest3',
+	];
 	function speedCmpTooltipWidthClass(extraCols) {
 		return SPEED_CMP_WIDTH_TIER_CLASSES[Math.min(extraCols, SPEED_CMP_WIDTH_TIER_CLASSES.length - 1)];
 	}
@@ -489,7 +574,7 @@
 	if (typeof module !== 'undefined' && module.exports) {
 		module.exports = {
 			escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
-			curTeamHasSpecies, curTeamFull, isBlankSlot, parseEVs, natureModifierHTML, speedNatureIndicator,
+			curTeamHasSpecies, curTeamFull, isBlankSlot, isTeamOverview, parseEVs, natureModifierHTML, speedNatureIndicator,
 			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 			teamDamagingMoveTypes, typeEffectivenessMultiplier, bestTeamCoverageMultiplier, coverageTierClass,
@@ -499,6 +584,8 @@
 			pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
 			buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
 			buildSpreadsSection, buildTeammatesSection,
+			computeSpeedSpectrumEntries, computeSpeedSpectrumDomain, resolveSpeedSpectrumSpecies,
+			assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
 			buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
 			buildSpeciesPreviewTooltipHTML, patchDexSearch,
 		};
@@ -1600,15 +1687,16 @@
 	 *  as a DOM child of it: TeambuilderRoom.update() wipes that whole subtree via $el.html()
 	 *  on nearly every interaction). This function's only job is deciding when
 	 *  body.cf-teambuilder-split should be on: window width large enough, no side room
-	 *  currently docked, AND a specific Pokémon is currently being edited (room.curSet set —
-	 *  same state the room's own template checks to decide whether to render the individual
-	 *  editor, i.e. the `.teamchartbox.individual` markup, vs. the team-overview list; there's
-	 *  nothing useful to split against on the list screen). Checked directly rather than
-	 *  inferred from #room-teambuilder's own rendered width (which the CSS override would
-	 *  make circular: forcing the room to 50% would make it immediately measure as "too
-	 *  narrow," undoing the very state that set it, flip-flopping every frame). Re-evaluated
-	 *  on window resize, and by wrapping six TeambuilderRoom-family methods (via
-	 *  wrapWithSplitUpdate below) in two groups:
+	 *  currently docked, AND a specific team is currently open (room.curTeam set — same state
+	 *  the room's own template checks to decide whether to render a team's contents at all, i.e.
+	 *  either the `.teamchartbox.individual` single-slot editor or the team-overview roster list,
+	 *  vs. the outer "all your teams" list screen where room.curTeam is null and there's nothing
+	 *  useful to split against; see isTeamOverview for the further curSet split between those
+	 *  first two). Checked directly rather than inferred from #room-teambuilder's own rendered
+	 *  width (which the CSS override would make circular: forcing the room to 50% would make it
+	 *  immediately measure as "too narrow," undoing the very state that set it, flip-flopping
+	 *  every frame). Re-evaluated on window resize, and by wrapping seven TeambuilderRoom-family
+	 *  methods (via wrapWithSplitUpdate below) in two groups:
 	 *
 	 *  Group 1 — does curSet/the room's focus itself need re-evaluating (species changed, room
 	 *  changed, split should turn on/off)? app.updateLayout (room focus / side-room changes),
@@ -1632,14 +1720,23 @@
 	 *  TeambuilderRoom.prototype.chartSet (the single commit point both chartClick — picking a
 	 *  result from the native search dropdown — and chartChange — typing a value and blurring
 	 *  the field — funnel through, for the pokemon/ability/item/move1-4 chart fields), and
-	 *  TeambuilderRoom.prototype.natureChange (the nature <select>). Deliberately NOT
-	 *  statChange/statSlide (the EV number box and slider): none of the sidebar's own
-	 *  clickable/disabled/equipped checks read curSet.evs at all (Spreads never gets an equipped
-	 *  highlight — see buildSpreadsSection's own comment), so there is nothing in the sidebar
-	 *  for an EV edit to desync; hooking them anyway would rebuild the full 6-section sidebar on
-	 *  every keystroke (statChange is bound to both keyup and input) and every drag frame
-	 *  (statSlide is bound to the slider's own input event, which fires continuously) for zero
-	 *  visible benefit — pure, avoidable jank.
+	 *  TeambuilderRoom.prototype.natureChange (the nature <select>) AND
+	 *  TeambuilderRoom.prototype.updateNature (confirmed live against Showdown's own source: the
+	 *  EV box's own "252+"/"252-" nature-shortcut syntax — typing a leading/trailing +/- into an
+	 *  EV number field — is handled entirely inside statChange, which sets curSet.nature via a
+	 *  *direct* call to this.updateNature() rather than going through natureChange() at all; the
+	 *  Natures section's equipped-highlight (buildNaturesSection, keyed on curSet.nature) would
+	 *  otherwise desync from a real, commonly-used nature-setting path that has nothing to do
+	 *  with the nature <select>). Deliberately NOT statChange/statSlide themselves (the EV number
+	 *  box and slider): none of the sidebar's own clickable/disabled/equipped checks read
+	 *  curSet.evs at all (Spreads never gets an equipped highlight — see buildSpreadsSection's
+	 *  own comment), so there is nothing in the sidebar for a plain EV value edit to desync;
+	 *  hooking either of those wholesale would rebuild the full 6-section sidebar on every
+	 *  keystroke (statChange is bound to both keyup and input) and every drag frame (statSlide
+	 *  is bound to the slider's own input event, which fires continuously) for zero visible
+	 *  benefit — pure, avoidable jank. updateNature itself doesn't have this problem: inside
+	 *  statChange it's only reached when the +/- suffix actually toggles (a deliberate, rare
+	 *  edit), not on every keystroke of a plain numeric EV value.
 	 *
 	 *  Across both groups the wraps themselves never modify what the wrapped method does, only
 	 *  observe that it ran (updateSplitState() afterward) — with one intentional exception:
@@ -1830,6 +1927,237 @@
 			return pikaRowDivHTML(cls, attrs, icon, escapeHTML(t.pokemon), pct);
 		}).join('');
 		return pikaSectionHTML('Common Teammates', rows);
+	}
+
+	/** Resolves a real set to its Mega forme when its own held item is a matching Mega Stone —
+	 *  Mega Evolution changes the base Speed stat, so a Mega-Stone holder's real Speed (for both
+	 *  the plotted dot and the domain's own floor/ceiling) has to come from the Mega forme's base
+	 *  stat, not the base forme's, the same substitution buildSpeedComparisonTooltipHTML's own
+	 *  Mega columns already make (see that function's own megaOptions comment). Covers both real
+	 *  ways to build a Mega on this file's own account (topSpeedItemBadge's own comment): picked
+	 *  directly from the species-search "-Mega" entry (set.species already says so) or built
+	 *  manually (base species, Mega Stone set as a separate item) — window.Dex.items.get(item)
+	 *  .megaStone is keyed by the *base* species name, so this is a harmless no-op, falling
+	 *  through to set.species unchanged, whenever species is already the Mega forme itself (that
+	 *  key simply won't match). Returns `{species, isMega}` rather than just the name — callers
+	 *  need to know *whether* a substitution happened, not just its result (see
+	 *  computeSpeedSpectrumDomain's own Mega-vs-Scarf comparison). */
+	function resolveSpeedSpectrumSpecies(set) {
+		if (window.Dex && set.item) {
+			const itemData = window.Dex.items.get(set.item);
+			const forme = itemData && itemData.megaStone && itemData.megaStone[set.species];
+			if (forme) return { species: forme, isMega: true };
+		}
+		return { species: set.species, isMega: false };
+	}
+
+	/** Team-overview screen only (see isTeamOverview/renderTeamOverviewPanel) — real per-member
+	 *  data collection, kept separate from buildSpeedSpectrumHTML below so the actual layout math
+	 *  stays pure and unit-testable without a live tbRoom. tbRoom.getStat('spe', set) is the same
+	 *  method every other Speed number in this file already goes through (README: "Speed math...
+	 *  always goes through TeambuilderRoom.prototype.getStat") for the base stat, with
+	 *  resolveSpeedSpectrumSpecies' Mega substitution applied first where it applies — but unlike
+	 *  buildSpeedComparisonTooltipHTML's base Foe column (which deliberately never applies an
+	 *  item, since Pikalytics' "most common item" is a population statistic, not a fact about a
+	 *  specific build), this set's own held item IS a fact about this specific, real build, so
+	 *  applySpeedModifiers runs it through the same Choice Scarf/Iron Ball multiplier every other
+	 *  Speed number in this file applies — without this, equipping a Scarf never moved the dot at
+	 *  all, since the raw stat it's built from doesn't include the item. `hasScarf`/`hasIronBall`
+	 *  feed the small item badge buildSpeedSpectrumHTML/speedSpectrumIconHTML renders on the
+	 *  icon itself — mutually exclusive in practice (a real set can only hold one item), but
+	 *  tracked as two independent booleans rather than one "which item" field, matching the
+	 *  same shape buildSpeedComparisonTooltipHTML's own allyHasScarf/allyHasIronBall use.
+	 *  `name` falls back to the resolved species (Mega forme included) for the hover title when
+	 *  the set has no nickname. */
+	function computeSpeedSpectrumEntries(tbRoom) {
+		return (tbRoom.curSetList || []).filter((s) => s && s.species).map((set) => {
+			const { species, isMega } = resolveSpeedSpectrumSpecies(set);
+			const statSet = isMega ? Object.assign({}, set, { species }) : set;
+			const rawSpeed = tbRoom.getStat('spe', statSet);
+			const itemId = toIDSafe(set.item);
+			return {
+				species,
+				name: set.name || species,
+				speed: applySpeedModifiers(rawSpeed, set.item, {}),
+				hasScarf: itemId === 'choicescarf',
+				hasIronBall: itemId === 'ironball',
+			};
+		});
+	}
+
+	/** The spectrum's axis bounds — the real fastest and slowest things in the *format itself*,
+	 *  not anything derived from the current roster at all. Hardcoded, not computed live: this
+	 *  was researched by hand against Showdown's own Champions-format species/tier data
+	 *  (BattleTeambuilderTable.champions — confirmed against the live client, not Smogon) and
+	 *  confirmed by hand for both Reg A and Reg B specifically, which turn out to share an
+	 *  identical roster of legal Pokémon (confirmed directly — not assumed). Showdown's client
+	 *  has no reliable way to derive this live: BattleTeambuilderTable.champions is shared
+	 *  across every Champions-branded format (singles ladder, VGC, National Dex alike) with no
+	 *  per-regulation breakdown, and there's no TeamValidator loaded in the teambuilder page —
+	 *  real format legality only gets checked server-side, via an actual round trip through the
+	 *  teambuilder's own Validate button. A format is a fixed, known thing, not something to
+	 *  re-derive on every render — this is a one-time fact, not a computation.
+	 *
+	 *  Ties (SPEED_SPECTRUM_FASTEST_MEGA/SPEED_SPECTRUM_SLOWEST_MEGA's own comments) are broken
+	 *  by picking one representative species; the other tied species would plot at the exact
+	 *  same number either way.
+	 *
+	 *  Mega Stone and any other held item (Iron Ball for the floor, Choice Scarf for the
+	 *  ceiling) can never coexist on the same Pokémon — a Mega-Stone holder's item slot is
+	 *  taken — so each bound is whichever of two fixed candidates is more extreme: the format's
+	 *  fastest/slowest Mega actually Mega Evolving (no item possible), or the format's
+	 *  fastest/slowest non-Mega holding the relevant item instead. Uses tbRoom.getStat (the same
+	 *  method every other Speed number in this file goes through) against a minimal synthetic
+	 *  set for each reference species — real EVs/IVs/nature aren't relevant here, only the species'
+	 *  own base stat at the format-legal EV/nature extreme, via the same evOverride/natureOverride
+	 *  params computeSpeedSpectrumEntries' own callers use elsewhere. */
+	// SPEED_SPECTRUM_FASTEST_NON_MEGA/FASTEST_MEGA/SLOWEST_NON_MEGA/SLOWEST_MEGA are declared up
+	// near STAT_LABEL_BY_ID, not here — see that declaration's own comment for why (the
+	// module.exports TDZ guard below).
+	function computeSpeedSpectrumDomain(tbRoom) {
+		const referenceStat = (species, ev, natureMult) => tbRoom.getStat('spe', { species, level: 50 }, ev, natureMult);
+
+		const scarfedCeiling = applySpeedModifiers(
+			referenceStat(SPEED_SPECTRUM_FASTEST_NON_MEGA, SPEED_SPECTRUM_MAX_EV, SPEED_SPECTRUM_POSITIVE_NATURE_MULT),
+			'Choice Scarf', {}
+		);
+		const megaCeiling = referenceStat(SPEED_SPECTRUM_FASTEST_MEGA, SPEED_SPECTRUM_MAX_EV, SPEED_SPECTRUM_POSITIVE_NATURE_MULT);
+		const ironBalledFloor = applySpeedModifiers(
+			referenceStat(SPEED_SPECTRUM_SLOWEST_NON_MEGA, SPEED_SPECTRUM_MIN_EV, SPEED_SPECTRUM_NEGATIVE_NATURE_MULT),
+			'Iron Ball', {}
+		);
+		const megaFloor = referenceStat(SPEED_SPECTRUM_SLOWEST_MEGA, SPEED_SPECTRUM_MIN_EV, SPEED_SPECTRUM_NEGATIVE_NATURE_MULT);
+
+		const maxIsMega = megaCeiling >= scarfedCeiling;
+		const minIsMega = megaFloor <= ironBalledFloor;
+
+		return {
+			min: minIsMega ? megaFloor : ironBalledFloor,
+			minSpecies: minIsMega ? SPEED_SPECTRUM_SLOWEST_MEGA : SPEED_SPECTRUM_SLOWEST_NON_MEGA,
+			minIsMega,
+			max: maxIsMega ? megaCeiling : scarfedCeiling,
+			maxSpecies: maxIsMega ? SPEED_SPECTRUM_FASTEST_MEGA : SPEED_SPECTRUM_FASTEST_NON_MEGA,
+			maxIsMega,
+		};
+	}
+
+	/** Greedy first-fit interval packing: sorted ascending by real position, each entry takes
+	 *  the lowest-numbered lane whose most-recently-placed icon already sits at least
+	 *  SPEED_SPECTRUM_MIN_GAP_PCT away, opening a new lane only once every existing one is still
+	 *  too close. Returns a new array (does not mutate `entries`), each entry augmented with
+	 *  `pos` (0-100, see posOf) and `lane` (0 = closest to the track). SPEED_SPECTRUM_MIN_GAP_PCT
+	 *  is declared up near STAT_LABEL_BY_ID, not here — see that declaration's own comment for
+	 *  why (the module.exports TDZ guard below). */
+	function assignSpeedSpectrumLanes(entries, posOf) {
+		const lastPosByLane = [];
+		return entries.slice().sort((a, b) => a.speed - b.speed).map((e) => {
+			const pos = posOf(e.speed);
+			let lane = lastPosByLane.findIndex((lastPos) => pos - lastPos >= SPEED_SPECTRUM_MIN_GAP_PCT);
+			if (lane === -1) {
+				lane = lastPosByLane.length;
+				lastPosByLane.push(-Infinity);
+			}
+			lastPosByLane[lane] = pos;
+			return Object.assign({}, e, { pos, lane });
+		});
+	}
+
+	/** SPEED_SPECTRUM_LANE_HEIGHT/SPEED_SPECTRUM_TRACK_GAP/SPEED_SPECTRUM_THRESHOLD_HEIGHT/
+	 *  SPEED_SPECTRUM_LABEL_RESERVE are declared up near STAT_LABEL_BY_ID, not here — see that
+	 *  declaration's own comment for why (the module.exports TDZ guard below). The Scarf badge
+	 *  reuses .cf-speedcmp-sprite/.cf-speedcmp-item-badge verbatim — the same "small item icon
+	 *  pinned to a sprite's bottom-right corner" markup/CSS the Speed comparison popup already
+	 *  established, not a new bespoke badge for this one section. */
+	function speedSpectrumIconHTML(e) {
+		const icon = window.Dex ? window.Dex.getPokemonIcon(e.species) : '';
+		let badge = '';
+		if (window.Dex) {
+			if (e.hasScarf) badge = `<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon('Choice Scarf'))}"></span>`;
+			else if (e.hasIronBall) badge = `<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon('Iron Ball'))}"></span>`;
+		}
+		return `<div class="cf-speedspectrum-icon" style="left:${e.pos.toFixed(1)}%;top:${e.top}px" ` +
+			`title="${escapeHTML(e.name)}: ${e.speed} Speed">` +
+			`<span class="cf-speedcmp-sprite"><span class="picon" style="${escapeHTML(icon)}"></span>${badge}</span>` +
+			`<span class="cf-speedspectrum-value">${e.speed}</span>` +
+			`</div>`;
+	}
+
+	/** Real per-member Speed stats laid out on a low-to-high spectrum against `domain` (see
+	 *  computeSpeedSpectrumDomain — the format-legal floor/ceiling for this roster, not padding
+	 *  around their invested Speeds) — how bunched or spread the team's Speed tiers are within
+	 *  that legal range reads at a glance from the icons' spacing alone. Lane assignment
+	 *  (assignSpeedSpectrumLanes) keeps icons whose real Speed values land close together from
+	 *  overlapping, opening as many lanes as the roster's own clustering actually needs rather
+	 *  than a fixed guess — the container's own height follows from that same lane count,
+	 *  computed per render rather than a fixed constant. */
+	/** One threshold marker — the format's real fastest/slowest species (computeSpeedSpectrumDomain
+	 *  — Mega forme included where that's the winner) plotted at the exact same `left:0%`/`100%`
+	 *  coordinate space every roster icon uses (inside cf-speedspectrum-track-area, not the outer
+	 *  margin), so a real roster Pokémon actually built to match the format's own ceiling/floor
+	 *  visibly lines up with the marker instead of sitting in an entirely different coordinate
+	 *  system. `posPercent` is always exactly 0 or 100 — the two ends of the domain, not
+	 *  something posOf needs to compute, since a threshold marker's value *is* domainMin/domainMax
+	 *  by definition. Reuses cf-speedspectrum-icon's own box/centering, just anchored below the
+	 *  track (icons stack upward from it) and in reverse content order — value first, sprite
+	 *  second — so the number still ends up the element closest to the track either way (see
+	 *  cf-speedspectrum-icon's own CSS comment for why content order flips depending on which
+	 *  side of the track a box sits on). A non-Mega winner gets the item badge that got it there
+	 *  (`badgeItemName` — Iron Ball for the floor, Scarf for the ceiling); a Mega winner gets no
+	 *  badge at all — holding the Mega Stone is already implicit in Mega Evolving. */
+	function speedSpectrumThresholdHTML(value, species, isMega, badgeItemName, posPercent, top) {
+		const icon = window.Dex ? window.Dex.getPokemonIcon(species) : '';
+		const badge = (!isMega && window.Dex) ?
+			`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(badgeItemName))}"></span>` : '';
+		return `<div class="cf-speedspectrum-icon cf-speedspectrum-threshold" style="left:${posPercent}%;top:${top}px" ` +
+			`title="Format ${posPercent === 0 ? 'floor' : 'ceiling'}: ${escapeHTML(species)}, ${value} Speed">` +
+			`<span class="cf-speedspectrum-value">${value}</span>` +
+			`<span class="cf-speedcmp-sprite"><span class="picon" style="${escapeHTML(icon)}"></span>${badge}</span>` +
+			`</div>`;
+	}
+
+	function buildSpeedSpectrumHTML(entries, domain) {
+		if (!entries.length) {
+			return pikaSectionHTML('Speed Spread', '<p class="cf-pika-empty">No Pokémon on your team yet.</p>');
+		}
+		const domainMin = Math.max(0, domain.min);
+		const domainMax = domain.max;
+		const span = domainMax - domainMin || 1;
+		// Clamped to [0, 100] as cheap defensive insurance, not to paper over a known gap —
+		// computeSpeedSpectrumDomain's own floor/ceiling both already account for Iron Ball/
+		// Scarf, so every real entry is guaranteed inside [domainMin, domainMax] by construction
+		// (see that function's own comment). This just keeps a genuinely out-of-range point
+		// (e.g. a future modifier this file doesn't know about yet, or float rounding at the
+		// exact boundary) visibly pinned at the track's edge instead of rendering off it.
+		const posOf = (speed) => Math.min(100, Math.max(0, ((speed - domainMin) / span) * 100));
+
+		const positioned = assignSpeedSpectrumLanes(entries, posOf);
+		const laneCount = Math.max(1, positioned.reduce((max, e) => Math.max(max, e.lane + 1), 0));
+		const blockHeight = laneCount * SPEED_SPECTRUM_LANE_HEIGHT;
+		const trackY = blockHeight + SPEED_SPECTRUM_TRACK_GAP;
+		const thresholdTop = trackY + SPEED_SPECTRUM_TRACK_GAP;
+		const containerHeight = thresholdTop + SPEED_SPECTRUM_THRESHOLD_HEIGHT;
+
+		const icons = positioned.map((e) => speedSpectrumIconHTML(
+			Object.assign({}, e, { top: blockHeight - (e.lane + 1) * SPEED_SPECTRUM_LANE_HEIGHT })
+		)).join('');
+
+		// Threshold markers (speedSpectrumThresholdHTML) are children of the SAME
+		// cf-speedspectrum-track-area the roster icons are, at left:0%/100% — the two domain
+		// endpoints by definition — so a real roster Pokémon built to actually match the
+		// format's own ceiling/floor lines up with the marker exactly, both sharing one
+		// coordinate space instead of the marker floating in a separate outer margin.
+		const thresholds =
+			speedSpectrumThresholdHTML(Math.round(domainMin), domain.minSpecies, domain.minIsMega, 'Iron Ball', 0, thresholdTop) +
+			speedSpectrumThresholdHTML(Math.round(domainMax), domain.maxSpecies, domain.maxIsMega, 'Choice Scarf', 100, thresholdTop);
+
+		const spectrum = `<div class="cf-speedspectrum" style="height:${containerHeight}px">` +
+			`<div class="cf-speedspectrum-track-area" style="left:${SPEED_SPECTRUM_LABEL_RESERVE}px;right:${SPEED_SPECTRUM_LABEL_RESERVE}px">` +
+				`<div class="cf-speedspectrum-track" style="top:${trackY}px"></div>` +
+				icons +
+				thresholds +
+			`</div>` +
+			`</div>`;
+		return pikaSectionHTML('Speed Spread', spectrum);
 	}
 
 	/** "1st"/"2nd"/"3rd"/"4th"/"11th"/"21st"/... from a plain placement number —
@@ -2173,19 +2501,19 @@
 			return speedTierColumnHTML(header, rows);
 		}
 
-		/** Minimum Pikalytics usage percent for Choice Scarf/Mega Stone before
+		/** Minimum Pikalytics usage percent for Choice Scarf/Iron Ball/Mega Stone before
 		 *  buildSpeedComparisonTooltipHTML bothers showing the corresponding "what if" column at
-		 *  all — user-adjustable (CF_SETTINGS.scarfThresholdPercent/megaThresholdPercent, set in
-		 *  the toolbar popup), since these started as a guess rather than a researched number and
-		 *  different players reasonably draw that line in different places. The real percent is
-		 *  always shown in the column's own header either way, so a borderline case stays visible
-		 *  to judge yourself rather than getting silently hidden by wherever the threshold sits.
-		 *  Deliberately never changes the base Foe column itself (see
+		 *  all — user-adjustable (CF_SETTINGS.scarfThresholdPercent/ironballThresholdPercent/
+		 *  megaThresholdPercent, set in the toolbar popup), since these started as a guess rather
+		 *  than a researched number and different players reasonably draw that line in different
+		 *  places. The real percent is always shown in the column's own header either way, so a
+		 *  borderline case stays visible to judge yourself rather than getting silently hidden by
+		 *  wherever the threshold sits. Deliberately never changes the base Foe column itself (see
 		 *  buildSpeedComparisonTooltipHTML's own comment for why a species with dominant Mega
 		 *  Stone usage still keeps its base forme as the main Foe column) — a Pokémon holding a
-		 *  Mega Stone can't simultaneously hold Choice Scarf, so Scarf/Mega are two independent,
-		 *  mutually exclusive "what if" columns sitting alongside the same unchanged base column,
-		 *  never merged into it. */
+		 *  Mega Stone can't simultaneously hold Choice Scarf or Iron Ball, so Scarf/Iron Ball/Mega
+		 *  are three independent, mutually exclusive "what if" columns sitting alongside the same
+		 *  unchanged base column, never merged into it. */
 
 		/** The 9-row scenario table: an ally/foe modifier pair per row, one modifier changed at a
 		 *  time (never combined — see the conversation this was scoped in) against an otherwise-
@@ -2273,6 +2601,15 @@
 			const scarfPercent = scarfItemEntry ? parseFloat(scarfItemEntry.percent) || 0 : 0;
 			const showScarfColumn = scarfPercent >= CF_SETTINGS.scarfThresholdPercent;
 
+			// Same shape as the Scarf column above, mirrored for Iron Ball — expected to clear
+			// this threshold far less often in practice (a Trick Room-oriented item, nowhere
+			// near as universal a pick as Scarf), but there's no principled reason to leave it
+			// unwired just because it'll show up less: real Iron Ball usage is exactly as real a
+			// fact about a species as real Scarf usage, whenever it does clear the bar.
+			const ironBallItemEntry = foeItems.find((it) => toIDSafe(it.item) === 'ironball');
+			const ironBallPercent = ironBallItemEntry ? parseFloat(ironBallItemEntry.percent) || 0 : 0;
+			const showIronBallColumn = ironBallPercent >= CF_SETTINGS.ironballThresholdPercent;
+
 			// One "what if it ran its Mega Stone instead" column per Mega Stone that crosses
 			// CF_SETTINGS.megaThresholdPercent — never a row-identity swap on the base Foe
 			// column itself (see the earlier, reverted approach that tried overriding the base
@@ -2318,7 +2655,9 @@
 					// only the item plugged into applySpeedModifiers changes, so this is
 					// "what if" against an otherwise-identical spread, not a different build.
 					`<td>${applySpeedModifiers(foeBase, 'Choice Scarf', sc.foe)}</td>` : '';
-				return `<tr><td>${escapeHTML(sc.label)}</td><td>${allySpeed}</td><td>${foeSpeed}</td>${megaCells}${scarfCell}</tr>`;
+				const ironBallCell = showIronBallColumn ?
+					`<td>${applySpeedModifiers(foeBase, 'Iron Ball', sc.foe)}</td>` : '';
+				return `<tr><td>${escapeHTML(sc.label)}</td><td>${allySpeed}</td><td>${foeSpeed}</td>${megaCells}${scarfCell}${ironBallCell}</tr>`;
 			}).join('');
 
 			const allyIcon = window.Dex ? window.Dex.getPokemonIcon(allySet.species) : '';
@@ -2326,19 +2665,25 @@
 			const allyEvText = formatSpeedEvText((allySet.evs && allySet.evs.spe) || 0, speedNatureIndicator(allySet.nature));
 			const foeEvText = formatSpeedEvText(foeSet.evs.spe, speedNatureIndicator(foeNature));
 			const scarfIconStyle = window.Dex ? window.Dex.getItemIcon('Choice Scarf') : '';
+			const ironBallIconStyle = window.Dex ? window.Dex.getItemIcon('Iron Ball') : '';
 
 			// Only the ally sprite gets an unconditional held-item badge — the popup is scoped
 			// to "what's actually on my set" for that side (see applySpeedModifiers' own doc
 			// comment: the item is baseline-only, not a per-row toggle). The foe's own most-
 			// common item is Pikalytics' population statistic rather than something really
 			// "held," so badging it the same way would misleadingly imply the same certainty —
-			// Scarf/Mega specifically get their own conditional columns instead (above), with
-			// their real usage percent shown rather than asserted.
+			// Scarf/Iron Ball/Mega specifically get their own conditional columns instead
+			// (above), with their real usage percent shown rather than asserted. Scarf and Iron
+			// Ball are checked as two independent, mutually-exclusive booleans (a real set can
+			// only hold one item) rather than one "which item" branch, matching how
+			// computeSpeedSpectrumEntries' own hasScarf/hasIronBall are shaped.
 			const allyHasScarf = toIDSafe(allySet.item) === 'choicescarf';
+			const allyHasIronBall = toIDSafe(allySet.item) === 'ironball';
+			const allyItemBadgeHTML = (allyHasScarf || allyHasIronBall) && window.Dex ?
+				`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(allySet.item))}"></span>` : '';
 			const allySpriteHTML = `<span class="cf-speedcmp-sprite">` +
 				`<span class="picon" style="${escapeHTML(allyIcon)}"></span>` +
-				(allyHasScarf && window.Dex ?
-					`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon('Choice Scarf'))}"></span>` : '') +
+				allyItemBadgeHTML +
 				`</span>`;
 			// Bottom-right badge matches the ally sprite's own Scarf badge above; bottom-left
 			// (otherwise empty on this sprite — nothing else claims that corner) carries the
@@ -2360,12 +2705,20 @@
 					`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(scarfIconStyle)}"></span>` +
 					`<span class="cf-speedcmp-usage-badge">${Math.round(scarfPercent)}%</span>` +
 					`</span></th>` : '';
+			const ironBallColumnHeaderHTML = showIronBallColumn ?
+				`<th><span class="cf-speedcmp-sprite">` +
+					`<span class="picon" style="${escapeHTML(foeIcon)}"></span>` +
+					`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(ironBallIconStyle)}"></span>` +
+					`<span class="cf-speedcmp-usage-badge">${Math.round(ironBallPercent)}%</span>` +
+					`</span></th>` : '';
 
 			// Width tiers scale with however many conditional columns are actually showing —
-			// 0-2 Mega columns (see megaOptions above) plus 0-1 Scarf, so up to 3 extra columns
-			// in practice (a species with 3+ real Mega Stones doesn't exist, so this doesn't
-			// need to handle more than that).
-			const extraCols = megaOptions.length + (showScarfColumn ? 1 : 0);
+			// 0-2 Mega columns (see megaOptions above) plus 0-1 Scarf plus 0-1 Iron Ball, so up
+			// to 4 extra columns in practice (a species with 3+ real Mega Stones, or both Scarf
+			// and Iron Ball simultaneously clearing their thresholds at the *population* level,
+			// doesn't realistically happen — speedCmpTooltipWidthClass's own clamp handles it
+			// gracefully either way if it ever did).
+			const extraCols = megaOptions.length + (showScarfColumn ? 1 : 0) + (showIronBallColumn ? 1 : 0);
 			const widthCls = speedCmpTooltipWidthClass(extraCols);
 
 			return `<div class="cf-tooltip cf-speedcmp-tooltip${widthCls}">` +
@@ -2375,7 +2728,7 @@
 				`<table class="cf-speedcmp-table"><thead><tr><th>Scenario</th>` +
 				`<th>${allySpriteHTML}</th>` +
 				`<th><span class="picon" style="${escapeHTML(foeIcon)}"></span></th>` +
-				`${megaColumnHeadersHTML}${scarfColumnHeaderHTML}</tr></thead>` +
+				`${megaColumnHeadersHTML}${scarfColumnHeaderHTML}${ironBallColumnHeaderHTML}</tr></thead>` +
 				`<tbody>${rows}</tbody></table></div>`;
 		}
 		// onMouseOver (outer scope, near Tooltip) needs to call this, but it's defined here
@@ -2703,10 +3056,11 @@
 			if (!speciesName) {
 				// A freshly-added blank team slot (right after "Add Pokémon", before a species
 				// is typed) has a truthy curSet with an empty .species — updateSplitState's
-				// editingAPokemon check only looks at curSet's truthiness, so the split still
-				// turns on and this function still gets called. Shows real teams that share
-				// species with the roster built so far (renderSimilarTeamsPanel) instead of
-				// leaving the panel showing whichever species was rendered last.
+				// isTeamOverview check (curSet falsy) is false here since curSet itself IS set,
+				// so this function still gets called rather than renderTeamOverviewPanel. Shows
+				// real teams that share species with the roster built so far
+				// (renderSimilarTeamsPanel) instead of leaving the panel showing whichever
+				// species was rendered last.
 				renderSimilarTeamsPanel(tbRoom, formatId);
 				lastRenderKey = null;
 				lastMon = null;
@@ -2884,22 +3238,77 @@
 			});
 		}
 
+		/** Team-overview screen (isTeamOverview: a team is open, curRoom is the teambuilder room,
+		 *  but no slot within it is being edited — the screen showing all 6 roster icons
+		 *  together). The left column is hidden entirely here (updateSplitState's
+		 *  cf-teambuilder-team-overview body class + style.css), so this function only ever
+		 *  touches #cf-pika-panel. Fills it with the Speed Spread section — real per-member Speed
+		 *  stats laid out on a low-to-high spectrum, entirely synchronous (curSetList +
+		 *  tbRoom.getStat, no Pikalytics fetch, no loading state needed).
+		 *
+		 *  Still resets every piece of per-slot render state (lastRenderKey/lastMon/
+		 *  lastSpeedTier.../lastSimilarTeams... — see their own doc comments above) the same way
+		 *  leaving `active` entirely already did, so switching from here into editing a real slot
+		 *  can't fast-path off of stale cached state from before the team-overview screen was
+		 *  reached. */
+		function renderTeamOverviewPanel(tbRoom) {
+			lastRenderKey = null;
+			lastMon = null;
+			lastFetchState = null;
+			renderToken++;
+			lastSimilarTeamsKey = null;
+			lastSimilarTeamsAllMatches = null;
+			lastSimilarTeamsMatches = null;
+			lastSimilarTeamsFailed = false;
+			similarTeamsRenderToken++;
+
+			const panelEl = ensurePikaPanelEl();
+			// Deliberately NOT addPokemonPanelWrapHTML — that exists to give a lone section the
+			// height:100%-fill + internal-scroll behavior a genuinely scrollable list (Similar
+			// Teams) needs, via .cf-pika-grid, which also caps width at
+			// --cf-teambuilder-max-width (653px) so the *other*, row-based sections' name/percent
+			// columns don't stretch apart awkwardly on a wide window. The Speed Spread diagram is
+			// neither scrollable (its own height is already computed to fit its content, see
+			// buildSpeedSpectrumHTML) nor row-based — it's a diagram that gets clearer with more
+			// width, not less — so it's dropped straight into #cf-pika-panel instead, free to use
+			// the panel's own full width now that the narrow column next to it is gone too (see
+			// updateSplitState's cf-teambuilder-team-overview body class).
+			panelEl.innerHTML = buildSpeedSpectrumHTML(computeSpeedSpectrumEntries(tbRoom), computeSpeedSpectrumDomain(tbRoom));
+		}
+
 		function updateSplitState() {
 			const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
-			const editingAPokemon = !!(window.app.curRoom === tbRoom && tbRoom && tbRoom.curSet);
-			const active = editingAPokemon && !window.app.sideRoom && window.innerWidth >= SPLIT_THRESHOLD;
+			// tbRoom.curTeam is truthy once a specific team is open (whether or not a slot within
+			// it is also being edited — see isTeamOverview's own doc comment) and null on the
+			// outer "all your teams" list screen, confirmed live — required here so the split
+			// doesn't turn on (and fall through to renderPikalyticsSidebar/renderSpeedTierColumn
+			// or renderTeamOverviewPanel, none of which have anything real to show) on that outer
+			// list screen, which curSet alone can't tell apart from the team-overview screen.
+			const teamIsOpen = !!(window.app.curRoom === tbRoom && tbRoom && tbRoom.curTeam);
+			const active = teamIsOpen && !window.app.sideRoom && window.innerWidth >= SPLIT_THRESHOLD;
 			if (active) {
 				ensureTeambuilderSidebarEl();
-				try { renderPikalyticsSidebar(tbRoom); } catch (e) {
-					console.error('[Better Teambuilder] renderPikalyticsSidebar failed:', e);
-				}
-				try { renderSpeedTierColumn(tbRoom); } catch (e) {
-					console.error('[Better Teambuilder] renderSpeedTierColumn failed:', e);
+				if (isTeamOverview(tbRoom)) {
+					try { renderTeamOverviewPanel(tbRoom); } catch (e) {
+						console.error('[Better Teambuilder] renderTeamOverviewPanel failed:', e);
+					}
+				} else {
+					try { renderPikalyticsSidebar(tbRoom); } catch (e) {
+						console.error('[Better Teambuilder] renderPikalyticsSidebar failed:', e);
+					}
+					try { renderSpeedTierColumn(tbRoom); } catch (e) {
+						console.error('[Better Teambuilder] renderSpeedTierColumn failed:', e);
+					}
 				}
 			} else {
 				lastRenderKey = null; // force a fresh render next time the sidebar becomes active
 			}
 			document.body.classList.toggle('cf-teambuilder-split', active);
+			// Hides #cf-speedtier-col entirely on the team-overview screen (style.css) — there's
+			// nothing assigned to that column there (see renderTeamOverviewPanel's own comment),
+			// and #cf-pika-panel's existing `flex: 1 1 auto` already expands to take the freed
+			// width on its own once the column is gone, no extra sizing rule needed here.
+			document.body.classList.toggle('cf-teambuilder-team-overview', active && isTeamOverview(tbRoom));
 		}
 
 		/** Wraps obj[methodName] so every call also triggers updateSplitState() afterward,
@@ -2937,6 +3346,11 @@
 		// Deliberately excludes statChange/statSlide (EVs) — see the doc comment for why.
 		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'chartSet');
 		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'natureChange');
+		// updateNature, not just natureChange: the EV box's own "252+"/"252-" nature-shortcut
+		// syntax sets curSet.nature via a direct call to updateNature() that never touches
+		// natureChange() at all — see the doc comment above for how this was confirmed against
+		// Showdown's own statChange source.
+		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'updateNature');
 
 		window.addEventListener('resize', updateSplitState);
 
