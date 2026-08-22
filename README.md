@@ -1,6 +1,6 @@
 # Better Teambuilder for Showdown!
 
-A Chrome/Firefox extension that adds custom search filters, a Speed stat comparator, a live [Pikalytics](https://pikalytics.com) usage-stats sidebar, and a Speed Tiers panel with a head-to-head Speed comparison popup to the [Pokémon Showdown](https://play.pokemonshowdown.com) teambuilder. Filters are computed from a species' full movepool or ability access, not just a single static field like Showdown's built-in filters.
+A Chrome/Firefox extension that adds custom search filters, a Speed stat comparator, a live [Pikalytics](https://pikalytics.com) usage-stats sidebar, a Speed Tiers panel with a head-to-head Speed comparison popup, and — on a blank "Add Pokémon" slot — a usage-ranked Popular column plus a Similar Teams panel of real matching tournament rosters, to the [Pokémon Showdown](https://play.pokemonshowdown.com) teambuilder. Filters are computed from a species' full movepool or ability access, not just a single static field like Showdown's built-in filters.
 
 If this is useful to you, consider [supporting it on Patreon](https://www.patreon.com/cw/yajaman).
 
@@ -71,6 +71,26 @@ Hovering a Pokémon in the Speed Tiers column opens a popup comparing its expect
 - Nine scenario rows: a baseline, then Tailwind, paralysis, and a −1/−2 stage drop, each applied to one side at a time.
 - Conditional columns, shown only when relevant: one **Mega** column per Mega Stone that crosses its usage threshold (a species can have more than one viable Mega Stone), and a **Scarf** column for the same idea with Choice Scarf. Each is badged with the real item icon and its actual usage percentage.
 
+## Add Pokémon screen
+
+The same column and sidebar repurpose themselves when the slot currently open for editing is blank (a fresh "Add Pokémon" click) rather than an existing team member — no recommendations or synthesized advice, just real usage data laid out for you to act on.
+
+### Popular column
+
+The Speed Tiers column relabels itself **Popular** and becomes clickable: click any row to fill the blank slot with that species outright (`TeambuilderRoom.prototype.setPokemon`), the same as picking it from Showdown's own species search.
+
+- Each row's border is colored by how hard your team's existing damaging move types already hit that species — solid green (4×), light green (2×), untinted (neutral or nothing to compare against yet), light red (resisted), dark red (immune) — so a glance down the column shows which popular Pokémon your team already threatens and which it doesn't, without reading any numbers.
+- A species commonly built with a Speed-relevant item gets a small corner badge — Choice Scarf, or its most popular Mega Stone — whichever one actually clears its own usage threshold *and* has the higher real usage percent (not "Scarf always wins"); a Mega row also swaps its displayed Speed to the Mega forme's own base stat.
+- Hovering a row (without clicking) shows a preview tooltip: base stats, top moves, ability, item, nature, and spread, each with real usage percentages — the same shape of data as the six-section per-species sidebar, just for a Pokémon you haven't added yet.
+
+### Similar Teams panel
+
+Alongside the Popular column, the main sidebar fills with **Similar Teams**: real tournament rosters — sourced from Pikalytics' own bulk Top Teams data, not a synthetic sample — that share at least one species with your current roster, ranked by how many species they share (ties broken by real recorded wins). Each row shows the team's sprites (aligned under the matching Pokémon in your own roster's column order), the author, tournament and placement, and win-loss record.
+
+Hovering a row shows each of that team's Pokémon — sprite, item badge, ability, and top moves — in the same column layout as the row itself. More teams load automatically as you scroll to the bottom.
+
+Shows "No Pokémon on your team yet" until at least one real slot has a species in it, and "No similar teams found yet" if nothing in the format's team pool shares any species with your roster.
+
 ## Settings
 
 Click the extension's icon in the toolbar to open its popup, which holds:
@@ -115,7 +135,7 @@ The teambuilder sidebar and Pikalytics data follow the same "patch, don't replac
 
 - **Sidebar layout** caps `#room-teambuilder` to a fixed max width via CSS and docks a real DOM sibling alongside it, never a fake Showdown `Room`.
 - **Split state** is re-evaluated on window resize and on the Showdown methods that can change which Pokémon is being edited.
-- **Pikalytics data** is fetched client-side (`src/pikalytics.js`) against a small, explicit format→slug allowlist rather than guessing at unverified slugs.
+- **Pikalytics data** is fetched client-side (`src/pikalytics.js`) against a small, explicit format→slug allowlist rather than guessing at unverified slugs. The Similar Teams panel draws on a separate part of that same client — Pikalytics' `/api/topteams/` endpoints, a bulk list of real featured tournament teams plus a per-team detail lookup — entirely distinct from the per-species `/api/p/`/`/api/l/`/`/ai/pokedex/` endpoints the rest of the sidebar uses; see the "Top Teams" section of `pikalytics.js`'s own module comment for the full endpoint shapes and their quirks.
 - **Speed math** (`src/content.js`) always goes through `TeambuilderRoom.prototype.getStat`, the same method Showdown's own Stats/EV panel uses, rather than a reimplemented stat formula. Tailwind, paralysis, stat stages, Choice Scarf, and Iron Ball are applied afterward as plain multipliers.
 - **Settings**: `src/content.js` runs in the page's MAIN world, which has no access to `chrome.storage`. A separate isolated-world script, `src/settings-bridge.js`, reads settings and hands them to `content.js` via a DOM attribute on `<html>`, since the two worlds don't share a `window`.
 
