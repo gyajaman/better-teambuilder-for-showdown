@@ -344,62 +344,28 @@
 			.sort((a, b) => (b.shared !== a.shared) ? b.shared - a.shared : wins(b) - wins(a));
 	}
 
-	/** How many of a species' own top-10 `counters` (Pikalytics' per-species ranked "what beats
-	 *  this Pokémon" list — see pikalytics.js's own module doc comment, `/api/p/` response
-	 *  shape) aggregateTeamThreats below turns into a per-mention weight: rank 1 (the single
-	 *  biggest counter) is worth this many points, rank 10 (the last entry Pikalytics returns)
-	 *  is worth 1, linearly in between. Matches the real length of the list Pikalytics actually
-	 *  sends (confirmed live) rather than an arbitrary round number, so every real entry gets a
-	 *  positive weight and nothing past the list's own end is ever reachable. */
-	const TEAM_THREATS_MAX_RANK = 10;
-	/** aggregateTeamThreats' own output is already fully ranked — this just bounds how many
-	 *  rows buildTeamThreatsSectionHTML actually renders, the same "don't show the whole tail"
-	 *  role SIMILAR_TEAMS_PAGE_SIZE/getTopUsageList's own `count` play elsewhere. Team-overview's
-	 *  panel scrolls internally if it needs to (style.css), so this is about keeping the list a
-	 *  quick glance rather than a hard layout constraint. */
-	const TEAM_THREATS_MAX_ROWS = 8;
-
-	/** Aggregates the real per-species `counters` list (see TEAM_THREATS_MAX_RANK's own comment)
-	 *  Pikalytics returns for every roster member into one ranked list of the biggest threats to
-	 *  the *whole* roster at once, for the team-overview screen's Biggest Threats section
-	 *  (renderTeamThreatsSection). `perMemberCounters` is one entry per roster member —
-	 *  `{member: <that member's species name>, counters: <its own counters array, or null/
-	 *  empty if Pikalytics had no data for it>}` — kept as this file's own shape rather than
-	 *  passing raw per-species `mon` objects through, so this stays a pure function over plain
-	 *  data (same reasoning as aggregateTopTeams above) and unit-testable without a live tbRoom.
-	 *
-	 *  A counter's score is the sum of its TEAM_THREATS_MAX_RANK-derived weight across every
-	 *  member it counters — not just a raw appearance count — so something that's a *severe*
-	 *  threat (low rank) to just one or two team members can still outrank something that's a
-	 *  *mild* threat (high rank) to several, rather than breadth always trumping severity or
-	 *  vice versa; ties broken by how many distinct members it threatens (breadth), then name
-	 *  for stable ordering. Grouped by baseSpeciesID — the same Mega/Primal-collapsing
-	 *  normalization every other roster/species comparison in this file already uses — so e.g. a
-	 *  counter Pikalytics returns as "Blastoise-Mega" against one member and "Blastoise" against
-	 *  another is counted as the one real threat it is, not two separate rows. */
-	function aggregateTeamThreats(perMemberCounters) {
-		const byId = new Map();
-		for (const entry of (perMemberCounters || [])) {
-			const counters = entry && entry.counters;
-			if (!counters) continue;
-			for (const c of counters) {
-				if (!c || !c.pokemon || !c.rank) continue;
-				const weight = TEAM_THREATS_MAX_RANK + 1 - c.rank;
-				if (weight <= 0) continue;
-				const id = baseSpeciesID(c.pokemon);
-				let threat = byId.get(id);
-				if (!threat) {
-					threat = { pokemon: c.pokemon, score: 0, members: [] };
-					byId.set(id, threat);
-				}
-				threat.score += weight;
-				threat.members.push(entry.member);
-			}
-		}
-		return Array.from(byId.values()).sort((a, b) =>
-			(b.score !== a.score) ? b.score - a.score :
-				(b.members.length !== a.members.length) ? b.members.length - a.members.length :
-					a.pokemon.localeCompare(b.pokemon));
+	/** Reshapes the real per-species `counters` list Pikalytics returns for every roster member
+	 *  (see pikalytics.js's own module doc comment, `/api/p/` response shape) into the team-
+	 *  overview screen's Biggest Threats section (renderTeamThreatsSection) — one row per roster
+	 *  member, not one blended list across the whole team the way an earlier design worked: a
+	 *  severe counter to just one member and a mild one shared by several used to get folded into
+	 *  a single cross-team score, which hid exactly which member each threat actually belonged to
+	 *  behind an aggregate number. Here, nothing is scored or merged — every member simply gets
+	 *  its own real counters, kept in Pikalytics' own rank order (already ascending — rank 1, the
+	 *  single biggest counter, first), unfiltered by count. `perMemberCounters` is one entry per
+	 *  roster member — `{member: <that member's species name>, counters: <its own counters
+	 *  array, or null/empty if Pikalytics had no data for it>}` — kept as this file's own shape
+	 *  rather than passing raw per-species `mon` objects through, so this stays a pure function
+	 *  over plain data (same reasoning as aggregateTopTeams above) and unit-testable without a
+	 *  live tbRoom. Malformed entries (missing `pokemon`/`rank`) are dropped rather than crashing
+	 *  a real row over one bad entry. */
+	function buildMemberThreatRows(perMemberCounters) {
+		return (perMemberCounters || []).map((entry) => ({
+			member: entry && entry.member,
+			counters: ((entry && entry.counters) || [])
+				.filter((c) => c && c.pokemon && c.rank)
+				.sort((a, b) => a.rank - b.rank),
+		}));
 	}
 
 	/** How popular a threat's own move has to be (Pikalytics' real per-move usage percent,
@@ -434,26 +400,6 @@
 		if (!window.Dex) return false;
 		const moveData = window.Dex.moves.get(moveName);
 		return !!(moveData && moveData.exists && moveData.category !== 'Status');
-	}
-
-	/** A move's own real base power (window.Dex, not Pikalytics — usage% has nothing to do with
-	 *  how hard a move actually hits) — 0 for anything window.Dex can't confirm a real numeric
-	 *  base power for, the same "can't verify it, don't credit it" fallback isDamagingMove's own
-	 *  doc comment already uses, rather than treating an unknown move as maximally threatening.
-	 *  This is what computeThreatMoveReasons/computeThreatSpeedReason actually rank candidate
-	 *  moves by now, usage only as a tiebreak — real usage percent alone was picking the wrong
-	 *  move to lead with (a real, reported case: Basculegion commonly runs both Aqua Jet, base
-	 *  power 40, and Wave Crash, base power 120 — Aqua Jet's own real usage can outrank Wave
-	 *  Crash's, but Wave Crash is obviously the more threatening of the two, and a reason citing
-	 *  "commonly runs Aqua Jet" instead undersold the actual matchup). Not adjusted for STAB,
-	 *  the defender's own real bulk, secondary effects, or accuracy — a real, deliberately rough
-	 *  proxy for "how hard does this hit," not a full damage calculator; good enough to fix the
-	 *  Aqua-Jet-over-Wave-Crash class of misordering without this file growing an actual damage
-	 *  formula for a hover tooltip. */
-	function movePower(moveName) {
-		if (!window.Dex) return 0;
-		const moveData = window.Dex.moves.get(moveName);
-		return (moveData && moveData.exists && typeof moveData.basePower === 'number') ? moveData.basePower : 0;
 	}
 
 	/** Real Same-Type-Attack-Bonus (STAB) — the real 1.5x every move gets when its own effective
@@ -500,7 +446,7 @@
 	 *  data/abilities.ts. Simplified on purpose the same way the rest of this file already
 	 *  leans on "the best real, unconditional fact about this species" rather than modeling an
 	 *  actual battle: a threat's own weather-setting ability is treated as always active for its
-	 *  own Weather Ball (effectiveMoveType below), the same spirit enrichTeamThreat's own
+	 *  own Weather Ball (effectiveMoveType below), the same spirit computeThreatOffense's own
 	 *  foeSet/Speed math already uses elsewhere (no live battle state exists here to check
 	 *  against — a Pokémon isn't on any actual field). */
 	const WEATHER_SETTING_ABILITIES = { drought: 'Sun', drizzle: 'Rain', sandstream: 'Sandstorm', snowwarning: 'Snow' };
@@ -509,6 +455,39 @@
 	 *  entry here for that case — effectiveMoveType's own fallback already returns the move's
 	 *  unmodified type when nothing in WEATHER_SETTING_ABILITIES matches). */
 	const WEATHER_BALL_TYPE = { Sun: 'Fire', Rain: 'Water', Sandstorm: 'Rock', Snow: 'Ice' };
+
+	/** A move's own real base power (window.Dex, not Pikalytics — usage% has nothing to do with
+	 *  how hard a move actually hits) — 0 for anything window.Dex can't confirm a real numeric
+	 *  base power for, the same "can't verify it, don't credit it" fallback isDamagingMove's own
+	 *  doc comment already uses, rather than treating an unknown move as maximally threatening.
+	 *  This is what computeThreatMoveReasons/computeThreatSpeedReason actually rank candidate
+	 *  moves by now, usage only as a tiebreak — real usage percent alone was picking the wrong
+	 *  move to lead with (a real, reported case: Basculegion commonly runs both Aqua Jet, base
+	 *  power 40, and Wave Crash, base power 120 — Aqua Jet's own real usage can outrank Wave
+	 *  Crash's, but Wave Crash is obviously the more threatening of the two, and a reason citing
+	 *  "commonly runs Aqua Jet" instead undersold the actual matchup). Not adjusted for STAB,
+	 *  the defender's own real bulk, secondary effects, or accuracy — a real, deliberately rough
+	 *  proxy for "how hard does this hit," not a full damage calculator; good enough to fix the
+	 *  Aqua-Jet-over-Wave-Crash class of misordering without this file growing an actual damage
+	 *  formula for a hover tooltip.
+	 *
+	 *  `ability` (optional) accounts for the one real move whose own *base power*, not just its
+	 *  type (effectiveMoveType handles that half), changes with a weather-setting ability:
+	 *  Weather Ball's real 50 base power doubles to 100 in whichever weather a real
+	 *  weather-setting ability keeps active (WEATHER_SETTING_ABILITIES, above) — the same real
+	 *  mechanic effectiveMoveType's own WEATHER_BALL_TYPE (above) already models the *type* half
+	 *  of. Without this, a Drought Mega Charizard Y's Weather Ball ranked as a bare 50-power
+	 *  Normal move instead of the real 100-power Fire attack it actually is, so a genuinely
+	 *  weaker move could wrongly outrank it as the reported reason. */
+	function movePower(moveName, ability) {
+		if (!window.Dex) return 0;
+		const moveData = window.Dex.moves.get(moveName);
+		if (!moveData || !moveData.exists || typeof moveData.basePower !== 'number') return 0;
+		if (toIDSafe(moveName) === 'weatherball' && WEATHER_SETTING_ABILITIES[toIDSafe(ability)]) {
+			return moveData.basePower * 2;
+		}
+		return moveData.basePower;
+	}
 
 	/** The real effective type a threat's move deals damage as, once its own real ability (or a
 	 *  weather that ability sets) is accounted for — not just the move's bare Pikalytics-listed
@@ -565,11 +544,11 @@
 	 *  flavored as), and are super effective (via the same typeEffectivenessMultiplier every
 	 *  other type-chart check in this file uses) against `defenderTypes` once each one's own
 	 *  *real effective* type is resolved (effectiveMoveType, `ability` — the threat's own
-	 *  real/assumed ability, enrichTeamThreat) — a Pixilate Sylveon's Hyper Voice is checked and
-	 *  reported as Fairy, not the move's bare Normal. Returns `[]` if nothing qualifies.
+	 *  real/assumed ability, computeThreatOffense) — a Pixilate Sylveon's Hyper Voice is checked
+	 *  and reported as Fairy, not the move's bare Normal. Returns `[]` if nothing qualifies.
 	 *
 	 *  Ranked by real STAB-adjusted power first (stabAdjustedPower, `attackerTypes` — the
-	 *  threat's own real types, enrichTeamThreat), usage percent only as a tiebreak — NOT by
+	 *  threat's own real types, computeThreatOffense), usage percent only as a tiebreak — NOT by
 	 *  usage alone: a real, reported case, Basculegion commonly runs both Aqua Jet (base power
 	 *  40) and Wave Crash (base power 120), and Aqua Jet's own real usage can outrank Wave
 	 *  Crash's even though Wave Crash is obviously the more threatening of the two (movePower's
@@ -596,7 +575,7 @@
 			if (!isDamagingMove(m.move)) continue;
 			const type = effectiveMoveType(m.move, m.type, ability);
 			if (typeEffectivenessMultiplier(type, defenderTypes) < 2) continue;
-			const power = stabAdjustedPower(movePower(m.move), type, attackerTypes);
+			const power = stabAdjustedPower(movePower(m.move, ability), type, attackerTypes);
 			candidates.push({ move: m.move, type, percent, power });
 		}
 		candidates.sort((a, b) => (b.power !== a.power) ? b.power - a.power : b.percent - a.percent);
@@ -604,7 +583,7 @@
 	}
 
 	/** Whether a threat that outspeeds — naturally, or only with a real, common-enough Choice
-	 *  Scarf (see enrichTeamThreat's own baseSpeed/scarfSpeed derivation) — also has a real,
+	 *  Scarf (see computeThreatOffense's own baseSpeed/scarfSpeed derivation) — also has a real,
 	 *  commonly-used, actually-damaging (isDamagingMove — a Status move landing first "connects"
 	 *  for zero damage, not a real threat) move that isn't resisted against `defenderTypes`
 	 *  (>=1x: neutral or better) once its own real effective type is resolved (effectiveMoveType,
@@ -618,7 +597,7 @@
 	 *  computeThreatMoveReasons' own doc comment gives.
 	 *
 	 *  `threat` is `{moves, ability, types, baseSpeed, scarfSpeed}` — scarfSpeed is null when
-	 *  Scarf isn't common enough on this species to credibly assume (enrichTeamThreat);
+	 *  Scarf isn't common enough on this species to credibly assume (computeThreatOffense);
 	 *  `defender` is `{types, speed}` — the threatened member's own real computed Speed, its own
 	 *  held item included, the same number every other Speed comparison in this file already
 	 *  uses. Returns null when the threat doesn't outspeed either way, or has no move to back
@@ -645,7 +624,7 @@
 			if (!isDamagingMove(m.move)) continue;
 			const type = effectiveMoveType(m.move, m.type, threat.ability);
 			if (typeEffectivenessMultiplier(type, defender.types) < 1) continue;
-			const power = stabAdjustedPower(movePower(m.move), type, threat.types);
+			const power = stabAdjustedPower(movePower(m.move, threat.ability), type, threat.types);
 			if (!best || power > best.power || (power === best.power && percent > best.percent)) {
 				best = { move: m.move, type, percent, power };
 			}
@@ -676,17 +655,19 @@
 	/** The actual "why" behind one threat/team-member matchup, for the Biggest Threats hover
 	 *  tooltip (buildTeamThreatTooltipHTML). `threat` is `{moves, ability, types, atk, spa,
 	 *  baseSpeed, scarfSpeed}` — the threatening species' own Pikalytics move list, real
-	 *  most-common ability, and real own types (enrichTeamThreat: `ability` its own top real
-	 *  Pikalytics ability, fed to effectiveMoveType inside computeThreatMoveReasons/
+	 *  most-common ability, and real own types (computeThreatOffense: `ability` its own top real
+	 *  Pikalytics ability — or, when it's commonly built as a Mega, that Mega forme's own real
+	 *  fixed ability instead — fed to effectiveMoveType inside computeThreatMoveReasons/
 	 *  computeThreatSpeedReason so a Pixilate/Aerilate/Galvanize/Refrigerate/Normalize/Liquid
 	 *  Voice user's move is checked and reported as its real effective type, and a
 	 *  weather-setting ability's own species running Weather Ball is checked and reported as
 	 *  that weather's real type, not either move's bare listed type; `types` its own real
-	 *  species types, fed to stabAdjustedPower inside those same two functions so a move that
-	 *  matches one of the threat's own types is ranked with its real STAB bonus factored in, not
-	 *  just its bare base power) plus its real computed offensive stats and Speed
-	 *  (enrichTeamThreat below derives those from its top real spread+nature, the same "no item"
-	 *  Foe-column technique buildSpeedComparisonTooltipHTML already uses, `scarfSpeed`
+	 *  species types (again the Mega forme's own, when that's the common build), fed to
+	 *  stabAdjustedPower inside those same two functions so a move that matches one of the
+	 *  threat's own types is ranked with its real STAB bonus factored in, not just its bare base
+	 *  power) plus its real computed offensive stats and Speed (computeThreatOffense below
+	 *  derives those from its top real spread+nature, the same "no item" Foe-column technique
+	 *  buildSpeedComparisonTooltipHTML already uses, `scarfSpeed`
 	 *  additionally accounting for a real, common-enough Choice Scarf); `defender` is `{types,
 	 *  def, spd, speed}` — the threatened team member's own real defensive types/stats and
 	 *  Speed.
@@ -707,7 +688,7 @@
 	 *  Then up to two `{kind: 'stat', text}` entries (physical, then special). A stat reason only
 	 *  appears when the threat also has a real move of the matching category
 	 *  (threatHasMoveOfCategory) backing the raw number up. Any of
-	 *  `threat.atk`/`threat.spa`/`threat.baseSpeed` being null (enrichTeamThreat couldn't derive
+	 *  `threat.atk`/`threat.spa`/`threat.baseSpeed` being null (computeThreatOffense couldn't derive
 	 *  a real stat — no spread data for this species) simply skips the reason(s) that depend on
 	 *  it rather than guessing. */
 	function computeThreatReasons(threat, defender) {
@@ -728,57 +709,79 @@
 		return reasons;
 	}
 
-	/** Attaches per-member reasons (computeThreatReasons) to one aggregateTeamThreats() entry,
-	 *  for the Biggest Threats hover tooltip — the DOM/tbRoom-touching half of that computation,
-	 *  kept separate from the pure functions above the same way computeSpeedSpectrumEntries is
-	 *  kept separate from applySpeedModifiers/speedStageMultiplier: still a plain function over
-	 *  a passed-in tbRoom (real or a test mock, see that function's own tests) rather than
-	 *  reaching for a module-level one, so this stays independently testable.
+	/** One real counter's own offensive profile — the "threat side" half of a matchup, computed
+	 *  independent of which team member it's being checked against (unlike computeMemberDefense
+	 *  below, which is necessarily per-member) — for the team-overview screen's Biggest Threats
+	 *  section (renderTeamThreatsSection). The DOM/tbRoom-touching half of this computation, kept
+	 *  separate from the pure functions above the same way computeSpeedSpectrumEntries is kept
+	 *  separate from applySpeedModifiers/speedStageMultiplier: still a plain function over a
+	 *  passed-in tbRoom (real or a test mock, see this function's own tests) rather than reaching
+	 *  for a module-level one, so this stays independently testable.
 	 *
-	 *  The threat's own offensive stats and base Speed are derived from `mon` (its Pikalytics
-	 *  species data — same object renderPikalyticsSidebar already fetches per-species, just for
-	 *  the threat instead of a roster member) via its top real spread + nature, through
-	 *  tbRoom.getStat — the same "species + real spread/nature, no item" technique
-	 *  buildSpeedComparisonTooltipHTML already uses for the Speed comparison's own Foe column,
-	 *  just for Attack/Special Attack/Speed together instead of Speed alone. `scarfSpeed` is
-	 *  that same base Speed with a real Choice Scarf applied (applySpeedModifiers, the exact
-	 *  multiplier every other Speed number in this file already goes through) — but only when
-	 *  this species' own real Scarf usage clears CF_SETTINGS.scarfThresholdPercent, the same
-	 *  threshold buildSpeedComparisonTooltipHTML's own conditional Scarf column already gates
-	 *  on; left null otherwise, so computeThreatSpeedReason never credits an outspeed that would
-	 *  require a build nobody's actually running. All four are left null (computeThreatReasons
-	 *  then just skips whichever reasons depend on them) when `mon` has no spread data to derive
-	 *  a real stat from at all.
+	 *  `pokemonName` is the counter's real base species name — confirmed live, Pikalytics always
+	 *  reports a Mega-capable counter under its base species this way (pikalytics.js's own module
+	 *  doc comment) — and `mon` is that species' own Pikalytics data (same object
+	 *  renderPikalyticsSidebar already fetches per-species, just for the counter instead of a
+	 *  roster member).
 	 *
-	 *  Each threatened member's own defensive stats/types/Speed come from its *real* set in
-	 *  tbRoom.curSetList — actual invested EVs/nature/level/item, not a generic base-stat guess —
-	 *  with the same Mega-Stone-holder resolution (resolveSpeedSpectrumSpecies)
-	 *  computeSpeedSpectrumEntries already applies (a Mega forme's own boosted bulk/Speed is what
-	 *  actually matters, not the base forme's), and the member's own real held item folded into
-	 *  its Speed via applySpeedModifiers exactly the way computeSpeedSpectrumEntries' own roster
-	 *  dots already do — a member actually holding Scarf/Iron Ball has that reflected in whether
-	 *  it actually gets outsped, not just the threat's side of the matchup. */
-	function enrichTeamThreat(tbRoom, threat, mon) {
+	 *  Real Mega Evolution changes base stats, typing, and ability all at once — a counter whose
+	 *  own `items` show a real, common-enough Mega Stone (same CF_SETTINGS.megaThresholdPercent
+	 *  gate, and the same "most popular item wins, a tie goes to Scarf" rule, topSpeedItemBadge
+	 *  already uses for the Popular column's own corner badge — a Mega Stone and a Choice Scarf
+	 *  are mutually exclusive on one real set, so whichever is more popular is the more
+	 *  representative build to check the matchup against) has its `atk`/`spa`/`baseSpeed` derived
+	 *  from the *Mega forme's* own base stats (tbRoom.getStat with the Mega's own species name),
+	 *  its own real fixed ability (window.Dex — a real Mega Evolution always has exactly one,
+	 *  replacing whatever the base forme was running before evolving, the same fixed-ability
+	 *  lookup resolveMemberAbility already uses for roster members in
+	 *  computeTeamDefensiveProfile — not Pikalytics' own usage-sorted `abilities` list, which
+	 *  reflects the base forme's own pre-Mega ability choices and isn't meaningful once actually
+	 *  Mega Evolved), and its own real types (window.Dex — Mega Charizard X is Fire/Dragon, not
+	 *  the base forme's Fire/Flying). Without this, a common Drought Mega Charizard Y read as a
+	 *  plain base-stat Charizard with no weather at all — its own Weather Ball checked as a bare
+	 *  Normal-type move instead of the real Fire-type, doubled-power attack Drought actually makes
+	 *  it (effectiveMoveType/movePower's own Weather-Ball-specific handling, fed by `ability`
+	 *  here), and its real, much higher Special Attack never factored into a stat-based reason at
+	 *  all. `scarfSpeed` — a real, common-enough Choice Scarf applied on top of `baseSpeed`
+	 *  (applySpeedModifiers, the exact multiplier every other Speed number in this file already
+	 *  goes through), gated by CF_SETTINGS.scarfThresholdPercent — is only ever computed for the
+	 *  non-Mega case: a Mega Stone holder can't also hold Scarf, so there's no "what if it also
+	 *  ran Scarf" hypothetical to layer on top of an already-assumed Mega build. All numeric
+	 *  fields are left null (computeThreatReasons then just skips whichever reasons depend on
+	 *  them) when `mon` has no spread data to derive a real stat from at all. */
+	function computeThreatOffense(tbRoom, pokemonName, mon) {
 		const moves = (mon && mon.moves) || [];
-		// The threat's own single most-common real ability (Pikalytics' own usage-sorted
-		// `abilities` list, same shape/ordering as `items`/`natures` — see buildAbilitiesSection)
-		// — fed to effectiveMoveType inside computeThreatReasons so a Pixilate/Aerilate/
-		// Galvanize/Refrigerate/Normalize/Liquid Voice user's move (or a weather-setter's own
-		// Weather Ball) is checked against its real effective type, not its move's bare listed
-		// one. Independent of topSpread below — real ability data doesn't need a real spread to
-		// be meaningful — so computed unconditionally rather than gated behind that check.
-		const topAbility = ((mon && mon.abilities) || [])[0];
-		const ability = topAbility && topAbility.ability;
-		// The threat's own real species types (window.Dex — the same source the defender side
-		// already uses for its own types elsewhere in this function) — fed to stabAdjustedPower
-		// inside computeThreatReasons so a move matching one of the threat's own types is ranked
-		// with its real 1.5x STAB bonus factored in, not just its bare base power.
-		// Named threatTypes, not types — the per-member loop below has its own, unrelated
-		// `types` (the *defender's* own types) in a nested scope; sharing the name would shadow
-		// this one there without any error, silently feeding the wrong types into
-		// stabAdjustedPower.
-		const threatSpecies = window.Dex && window.Dex.species.get(threat.pokemon);
-		const threatTypes = (threatSpecies && threatSpecies.exists && threatSpecies.types) || [];
+		const items = (mon && mon.items) || [];
+
+		const scarfItem = items.find((it) =>
+			toIDSafe(it.item) === 'choicescarf' && (parseFloat(it.percent) || 0) >= CF_SETTINGS.scarfThresholdPercent);
+		const scarfPercent = scarfItem ? (parseFloat(scarfItem.percent) || 0) : -1;
+
+		let bestMega = null;
+		if (window.Dex) {
+			for (const it of items) {
+				const itemData = window.Dex.items.get(it.item);
+				const forme = itemData && itemData.megaStone && itemData.megaStone[pokemonName];
+				if (!forme) continue;
+				const percent = parseFloat(it.percent) || 0;
+				if (percent < CF_SETTINGS.megaThresholdPercent) continue;
+				if (!bestMega || percent > bestMega.percent) bestMega = { formeName: forme, percent };
+			}
+		}
+		const usesMega = !!(bestMega && bestMega.percent > scarfPercent);
+		const effectiveSpecies = usesMega ? bestMega.formeName : pokemonName;
+		const effectiveSpeciesData = window.Dex && window.Dex.species.get(effectiveSpecies);
+
+		let ability;
+		if (usesMega) {
+			ability = effectiveSpeciesData && effectiveSpeciesData.exists && effectiveSpeciesData.abilities &&
+				effectiveSpeciesData.abilities['0'];
+		} else {
+			const topAbility = ((mon && mon.abilities) || [])[0];
+			ability = topAbility && topAbility.ability;
+		}
+		const types = (effectiveSpeciesData && effectiveSpeciesData.exists && effectiveSpeciesData.types) || [];
+
 		let atk = null;
 		let spa = null;
 		let baseSpeed = null;
@@ -788,7 +791,7 @@
 			const topNature = (mon.natures || [])[0];
 			const level = (tbRoom.curSetList && tbRoom.curSetList[0] && tbRoom.curSetList[0].level) || 50;
 			const foeSet = {
-				species: threat.pokemon,
+				species: effectiveSpecies,
 				evs: parseEVs(topSpread.ev),
 				nature: (topNature && topNature.nature) || '',
 				ivs: { atk: 31, spa: 31, spe: 31 },
@@ -798,31 +801,31 @@
 			spa = tbRoom.getStat('spa', foeSet);
 			baseSpeed = tbRoom.getStat('spe', foeSet);
 
-			const scarfItem = (mon.items || []).find((it) =>
-				toIDSafe(it.item) === 'choicescarf' && (parseFloat(it.percent) || 0) >= CF_SETTINGS.scarfThresholdPercent);
-			if (scarfItem) scarfSpeed = applySpeedModifiers(baseSpeed, 'Choice Scarf', {});
+			if (!usesMega && scarfItem) scarfSpeed = applySpeedModifiers(baseSpeed, 'Choice Scarf', {});
 		}
+		return { moves, ability, types, atk, spa, baseSpeed, scarfSpeed };
+	}
 
-		const memberReasons = threat.members.map((memberSpeciesName) => {
-			const memberSet = (tbRoom.curSetList || []).find((s) => s && s.species === memberSpeciesName);
-			if (!memberSet) return { member: memberSpeciesName, reasons: [] };
-			const { species: resolvedSpecies, isMega } = resolveSpeedSpectrumSpecies(memberSet);
-			const statSet = isMega ? Object.assign({}, memberSet, { species: resolvedSpecies }) : memberSet;
-			const def = tbRoom.getStat('def', statSet);
-			const spd = tbRoom.getStat('spd', statSet);
-			const speed = applySpeedModifiers(tbRoom.getStat('spe', statSet), memberSet.item, {});
-			const resolved = window.Dex && window.Dex.species.get(resolvedSpecies);
-			const types = (resolved && resolved.exists && resolved.types) || [];
-			return {
-				member: memberSpeciesName,
-				reasons: computeThreatReasons(
-					{ moves, ability, types: threatTypes, atk, spa, baseSpeed, scarfSpeed },
-					{ types, def, spd, speed },
-				),
-			};
-		});
-
-		return Object.assign({}, threat, { memberReasons });
+	/** One roster member's own real defensive profile against a threat — the "defender side" half
+	 *  of a matchup, computed once per member (unlike computeThreatOffense above, shared across
+	 *  every one of that member's own counters) for the same Biggest Threats section. Types/Def/
+	 *  SpD/Speed come from its *real* set in tbRoom.curSetList — actual invested EVs/nature/level/
+	 *  item, not a generic base-stat guess — with the same Mega-Stone-holder resolution
+	 *  (resolveSpeedSpectrumSpecies) computeSpeedSpectrumEntries already applies (a Mega forme's
+	 *  own boosted bulk/Speed is what actually matters, not the base forme's), and the member's
+	 *  own real held item folded into its Speed via applySpeedModifiers exactly the way
+	 *  computeSpeedSpectrumEntries' own roster dots already do — a member actually holding Scarf/
+	 *  Iron Ball has that reflected in whether it actually gets outsped, not just the threat's
+	 *  side of the matchup. */
+	function computeMemberDefense(tbRoom, memberSet) {
+		const { species: resolvedSpecies, isMega } = resolveSpeedSpectrumSpecies(memberSet);
+		const statSet = isMega ? Object.assign({}, memberSet, { species: resolvedSpecies }) : memberSet;
+		const def = tbRoom.getStat('def', statSet);
+		const spd = tbRoom.getStat('spd', statSet);
+		const speed = applySpeedModifiers(tbRoom.getStat('spe', statSet), memberSet.item, {});
+		const resolved = window.Dex && window.Dex.species.get(resolvedSpecies);
+		const types = (resolved && resolved.exists && resolved.types) || [];
+		return { types, def, spd, speed };
 	}
 
 	/** The current roster's own species, base-species-ID'd (same normalization
@@ -1128,11 +1131,12 @@
 			assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
 			ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, applyDefensiveAbility, resolveMemberAbility,
 			computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
-			aggregateTeamThreats, isDamagingMove, movePower, stabAdjustedPower, effectiveMoveType,
+			buildMemberThreatRows, isDamagingMove, movePower, stabAdjustedPower, effectiveMoveType,
 			computeThreatMoveReasons, computeThreatSpeedReason,
 			threatHasMoveOfCategory,
 			computeThreatReasons,
-			enrichTeamThreat, buildTeamThreatSquareHTML, buildTeamThreatsSectionHTML,
+			computeThreatOffense, computeMemberDefense,
+			buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
 			buildTeamThreatReasonCellHTML, buildTeamThreatTooltipHTML,
 			buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
 			buildSpeciesPreviewTooltipHTML, patchDexSearch,
@@ -2076,15 +2080,18 @@
 			return;
 		}
 
-		// Biggest Threats square (buildTeamThreatSquareHTML/renderTeamThreatsSection) — same
-		// by-index lookup pattern as Similar Teams just above, but buildTeamThreatTooltipHTML
-		// needs no extra live state (the threat's own reasons were already computed once, at
-		// render time, by enrichTeamThreat) so there's nothing to recompute fresh here.
-		const teamThreatSquare = ev.target.closest ? ev.target.closest('.cf-teamthreats-square') : null;
-		if (teamThreatSquare && CF.getTeamThreat) {
-			const idx = parseInt(teamThreatSquare.getAttribute('data-cf-teamthreats-idx'), 10);
-			const threat = CF.getTeamThreat(idx);
-			if (threat) Tooltip.show(teamThreatSquare, buildTeamThreatTooltipHTML(threat));
+		// Biggest Threats counter sprite (buildTeamThreatCounterHTML/renderTeamThreatsSection) —
+		// same by-index lookup pattern as Similar Teams just above, but buildTeamThreatTooltipHTML
+		// needs no extra live state (a counter's own reasons were already computed once, at
+		// render time, by renderTeamThreatsSection) so there's nothing to recompute fresh here.
+		// Two indices, not one flat one — a counter's identity here is really a (member, counter)
+		// pair (own doc comment on buildTeamThreatCounterHTML).
+		const teamThreatCounter = ev.target.closest ? ev.target.closest('.cf-teamthreats-counter') : null;
+		if (teamThreatCounter && CF.getTeamThreat) {
+			const memberIdx = parseInt(teamThreatCounter.getAttribute('data-cf-teamthreats-member-idx'), 10);
+			const counterIdx = parseInt(teamThreatCounter.getAttribute('data-cf-teamthreats-counter-idx'), 10);
+			const counter = CF.getTeamThreat(memberIdx, counterIdx);
+			if (counter) Tooltip.show(teamThreatCounter, buildTeamThreatTooltipHTML(counter));
 		}
 	}
 
@@ -2110,9 +2117,9 @@
 			return;
 		}
 
-		const teamThreatSquare = ev.target.closest ? ev.target.closest('.cf-teamthreats-square') : null;
-		if (teamThreatSquare) {
-			if (ev.relatedTarget && teamThreatSquare.contains(ev.relatedTarget)) return;
+		const teamThreatCounter = ev.target.closest ? ev.target.closest('.cf-teamthreats-counter') : null;
+		if (teamThreatCounter) {
+			if (ev.relatedTarget && teamThreatCounter.contains(ev.relatedTarget)) return;
 			Tooltip.hide();
 		}
 	}
@@ -2628,10 +2635,11 @@
 	 *  or a Mega Blastoise built by holding Blastoisinite on a Torrent/Rain-Dish set would
 	 *  wrongly check Torrent/Rain Dish here instead of the Mega's own real Mega Launcher.
 	 *  Entirely synchronous — no Pikalytics fetch, no loading state needed, same as
-	 *  computeSpeedSpectrumEntries. Rows for a type every member takes exactly 1x from (nothing
-	 *  to call out) are left out of `rows` entirely — buildTeamDefensiveProfileHTML's own job,
-	 *  not this function's, since "which rows are interesting" is a rendering decision about
-	 *  this same data, not a different computation.
+	 *  computeSpeedSpectrumEntries. `rows` always covers all 18 real types in ALL_TYPES order,
+	 *  a genuinely-neutral-for-everyone type included — the matrix is meant to be read
+	 *  top-to-bottom as "every type, here's how the team handles it," not just a curated list of
+	 *  exceptions, so silently dropping a row would read as "nobody asked about this type" rather
+	 *  than the real fact, "the whole team is neutral to it."
 	 *
 	 *  `baseFormeSlots` (a Set of 0-based indices into the *filtered* real-species roster, same
 	 *  indexing buildTeamDefensiveProfileHTML's own data-cf-defmatrix-member-idx uses) is the
@@ -2668,11 +2676,15 @@
 			return (resolved && resolved.exists && resolved.types) || [];
 		});
 		const memberAbilities = members.map((m, i) => resolveMemberAbility(sets[i], m.species, m.displayAsMega));
-		const rows = ALL_TYPES.map((type) => ({
+		// An empty roster has no columns to fill a row with at all — 18 rows of empty multipliers
+		// would just be noise ahead of buildTeamDefensiveProfileHTML's own "No Pokémon on your
+		// team yet." message, not "the complete picture" every-type rule is meant to give when
+		// there's an actual roster to show it for.
+		const rows = members.length ? ALL_TYPES.map((type) => ({
 			type,
 			multipliers: memberTypes.map((types, i) =>
 				applyDefensiveAbility(typeEffectivenessMultiplier(type, types), type, memberAbilities[i])),
-		})).filter((row) => row.multipliers.some((m) => m !== 1));
+		})) : [];
 		return { members, rows };
 	}
 
@@ -2882,14 +2894,14 @@
 
 	/** Team-overview screen's Defensive Profile section — computeTeamDefensiveProfile's output as
 	 *  a real matrix table: one column per roster member (sprite only, header row — same "icon
-	 *  reads faster than a name at a glance" reasoning as the Biggest Threats squares), one row
-	 *  per attacking type that isn't neutral against every single member (computeTeamDefensiveProfile
-	 *  already filtered those out), each cell colored and labeled by defensiveTierClass/
-	 *  defensiveCellText. A genuinely neutral cell (1x) renders as an empty, uncolored cell rather
-	 *  than "1×" — in a row that already means "at least one member deviates from neutral here,"
-	 *  the *exceptions* are what's worth reading; spelling out "1×" next to them for every member
-	 *  who's simply unremarkable against this type would just be visual noise repeated up to six
-	 *  times per row.
+	 *  reads faster than a name at a glance" reasoning as the Biggest Threats squares), one row per
+	 *  real attacking type (all 18, computeTeamDefensiveProfile's own `rows` — a type nobody on the
+	 *  team is weak/resistant/immune to still gets a row, so the matrix reads as "here's the whole
+	 *  team's answer to every type," not a curated list that quietly omits "neutral, nothing to see
+	 *  here"), each cell colored and labeled by defensiveTierClass/defensiveCellText. A genuinely
+	 *  neutral cell (1x) renders as an empty, uncolored cell rather than "1×" — even on a row where
+	 *  every member is neutral, spelling out "1×" six times over would just be visual noise next to
+	 *  a blank row that already reads as "nothing to call out here" at a glance.
 	 *
 	 *  A Mega-capable member's own header cell (`m.canToggle`) gets `data-cf-defmatrix-member-idx`
 	 *  and a clickable class — onDefMatrixClick reads that index back to toggle
@@ -2902,11 +2914,11 @@
 	 *  actually signals *which* members are Mega-capable at a glance. An ordinary member gets no
 	 *  badge at all — nothing to toggle, so no affordance implying otherwise. */
 	function buildTeamDefensiveProfileHTML(profile) {
+		// The only case computeTeamDefensiveProfile ever returns an empty `rows` for — every type
+		// now always gets a row once there's an actual roster (own doc comment) — so there's no
+		// separate "roster exists but nothing notable" state left to render here.
 		if (!profile.members.length) {
 			return pikaSectionHTML('Defensive Profile', '<p class="cf-pika-empty">No Pokémon on your team yet.</p>');
-		}
-		if (!profile.rows.length) {
-			return pikaSectionHTML('Defensive Profile', '<p class="cf-pika-empty">No notable team-wide weaknesses or resistances.</p>');
 		}
 		const headerCells = profile.members.map((m, i) => {
 			const icon = window.Dex ? window.Dex.getPokemonIcon(m.species) : '';
@@ -2930,34 +2942,58 @@
 		return pikaSectionHTML('Defensive Profile', table);
 	}
 
-	/** One Biggest Threats square (buildTeamThreatsSectionHTML) — icon only, no name or count
-	 *  visible by default (unlike every row-shaped Pikalytics section elsewhere in this file):
-	 *  side-by-side icon squares read as a quick "here's who to watch out for" glance, the same
-	 *  way the roster's own six icons on this exact screen already do, where a name/number per
-	 *  entry would just be visual noise at this size. `idx` is this threat's position in
-	 *  lastTeamThreats (see renderTeamThreatsSection) — not a stable id, just an index into
-	 *  whatever's currently rendered, the same convention buildSimilarTeamRowHTML's own
-	 *  data-cf-similarteam-idx already uses for the identical reason (both are rebuilt together
-	 *  on every render). All the real detail — which of your team it threatens, and why — lives
-	 *  in the hover tooltip (buildTeamThreatTooltipHTML) via the shared floating overlay, not a
-	 *  plain `title` attribute: reasons run to multiple lines per member, more than a native
-	 *  tooltip reads well. */
-	function buildTeamThreatSquareHTML(threat, idx) {
-		const icon = `<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(threat.pokemon) : '')}"></span>`;
-		return `<div class="cf-teamthreats-square" data-cf-teamthreats-idx="${idx}">${icon}</div>`;
+	/** One Biggest Threats counter sprite, inside its own team member's row
+	 *  (buildTeamThreatMemberRowHTML) — a bare sprite with no box/border around it (unlike, say,
+	 *  the Popular column's own bordered icons elsewhere in this file) and no name visible by
+	 *  default: side-by-side icons read as a quick "here's what to watch out for" glance, the same
+	 *  way the roster's own six icons on this exact screen already do, where a name per entry
+	 *  would just be visual noise at this size. `memberIdx`/`counterIdx` are this counter's
+	 *  position within lastTeamThreats (see renderTeamThreatsSection) — not stable ids, just
+	 *  indices into whatever's currently rendered, the same convention buildSimilarTeamRowHTML's
+	 *  own data-cf-similarteam-idx already uses for the identical reason (both are rebuilt
+	 *  together on every render); two indices rather than one flat one since a counter's identity
+	 *  here is really a (member, counter) pair, not a standalone rank. All the real detail — why
+	 *  this counters this specific member — lives in the hover tooltip
+	 *  (buildTeamThreatTooltipHTML) via the shared floating overlay, not a plain `title` attribute:
+	 *  reasons run to multiple lines, more than a native tooltip reads well. */
+	function buildTeamThreatCounterHTML(counter, memberIdx, counterIdx) {
+		const icon = `<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(counter.pokemon) : '')}"></span>`;
+		return `<span class="cf-teamthreats-counter" data-cf-teamthreats-member-idx="${memberIdx}"` +
+			` data-cf-teamthreats-counter-idx="${counterIdx}">${icon}</span>`;
 	}
 
-	/** Biggest Threats section: aggregateTeamThreats' ranked output as a row of side-by-side
-	 *  squares (buildTeamThreatSquareHTML) rather than the name/count rows every other
-	 *  Pikalytics-derived section in this file uses — see that function's own comment for why.
-	 *  Still capped at TEAM_THREATS_MAX_ROWS defensively, even though renderTeamThreatsSection
-	 *  already only enriches (and so only ever passes in) that many — the single place that
-	 *  actually decides "this many are shown," not duplicated logic. */
-	function buildTeamThreatsSectionHTML(threats) {
-		if (!threats.length) return pikaSectionHTML('Biggest Threats', '<p class="cf-pika-empty">No threat data for this format.</p>');
-		const squares = threats.slice(0, TEAM_THREATS_MAX_ROWS)
-			.map((t, i) => buildTeamThreatSquareHTML(t, i)).join('');
-		return pikaSectionHTML('Biggest Threats', `<div class="cf-teamthreats-grid">${squares}</div>`);
+	/** One Biggest Threats row — a real `<tr>` (buildTeamThreatsSectionHTML's own `<table>`), not
+	 *  a flex row: a real table is what actually centers the member's own sprite both
+	 *  horizontally and vertically in its own left-hand cell regardless of how tall the right-hand
+	 *  cell's own wrapped counters grow, the same "left cell fixed, right cell does the real work"
+	 *  shape .cf-defmatrix-table's own header row already uses. Every one of the member's own real
+	 *  counters (buildTeamThreatCounterHTML) sits in the right-hand cell, wrapping onto as many
+	 *  lines as it needs (`.cf-teamthreats-counters`, style.css) rather than being capped — the
+	 *  section itself scrolls internally once it runs taller than its own bound (style.css), so a
+	 *  wide row doesn't need its own separate scroll affordance on top of that. A member
+	 *  Pikalytics had no counters data for still gets its own row, with a plain "No counter data."
+	 *  note instead of an empty cell — the row is about *this member*, not about whether
+	 *  Pikalytics happened to answer for it. */
+	function buildTeamThreatMemberRowHTML(row, memberIdx) {
+		const memberIcon = `<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(row.member) : '')}"></span>`;
+		const counters = row.counters.length ?
+			row.counters.map((c, i) => buildTeamThreatCounterHTML(c, memberIdx, i)).join('') :
+			'<span class="cf-teamthreats-none">No counter data.</span>';
+		return `<tr class="cf-teamthreats-row">` +
+			`<td class="cf-teamthreats-member" title="${escapeHTML(row.member)}">${memberIcon}</td>` +
+			`<td class="cf-teamthreats-counters">${counters}</td>` +
+			`</tr>`;
+	}
+
+	/** Biggest Threats section: buildMemberThreatRows' own per-member output as a real table, one
+	 *  row per roster member (buildTeamThreatMemberRowHTML) rather than one blended, score-ranked
+	 *  list across the whole team the way an earlier design worked (own doc comment on
+	 *  buildMemberThreatRows) — every real counter Pikalytics has for a member is shown, under
+	 *  that member's own row, nothing capped or hidden. */
+	function buildTeamThreatsSectionHTML(rows) {
+		if (!rows.length) return pikaSectionHTML('Biggest Threats', '<p class="cf-pika-empty">No threat data for this format.</p>');
+		const rowsHTML = rows.map((row, i) => buildTeamThreatMemberRowHTML(row, i)).join('');
+		return pikaSectionHTML('Biggest Threats', `<table class="cf-teamthreats-rows"><tbody>${rowsHTML}</tbody></table>`);
 	}
 
 	/** One <td> for a single computeThreatReasons() entry, inside buildTeamThreatTooltipHTML's
@@ -2967,46 +3003,38 @@
 	 *  reused verbatim rather than a new percent style) — so it reads the same way a move
 	 *  already does everywhere else in this file, not a new "moves as prose" idiom. A `speed`
 	 *  reason (computeThreatSpeedReason) gets the same move-shaped cell plus an "Outspeeds" label
-	 *  up front, and — only when `viaScarf` is true, i.e. it doesn't outspeed on a bare stat
-	 *  spread alone — a small muted "(needs Scarf)" note, so a Speed advantage that depends on a
-	 *  build choice reads differently from one that's true regardless of item. A `stat` reason is
-	 *  just its own plain text, no icon — there's nothing to show an icon of. */
+	 *  up front — and, right alongside that label, only when `viaScarf` is true (i.e. it doesn't
+	 *  outspeed on a bare stat spread alone), a small muted "(needs Scarf)" note: the qualifier is
+	 *  about the *outspeed claim itself*, not about the move backing it up, so it reads next to
+	 *  "Outspeeds" rather than trailing after the move's own name/percent where it could look like
+	 *  it was qualifying the move instead. A `stat` reason is just its own plain text, no icon —
+	 *  there's nothing to show an icon of. */
 	function buildTeamThreatReasonCellHTML(reason) {
 		if (reason.kind === 'move' || reason.kind === 'speed') {
 			const typeIcon = window.Dex ? window.Dex.getTypeIcon(reason.type) : '';
-			const label = reason.kind === 'speed' ? '<span class="cf-teamthreats-reason-label">Outspeeds</span>' : '';
 			const scarfNote = (reason.kind === 'speed' && reason.viaScarf) ?
-				'<span class="cf-teamthreats-scarf-note">(needs Scarf)</span>' : '';
+				' <span class="cf-teamthreats-scarf-note">(needs Scarf)</span>' : '';
+			const label = reason.kind === 'speed' ?
+				`<span class="cf-teamthreats-reason-label">Outspeeds${scarfNote}</span>` : '';
 			return `<td class="cf-teamthreats-reason">${label}` +
 				`<span class="cf-teamthreats-move-type">${typeIcon}</span>` +
 				`<span class="cf-teamthreats-move-name">${escapeHTML(reason.move)}</span>` +
-				`<span class="cf-pika-pct">${escapeHTML(String(reason.percent))}%</span>${scarfNote}` +
+				`<span class="cf-pika-pct">${escapeHTML(String(reason.percent))}%</span>` +
 				`</td>`;
 		}
 		return `<td class="cf-teamthreats-reason cf-teamthreats-reason-stat">${escapeHTML(reason.text)}</td>`;
 	}
 
-	/** Biggest Threats hover tooltip content — a table, one row per (threatened team member,
-	 *  reason) pair rather than the free-form per-member text blocks every other tooltip in this
-	 *  file uses: a move reason needs its own type-icon/name/percent cells (see
-	 *  buildTeamThreatReasonCellHTML), which reads as a real table row far more naturally than
-	 *  as prose. The member's own sprite (`.cf-teamthreats-sprite`) spans every row a given
-	 *  member needs via `rowspan` — one row when it has a single reason (or none: still one row,
-	 *  with a "No specific reason found." cell rather than being silently dropped, since it IS a
-	 *  real ranked counter even when this file can't explain why from the data it has), up to
-	 *  three when computeThreatReasons found a move reason plus both stat reasons. */
-	function buildTeamThreatTooltipHTML(threat) {
-		const rows = (threat.memberReasons || []).map(({ member, reasons }) => {
-			const icon = `<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(member) : '')}"></span>`;
-			const reasonCells = reasons.length ? reasons.map(buildTeamThreatReasonCellHTML) :
-				['<td class="cf-teamthreats-reason cf-teamthreats-reason-none">No specific reason found.</td>'];
-			return reasonCells.map((cellHTML, i) => {
-				const spriteCell = i === 0 ?
-					`<td class="cf-teamthreats-sprite" rowspan="${reasonCells.length}">${icon}</td>` : '';
-				return `<tr>${spriteCell}${cellHTML}</tr>`;
-			}).join('');
-		}).join('');
-		return `<div class="cf-tooltip cf-teamthreats-tooltip"><h2>${escapeHTML(threat.pokemon)}</h2>` +
+	/** Biggest Threats hover tooltip content, for a single (team member, counter) pair — a table,
+	 *  one row per computeThreatReasons() entry (buildTeamThreatReasonCellHTML), which reads as a
+	 *  real table row far more naturally than as prose (a move reason needs its own type-icon/
+	 *  name/percent cells). Scoped to exactly one counter now — the row it's hovered from already
+	 *  shows which member this is about, so there's no need to repeat a member sprite or juggle
+	 *  several members' reasons in one tooltip the way an earlier, aggregated design had to. */
+	function buildTeamThreatTooltipHTML(counter) {
+		const rows = counter.reasons.length ? counter.reasons.map((r) => `<tr>${buildTeamThreatReasonCellHTML(r)}</tr>`).join('') :
+			'<tr><td class="cf-teamthreats-reason cf-teamthreats-reason-none">No specific reason found.</td></tr>';
+		return `<div class="cf-tooltip cf-teamthreats-tooltip"><h2>${escapeHTML(counter.pokemon)}</h2>` +
 			`<table class="cf-teamthreats-table"><tbody>${rows}</tbody></table></div>`;
 	}
 
@@ -4236,7 +4264,7 @@
 		 *  member's own `counters` list (window.CF_Pikalytics.getSpeciesData — the same call
 		 *  renderPikalyticsSidebar already makes per-species, just fired once per roster member
 		 *  here instead of once for whichever single Pokémon is being edited) and hands the
-		 *  results to the pure aggregateTeamThreats to rank.
+		 *  results to the pure buildMemberThreatRows to reshape into one row per member.
 		 *
 		 *  Keyed the same way renderSimilarTeamsPanel is (format + rosterSpeciesKey, order-
 		 *  independent) so an unrelated re-render of this screen — most commonly a window resize,
@@ -4259,16 +4287,20 @@
 		 *  flight from before that state was reached.
 		 *
 		 *  Two fetch stages, not one: the first Promise.all gets every roster member's own
-		 *  `counters` (just enough for aggregateTeamThreats to rank every real threat), and only
-		 *  once that ranking picks the top TEAM_THREATS_MAX_ROWS does a second Promise.all fetch
-		 *  *those* threats' own species data (moves/spreads/natures — enrichTeamThreat's raw
-		 *  material for computeThreatReasons) — fetching that for every threat that shows up
-		 *  anywhere in anyone's counters list, most of which will never make the visible cut,
-		 *  would be real wasted network/compute for no visible benefit. lastTeamThreats (module-
-		 *  level, alongside CF.getTeamThreat below) is the enriched result of that second stage —
-		 *  what the hover tooltip (onMouseOver's own .cf-teamthreats-square branch) actually
-		 *  reads, by the same by-index convention buildSimilarTeamRowHTML's own hover lookup
-		 *  already uses. */
+		 *  `counters`, and only once buildMemberThreatRows has reshaped those into rows does a
+		 *  second Promise.all fetch every *unique* counter species' own data across the whole
+		 *  roster (moves/spreads/natures/items — computeThreatOffense's raw material for
+		 *  computeThreatReasons), deduplicated so a counter shared by several members' own lists
+		 *  (e.g. a format's single most common answer to Water-types) is only ever fetched once,
+		 *  not once per member it happens to counter — getSpeciesData's own cache would make a
+		 *  repeat fetch cheap anyway, but deduping the *requests* themselves avoids firing
+		 *  redundant ones in the same Promise.all at all. Every real counter for every member gets
+		 *  enriched now, not just a capped top few — this section shows everything, not a curated
+		 *  shortlist (own doc comment on buildMemberThreatRows). lastTeamThreats (module-level,
+		 *  alongside CF.getTeamThreat below) is the enriched result of that second stage — what
+		 *  the hover tooltip (onMouseOver's own .cf-teamthreats-counter branch) actually reads, by
+		 *  the same by-index convention buildSimilarTeamRowHTML's own hover lookup already uses,
+		 *  just two indices (member, counter) instead of one flat one. */
 		let lastTeamThreats = null;
 		let teamThreatsRenderToken = 0;
 		function renderTeamThreatsSection(tbRoom, threatsEl) {
@@ -4303,20 +4335,32 @@
 				}))
 			)).then((perMemberCounters) => {
 				if (token !== teamThreatsRenderToken) return; // superseded by a newer render
-				const ranked = aggregateTeamThreats(perMemberCounters).slice(0, TEAM_THREATS_MAX_ROWS);
-				if (!ranked.length) {
-					lastTeamThreats = [];
-					threatsEl.innerHTML = buildTeamThreatsSectionHTML([]);
+				const rows = buildMemberThreatRows(perMemberCounters);
+				const uniqueCounterNames = Array.from(new Set(rows.flatMap((r) => r.counters.map((c) => c.pokemon))));
+				if (!uniqueCounterNames.length) {
+					lastTeamThreats = rows;
+					threatsEl.innerHTML = buildTeamThreatsSectionHTML(rows);
 					return;
 				}
 				// Returned (not fire-and-forget) so a rejection/throw in here is caught by the
 				// .catch below too, not just the outer Promise.all's own — without this, an error
 				// here would be an unhandled rejection this function never learns about at all.
-				return Promise.all(ranked.map((t) => window.CF_Pikalytics.getSpeciesData(formatId, t.pokemon))).then((mons) => {
-					if (token !== teamThreatsRenderToken) return; // superseded by a newer render
-					lastTeamThreats = ranked.map((t, i) => enrichTeamThreat(tbRoom, t, mons[i]));
-					threatsEl.innerHTML = buildTeamThreatsSectionHTML(lastTeamThreats);
-				});
+				return Promise.all(uniqueCounterNames.map((name) => window.CF_Pikalytics.getSpeciesData(formatId, name)))
+					.then((monsList) => {
+						if (token !== teamThreatsRenderToken) return; // superseded by a newer render
+						const monByName = new Map(uniqueCounterNames.map((name, i) => [name, monsList[i]]));
+						lastTeamThreats = rows.map((row) => {
+							const memberSet = (tbRoom.curSetList || []).find((s) => s && s.species === row.member);
+							const defense = memberSet ? computeMemberDefense(tbRoom, memberSet) : null;
+							const counters = row.counters.map((c) => {
+								const offense = computeThreatOffense(tbRoom, c.pokemon, monByName.get(c.pokemon));
+								const reasons = defense ? computeThreatReasons(offense, defense) : [];
+								return { pokemon: c.pokemon, rank: c.rank, reasons };
+							});
+							return { member: row.member, counters };
+						});
+						threatsEl.innerHTML = buildTeamThreatsSectionHTML(lastTeamThreats);
+					});
 			}).catch((e) => {
 				if (token !== teamThreatsRenderToken) return; // superseded by a newer render
 				// Clears the key (rather than leaving it set) so the next real render attempt —
@@ -4329,10 +4373,14 @@
 				threatsEl.innerHTML = pikaSectionHTML('Biggest Threats', '<p class="cf-pika-empty">Failed to load.</p>');
 			});
 		}
-		// onMouseOver needs the currently-rendered, already-enriched threats by square index
-		// (data-cf-teamthreats-idx) to build the hover tooltip — same CF cross-scope handoff as
-		// CF.getSimilarTeamMatch above, since lastTeamThreats itself lives inside this closure.
-		CF.getTeamThreat = (idx) => lastTeamThreats && lastTeamThreats[idx];
+		// onMouseOver needs the currently-rendered, already-enriched counter by its (member,
+		// counter) index pair (data-cf-teamthreats-member-idx/data-cf-teamthreats-counter-idx) to
+		// build the hover tooltip — same CF cross-scope handoff as CF.getSimilarTeamMatch above,
+		// since lastTeamThreats itself lives inside this closure.
+		CF.getTeamThreat = (memberIdx, counterIdx) => {
+			const row = lastTeamThreats && lastTeamThreats[memberIdx];
+			return row && row.counters && row.counters[counterIdx];
+		};
 
 		function updateSplitState() {
 			const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
