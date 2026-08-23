@@ -1114,11 +1114,14 @@ describe('computeTeamDefensiveProfile', () => {
 
 	it('skips blank slots, lists every real type in ALL_TYPES order, colors the ones that deviate from neutral', () => {
 		mockDefMatrixDex();
-		const tbRoom = { curSetList: [{ species: 'Blastoise', name: '' }, { species: '' }, { species: 'Sceptile', name: '' }] };
+		const tbRoom = {
+			curTeam: { capacity: 2 },
+			curSetList: [{ species: 'Blastoise', name: '' }, { species: '' }, { species: 'Sceptile', name: '' }],
+		};
 		const profile = computeTeamDefensiveProfile(tbRoom);
 		expect(profile.members).toEqual([
-			{ species: 'Blastoise', name: 'Blastoise', canToggle: false, displayAsMega: false },
-			{ species: 'Sceptile', name: 'Sceptile', canToggle: false, displayAsMega: false },
+			{ species: 'Blastoise', name: 'Blastoise', canToggle: false, displayAsMega: false, empty: false },
+			{ species: 'Sceptile', name: 'Sceptile', canToggle: false, displayAsMega: false, empty: false },
 		]);
 		expect(profile.rows.map((r) => r.type)).toEqual(ALL_TYPES); // every real type, ALL_TYPES order, not alphabetical
 		expect(profile.rows.find((r) => r.type === 'Fire').multipliers).toEqual([1, 2]); // neutral vs Blastoise, weak vs Sceptile
@@ -1128,24 +1131,24 @@ describe('computeTeamDefensiveProfile', () => {
 
 	it('still includes a type row even when every member is exactly neutral to it', () => {
 		mockDefMatrixDex();
-		const profile = computeTeamDefensiveProfile({ curSetList: [{ species: 'Blastoise', name: '' }] });
+		const profile = computeTeamDefensiveProfile({ curTeam: { capacity: 1 }, curSetList: [{ species: 'Blastoise', name: '' }] });
 		// Nothing in the fixture touches Normal — genuinely neutral, but still a real row.
 		expect(profile.rows.find((r) => r.type === 'Normal').multipliers).toEqual([1]);
 	});
 
 	it('resolves a Mega-Stone holder to the Mega forme before looking up its defensive types, defaulting to displaying as Mega', () => {
 		mockBattleDex();
-		const tbRoom = { curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', name: '' }] };
+		const tbRoom = { curTeam: { capacity: 1 }, curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', name: '' }] };
 		expect(computeTeamDefensiveProfile(tbRoom).members).toEqual([
-			{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', canToggle: true, displayAsMega: true },
+			{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', canToggle: true, displayAsMega: true, empty: false },
 		]);
 	});
 
 	it('also allows toggling a Mega picked directly from species search, with no separate Mega Stone item', () => {
 		mockBattleDex();
-		const tbRoom = { curSetList: [{ species: 'Blastoise-Mega', name: '' }] };
+		const tbRoom = { curTeam: { capacity: 1 }, curSetList: [{ species: 'Blastoise-Mega', name: '' }] };
 		expect(computeTeamDefensiveProfile(tbRoom).members).toEqual([
-			{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', canToggle: true, displayAsMega: true },
+			{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', canToggle: true, displayAsMega: true, empty: false },
 		]);
 	});
 
@@ -1155,33 +1158,36 @@ describe('computeTeamDefensiveProfile', () => {
 		// anywhere on this set the way there is for a base-species-plus-item build, so the base
 		// name has to come from window.Dex's own baseSpecies, not sets[i].species (which would
 		// just be 'Blastoise-Mega' again, silently toggling to the exact same sprite).
-		const tbRoom = { curSetList: [{ species: 'Blastoise-Mega', name: '' }] };
+		const tbRoom = { curTeam: { capacity: 1 }, curSetList: [{ species: 'Blastoise-Mega', name: '' }] };
 		expect(computeTeamDefensiveProfile(tbRoom, new Set([0])).members).toEqual([
-			{ species: 'Blastoise', name: 'Blastoise', canToggle: true, displayAsMega: false },
+			{ species: 'Blastoise', name: 'Blastoise', canToggle: true, displayAsMega: false, empty: false },
 		]);
 	});
 
 	it('shows the real base forme instead when that slot\'s index is in baseFormeSlots', () => {
 		mockBattleDex();
-		const tbRoom = { curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', ability: 'Torrent', name: '' }] };
+		const tbRoom = { curTeam: { capacity: 1 }, curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', ability: 'Torrent', name: '' }] };
 		const profile = computeTeamDefensiveProfile(tbRoom, new Set([0]));
 		expect(profile.members).toEqual([
-			{ species: 'Blastoise', name: 'Blastoise', canToggle: true, displayAsMega: false },
+			{ species: 'Blastoise', name: 'Blastoise', canToggle: true, displayAsMega: false, empty: false },
 		]);
 	});
 
 	it('ignores a baseFormeSlots index that isn\'t actually Mega-capable — a harmless no-op', () => {
 		mockDefMatrixDex();
-		const tbRoom = { curSetList: [{ species: 'Blastoise', name: '' }] };
+		const tbRoom = { curTeam: { capacity: 1 }, curSetList: [{ species: 'Blastoise', name: '' }] };
 		const profile = computeTeamDefensiveProfile(tbRoom, new Set([0]));
 		expect(profile.members).toEqual([
-			{ species: 'Blastoise', name: 'Blastoise', canToggle: false, displayAsMega: false },
+			{ species: 'Blastoise', name: 'Blastoise', canToggle: false, displayAsMega: false, empty: false },
 		]);
 	});
 
 	it('folds a real held ability\'s immunity into the multiplier — Water Absorb blocks Water outright', () => {
 		mockDefMatrixDex();
-		const tbRoom = { curSetList: [{ species: 'Blastoise', name: '', ability: 'Water Absorb' }, { species: 'Sceptile', name: '' }] };
+		const tbRoom = {
+			curTeam: { capacity: 2 },
+			curSetList: [{ species: 'Blastoise', name: '', ability: 'Water Absorb' }, { species: 'Sceptile', name: '' }],
+		};
 		const profile = computeTeamDefensiveProfile(tbRoom);
 		// Water: Blastoise would normally be neutral (1x), but Water Absorb makes it 0 — still a
 		// real row (Sceptile's own .5x keeps it non-neutral), just with the ability's own 0 for
@@ -1195,13 +1201,33 @@ describe('computeTeamDefensiveProfile', () => {
 			types: { get: () => ({ exists: false }) }, // irrelevant to this test — isolates the ability override from real type-chart math
 			species: { get: (name) => (name === 'Blastoise-Mega' ? { exists: true, types: ['Water'], abilities: { 0: 'Water Absorb' } } : { exists: false }) },
 		};
-		const tbRoom = { curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', ability: 'Torrent', name: '' }] };
+		const tbRoom = { curTeam: { capacity: 1 }, curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', ability: 'Torrent', name: '' }] };
 		const profile = computeTeamDefensiveProfile(tbRoom);
 		// Torrent (the base set's own chosen ability, ignored here) does nothing to Water; Water
 		// Absorb (the Mega's own real, fixed ability) is what actually applies. If the base
 		// ability had been used instead this row wouldn't exist at all — nothing in this test's
 		// bare-neutral type mock produces a non-1x result on its own.
 		expect(profile.rows.find((r) => r.type === 'Water').multipliers).toEqual([0]);
+	});
+
+	it('reserves all 6 (or the real team capacity) columns once a real roster exists, padding unfilled slots with empty placeholders', () => {
+		mockDefMatrixDex();
+		const tbRoom = { curSetList: [{ species: 'Blastoise', name: '' }] }; // no curTeam.capacity given -> falls back to 6, same as curTeamFull
+		const profile = computeTeamDefensiveProfile(tbRoom);
+		expect(profile.members).toHaveLength(6);
+		expect(profile.members[0]).toEqual({ species: 'Blastoise', name: 'Blastoise', canToggle: false, displayAsMega: false, empty: false });
+		for (let i = 1; i < 6; i++) {
+			expect(profile.members[i]).toEqual({ species: null, name: '', canToggle: false, displayAsMega: false, empty: true });
+		}
+		// Every row still lines up 1-to-1 with the 6 columns — real Blastoise data first, then
+		// null ("nothing to compute," not "computed and neutral") for every still-open slot.
+		expect(profile.rows.find((r) => r.type === 'Fire').multipliers).toEqual([1, null, null, null, null, null]);
+	});
+
+	it('respects a real, non-default team capacity when reserving columns', () => {
+		mockDefMatrixDex();
+		const tbRoom = { curTeam: { capacity: 3 }, curSetList: [{ species: 'Blastoise', name: '' }] };
+		expect(computeTeamDefensiveProfile(tbRoom).members).toHaveLength(3);
 	});
 });
 
@@ -1240,6 +1266,14 @@ describe('defensiveTierClass', () => {
 	it('distinguishes a real double-resist (.25x, still hittable) from true immunity (0x)', () => {
 		expect(defensiveTierClass(0.25)).not.toBe(defensiveTierClass(0));
 	});
+
+	it('renders a still-open slot (null) as a plain uncolored cell, not immune', () => {
+		// A bare comparison would coerce null to 0 and wrongly fall through to the immune tier —
+		// the real bug this guards against (a still-empty slot reading as "immune to everything").
+		expect(defensiveTierClass(null)).toBe('');
+		expect(defensiveTierClass(undefined)).toBe('');
+		expect(defensiveTierClass(null)).not.toBe(defensiveTierClass(0));
+	});
 });
 
 describe('defensiveCellText', () => {
@@ -1250,6 +1284,11 @@ describe('defensiveCellText', () => {
 		expect(defensiveCellText(1)).toBe('1×');
 		expect(defensiveCellText(2)).toBe('2×');
 		expect(defensiveCellText(4)).toBe('4×');
+	});
+
+	it('writes nothing for a still-open slot (null)', () => {
+		expect(defensiveCellText(null)).toBe('');
+		expect(defensiveCellText(undefined)).toBe('');
 	});
 });
 
@@ -1279,6 +1318,22 @@ describe('buildTeamDefensiveProfileHTML', () => {
 		const profile = { members: [{ species: 'Blastoise', name: 'Blastoise' }], rows: [{ type: 'Fire', multipliers: [1] }] };
 		const html = buildTeamDefensiveProfileHTML(profile);
 		expect(html).toMatch(/<td class="cf-defmatrix-cell"><\/td>/);
+	});
+
+	it('renders a still-open slot with the shared empty-slot placeholder, no toggle affordance, and a blank cell', () => {
+		mockDefMatrixDex();
+		const profile = {
+			members: [
+				{ species: 'Blastoise', name: 'Blastoise', canToggle: false, displayAsMega: false, empty: false },
+				{ species: null, name: '', canToggle: false, displayAsMega: false, empty: true },
+			],
+			rows: [{ type: 'Fire', multipliers: [1, null] }],
+		};
+		const html = buildTeamDefensiveProfileHTML(profile);
+		expect(html).toContain('cf-similarteam-empty-slot'); // same placeholder Similar Teams already uses
+		expect(html).not.toContain('cf-defmatrix-member-toggleable');
+		expect(html).not.toContain('data-cf-defmatrix-member-idx="1"'); // no toggle handling for an empty slot
+		expect(html).toMatch(/<td class="cf-defmatrix-cell"><\/td>/); // the null-multiplier cell renders blank, not "immune"
 	});
 
 	it('marks a Mega-capable member with a persistent corner badge, not a title tooltip', () => {

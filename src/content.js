@@ -2641,20 +2641,34 @@
 	 *  exceptions, so silently dropping a row would read as "nobody asked about this type" rather
 	 *  than the real fact, "the whole team is neutral to it."
 	 *
-	 *  `baseFormeSlots` (a Set of 0-based indices into the *filtered* real-species roster, same
+	 *  `members` always has exactly `capacity` (tbRoom.curTeam.capacity, same fallback-to-6
+	 *  curTeamFull already uses) entries, real roster members first in their own curSetList order,
+	 *  then one `{species: null, empty: true, ...}` placeholder per still-open slot — the matrix
+	 *  reserves and reads as the team's full 6 columns from the very first Pokémon added, filling
+	 *  in left to right, rather than reflowing narrower and re-centering itself on every add (and
+	 *  the header row losing its own fixed column positions relative to the roster's own actual
+	 *  slot order in the process). An empty slot's own row of multipliers is `null` throughout —
+	 *  "nothing to compute," the same convention bestTeamCoverageMultiplier's own doc comment
+	 *  already establishes elsewhere in this file, not folded into the "genuinely neutral" 1x
+	 *  case even though defensiveTierClass/defensiveCellText render both the same (blank) way;
+	 *  the header cell's own empty-slot placeholder (buildTeamDefensiveProfileHTML) is what
+	 *  actually tells the two apart, so nothing here needs its own separate visual language.
+	 *
+	 *  `baseFormeSlots` (a Set of 0-based indices into the fixed `members` array above, same
 	 *  indexing buildTeamDefensiveProfileHTML's own data-cf-defmatrix-member-idx uses) is the
 	 *  UI's own per-slot toggle state (renderDefensiveProfileSection/onDefMatrixClick) for
 	 *  clicking a Mega member's sprite back to its base forme — a Pokémon actually IS still its
 	 *  base forme until it Mega Evolves mid-battle, so seeing both matchup profiles matters, not
 	 *  just the post-Mega one. Only ever affects a slot that's genuinely Mega-capable in the
-	 *  first place (`isMega` true) — real base-forme members build their own type/stat/ability
-	 *  data the exact same way whether or not their (irrelevant) index happens to be in the set,
-	 *  so a stale index left over from a since-changed roster slot is a harmless no-op, not
-	 *  something this function needs to detect and clear itself. */
+	 *  first place (`isMega` true) — real base-forme members (and empty slots) build their own
+	 *  type/stat/ability data the exact same way whether or not their (irrelevant) index happens
+	 *  to be in the set, so a stale index left over from a since-changed roster slot is a harmless
+	 *  no-op, not something this function needs to detect and clear itself. */
 	function computeTeamDefensiveProfile(tbRoom, baseFormeSlots) {
+		const capacity = (tbRoom.curTeam && tbRoom.curTeam.capacity) || 6;
 		const sets = (tbRoom.curSetList || []).filter((s) => s && s.species);
 		const naturalResolved = sets.map((set) => resolveSpeedSpectrumSpecies(set));
-		const members = naturalResolved.map((r, i) => {
+		const filledMembers = naturalResolved.map((r, i) => {
 			const showBase = r.isMega && baseFormeSlots && baseFormeSlots.has(i);
 			// NOT sets[i].species — that's only the real base forme name when the Mega was built
 			// as base species + a separate held Mega Stone item. Picked directly from search, the
@@ -2669,22 +2683,27 @@
 				const megaSpeciesData = window.Dex && window.Dex.species.get(r.species);
 				species = (megaSpeciesData && megaSpeciesData.exists && megaSpeciesData.baseSpecies) || sets[i].species;
 			}
-			return { species, name: sets[i].name || species, canToggle: r.isMega, displayAsMega: r.isMega && !showBase };
+			return { species, name: sets[i].name || species, canToggle: r.isMega, displayAsMega: r.isMega && !showBase, empty: false };
 		});
+		// A genuinely empty roster (nobody added yet) still shows buildTeamDefensiveProfileHTML's
+		// own "No Pokémon on your team yet." message, not a table of 6 empty placeholder columns
+		// with 18 rows of nothing-but-blank cells under them — the reserved-6-columns behavior
+		// below is about keeping a slot's own column steady *while building the team*, not about
+		// pre-drawing an empty grid before there's a team to build at all.
+		if (!filledMembers.length) return { members: [], rows: [] };
+		const members = Array.from({ length: capacity }, (_, i) =>
+			filledMembers[i] || { species: null, name: '', canToggle: false, displayAsMega: false, empty: true });
 		const memberTypes = members.map((m) => {
+			if (m.empty) return [];
 			const resolved = window.Dex && window.Dex.species.get(m.species);
 			return (resolved && resolved.exists && resolved.types) || [];
 		});
-		const memberAbilities = members.map((m, i) => resolveMemberAbility(sets[i], m.species, m.displayAsMega));
-		// An empty roster has no columns to fill a row with at all — 18 rows of empty multipliers
-		// would just be noise ahead of buildTeamDefensiveProfileHTML's own "No Pokémon on your
-		// team yet." message, not "the complete picture" every-type rule is meant to give when
-		// there's an actual roster to show it for.
-		const rows = members.length ? ALL_TYPES.map((type) => ({
+		const memberAbilities = members.map((m, i) => (m.empty ? undefined : resolveMemberAbility(sets[i], m.species, m.displayAsMega)));
+		const rows = ALL_TYPES.map((type) => ({
 			type,
-			multipliers: memberTypes.map((types, i) =>
-				applyDefensiveAbility(typeEffectivenessMultiplier(type, types), type, memberAbilities[i])),
-		})) : [];
+			multipliers: members.map((m, i) =>
+				m.empty ? null : applyDefensiveAbility(typeEffectivenessMultiplier(type, memberTypes[i]), type, memberAbilities[i])),
+		}));
 		return { members, rows };
 	}
 
@@ -2696,8 +2715,17 @@
 	 *  double-resist (.25x, two resisted types stacking) is an entirely ordinary, frequent result
 	 *  — worth its own distinct color from a single resist, not folded into
 	 *  coverageTierClass's own "resist" catch-all (which would otherwise misclassify it as
-	 *  immune, since coverageTierClass's last branch assumes anything below .5 must be 0). */
+	 *  immune, since coverageTierClass's last branch assumes anything below .5 must be 0).
+	 *
+	 *  `null`/`undefined` (computeTeamDefensiveProfile's own still-open-slot placeholder) returns
+	 *  the same empty string as a genuinely neutral 1x — "nothing to compute" and "computed and
+	 *  it's neutral" both render as a plain uncolored cell, same convention
+	 *  bestTeamCoverageMultiplier's own doc comment already establishes elsewhere in this file. A
+	 *  bare `mult >= 4`-style comparison would otherwise coerce null to 0 and wrongly fall through
+	 *  to the immune branch at the bottom — a still-empty slot reading as "immune to everything"
+	 *  is a real, misleading bug this guards against explicitly, not a hypothetical one. */
 	function defensiveTierClass(mult) {
+		if (mult === null || mult === undefined) return '';
 		if (mult >= 4) return 'cf-defmatrix-quadweak';
 		if (mult >= 2) return 'cf-defmatrix-weak';
 		if (mult >= 1) return '';
@@ -2709,8 +2737,11 @@
 	/** Plain text for one defensive matrix cell — '0' for immune (not '0×', shorter reads better
 	 *  in a narrow cell) and a fraction glyph for a sub-1 multiplier (¼/½) rather than '0.25×'/
 	 *  '0.5×', matching how Showdown's own UI and the wider competitive community write these
-	 *  numbers, not a decimal a player would have to stop and parse. */
+	 *  numbers, not a decimal a player would have to stop and parse. `null`/`undefined` (a
+	 *  still-open slot) renders as an empty string, same "nothing to compute" reasoning as
+	 *  defensiveTierClass's own doc comment. */
 	function defensiveCellText(mult) {
+		if (mult === null || mult === undefined) return '';
 		if (mult === 0) return '0';
 		if (mult === 0.25) return '¼×';
 		if (mult === 0.5) return '½×';
@@ -2912,7 +2943,15 @@
 	 *  a hover-only treatment or a native `title` tooltip — a hover/tooltip-only affordance is
 	 *  invisible until the user happens to mouse over a specific sprite among six, so nothing
 	 *  actually signals *which* members are Mega-capable at a glance. An ordinary member gets no
-	 *  badge at all — nothing to toggle, so no affordance implying otherwise. */
+	 *  badge at all — nothing to toggle, so no affordance implying otherwise.
+	 *
+	 *  A still-open slot (`m.empty`) gets the same dashed-outline placeholder Similar Teams
+	 *  already uses for the identical "reserve this column's position, nothing here yet" need
+	 *  (cf-similarteam-empty-slot) rather than its own new idiom — no toggle affordance (nothing
+	 *  Mega-capable to toggle), no click handling, just a column-shaped placeholder that keeps
+	 *  every later slot's own header lined up with its real position in the roster instead of the
+	 *  whole table reflowing narrower with every open slot, or shifting columns left each time a
+	 *  new Pokémon is added. */
 	function buildTeamDefensiveProfileHTML(profile) {
 		// The only case computeTeamDefensiveProfile ever returns an empty `rows` for — every type
 		// now always gets a row once there's an actual roster (own doc comment) — so there's no
@@ -2921,6 +2960,7 @@
 			return pikaSectionHTML('Defensive Profile', '<p class="cf-pika-empty">No Pokémon on your team yet.</p>');
 		}
 		const headerCells = profile.members.map((m, i) => {
+			if (m.empty) return '<th class="cf-defmatrix-member"><span class="picon cf-similarteam-empty-slot"></span></th>';
 			const icon = window.Dex ? window.Dex.getPokemonIcon(m.species) : '';
 			const cls = m.canToggle ? ' cf-defmatrix-member-toggleable' : '';
 			const attrs = m.canToggle ? ` data-cf-defmatrix-member-idx="${i}"` : '';
