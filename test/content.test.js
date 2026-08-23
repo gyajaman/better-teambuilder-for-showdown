@@ -63,7 +63,10 @@ function mockBattleDex() {
 		'blastoisinite': { exists: true, name: 'Blastoisinite', megaStone: { Blastoise: 'Blastoise-Mega' } },
 	};
 	const species = {
-		'blastoise-mega': { exists: true, name: 'Blastoise-Mega', baseStats: { hp: 79, atk: 103, def: 120, spa: 135, spd: 115, spe: 78 } },
+		'blastoise-mega': {
+			exists: true, name: 'Blastoise-Mega', battleOnly: true, baseSpecies: 'Blastoise',
+			baseStats: { hp: 79, atk: 103, def: 120, spa: 135, spd: 115, spe: 78 },
+		},
 	};
 	window.Dex = {
 		getPokemonIcon: (species) => `background:url(${species})`,
@@ -811,9 +814,14 @@ describe('resolveSpeedSpectrumSpecies', () => {
 		expect(resolveSpeedSpectrumSpecies({ species: 'Blastoise', item: 'Blastoisinite' })).toEqual({ species: 'Blastoise-Mega', isMega: true });
 	});
 
-	it('is a no-op when species is already the Mega forme itself (megaStone is keyed by the base species)', () => {
+	it('still reports isMega when species is already the Mega forme itself (megaStone is keyed by the base species, but battleOnly catches it)', () => {
 		mockBattleDex();
-		expect(resolveSpeedSpectrumSpecies({ species: 'Blastoise-Mega', item: 'Blastoisinite' })).toEqual({ species: 'Blastoise-Mega', isMega: false });
+		expect(resolveSpeedSpectrumSpecies({ species: 'Blastoise-Mega', item: 'Blastoisinite' })).toEqual({ species: 'Blastoise-Mega', isMega: true });
+	});
+
+	it('reports isMega for a Mega picked directly from species search, with no Mega Stone item at all', () => {
+		mockBattleDex();
+		expect(resolveSpeedSpectrumSpecies({ species: 'Blastoise-Mega' })).toEqual({ species: 'Blastoise-Mega', isMega: true });
 	});
 });
 
@@ -1126,6 +1134,14 @@ describe('computeTeamDefensiveProfile', () => {
 	it('resolves a Mega-Stone holder to the Mega forme before looking up its defensive types, defaulting to displaying as Mega', () => {
 		mockBattleDex();
 		const tbRoom = { curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', name: '' }] };
+		expect(computeTeamDefensiveProfile(tbRoom).members).toEqual([
+			{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', canToggle: true, displayAsMega: true },
+		]);
+	});
+
+	it('also allows toggling a Mega picked directly from species search, with no separate Mega Stone item', () => {
+		mockBattleDex();
+		const tbRoom = { curSetList: [{ species: 'Blastoise-Mega', name: '' }] };
 		expect(computeTeamDefensiveProfile(tbRoom).members).toEqual([
 			{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', canToggle: true, displayAsMega: true },
 		]);
@@ -1979,6 +1995,25 @@ describe('computeThreatReasons', () => {
 		expect(computeThreatReasons(threat, defender)).toEqual([
 			{ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: false },
 			{ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 80 },
+		]);
+	});
+
+	it('backfills a third, genuinely different move reason when the speed reason\'s own move is one of the top two by power', () => {
+		mockThreatsDex();
+		const moves = [
+			{ move: 'Water Spout', percent: '90', type: 'Water' }, // 150 power — top pick, also the speed reason's move
+			{ move: 'Wave Crash', percent: '80', type: 'Water' }, // 120 power — 2nd by power
+			{ move: 'Brave Bird', percent: '70', type: 'Flying' }, // 120 power — 3rd by power/percent tiebreak
+		];
+		const threat = { moves, baseSpeed: 150, scarfSpeed: null };
+		const defender = { types: ['weak'], speed: 100 };
+		// Excluding Water Spout (already named by the speed reason) has to happen before ranking
+		// down to the top two, not after — otherwise Brave Bird would be silently dropped even
+		// though there's room to show it alongside Wave Crash.
+		expect(computeThreatReasons(threat, defender)).toEqual([
+			{ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: false },
+			{ kind: 'move', move: 'Wave Crash', type: 'Water', percent: 80 },
+			{ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 70 },
 		]);
 	});
 

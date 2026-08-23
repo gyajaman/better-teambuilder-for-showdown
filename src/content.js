@@ -578,11 +578,19 @@
 	 *  1.5x is accounted for (stabAdjustedPower's own doc comment: a real reported case, a
 	 *  non-STAB Solar Beam outranking a real STAB Fire move on a Fire-type attacker). Usage
 	 *  still gates which moves are candidates at all (a real, commonly-used move, not just
-	 *  anything in the movepool) — it just isn't what orders them once they qualify. */
-	function computeThreatMoveReasons(moves, defenderTypes, ability, attackerTypes) {
+	 *  anything in the movepool) — it just isn't what orders them once they qualify.
+	 *
+	 *  `excludeMove` (optional) drops one move id from the candidate pool before ranking/slicing,
+	 *  not after — computeThreatReasons uses this to keep the speed reason's own move from also
+	 *  showing up as a move reason (see that function's own doc comment) without shrinking the
+	 *  result by one whenever that move happens to also be a top-`TEAM_THREATS_MAX_MOVE_REASONS`
+	 *  candidate: excluding post-hoc, after the slice, would silently drop a real 3rd-ranked move
+	 *  the caller has room to show instead of backfilling it. */
+	function computeThreatMoveReasons(moves, defenderTypes, ability, attackerTypes, excludeMove) {
 		const candidates = [];
 		for (const m of (moves || [])) {
 			if (!m || !m.move || !m.type) continue;
+			if (excludeMove && m.move === excludeMove) continue;
 			const percent = parseFloat(m.percent) || 0;
 			if (percent < TEAM_THREATS_MOVE_USAGE_MIN_PERCENT) continue;
 			if (!isDamagingMove(m.move)) continue;
@@ -706,8 +714,8 @@
 		const reasons = [];
 		const speedReason = computeThreatSpeedReason(threat, defender);
 		if (speedReason) reasons.push(speedReason);
-		const moveReasons = computeThreatMoveReasons(threat.moves, defender.types, threat.ability, threat.types)
-			.filter((r) => !speedReason || r.move !== speedReason.move);
+		const moveReasons = computeThreatMoveReasons(
+			threat.moves, defender.types, threat.ability, threat.types, speedReason && speedReason.move);
 		for (const r of moveReasons) reasons.push({ kind: 'move', move: r.move, type: r.type, percent: r.percent });
 		if (threat.atk && defender.def && (threat.atk / defender.def) >= TEAM_THREATS_STAT_RATIO_THRESHOLD &&
 			threatHasMoveOfCategory(threat.moves, 'Physical')) {
@@ -2515,19 +2523,25 @@
 	 *  the plotted dot and the domain's own floor/ceiling) has to come from the Mega forme's base
 	 *  stat, not the base forme's, the same substitution buildSpeedComparisonTooltipHTML's own
 	 *  Mega columns already make (see that function's own megaOptions comment). Covers both real
-	 *  ways to build a Mega on this file's own account (topSpeedItemBadge's own comment): picked
-	 *  directly from the species-search "-Mega" entry (set.species already says so) or built
-	 *  manually (base species, Mega Stone set as a separate item) — window.Dex.items.get(item)
-	 *  .megaStone is keyed by the *base* species name, so this is a harmless no-op, falling
-	 *  through to set.species unchanged, whenever species is already the Mega forme itself (that
-	 *  key simply won't match). Returns `{species, isMega}` rather than just the name — callers
-	 *  need to know *whether* a substitution happened, not just its result (see
-	 *  computeSpeedSpectrumDomain's own Mega-vs-Scarf comparison). */
+	 *  ways to build a Mega on this file's own account (topSpeedItemBadge's own comment): built
+	 *  manually (base species, Mega Stone set as a separate item — window.Dex.items.get(item)
+	 *  .megaStone, keyed by the *base* species name, matches) or picked directly from the
+	 *  species-search "-Mega" entry (set.species already says so, confirmed via species.battleOnly
+	 *  — the megaStone lookup alone can't catch this case, since that map is keyed by the base
+	 *  species name, not the Mega forme's own). Returns `{species, isMega}` rather than just the
+	 *  name — callers need to know *whether* a substitution happened, not just its result (see
+	 *  computeSpeedSpectrumDomain's own Mega-vs-Scarf comparison, and computeTeamDefensiveProfile's
+	 *  own canToggle, which needs isMega true for a directly-picked Mega just as much as for one
+	 *  built via a separate Mega Stone item). */
 	function resolveSpeedSpectrumSpecies(set) {
 		if (window.Dex && set.item) {
 			const itemData = window.Dex.items.get(set.item);
 			const forme = itemData && itemData.megaStone && itemData.megaStone[set.species];
 			if (forme) return { species: forme, isMega: true };
+		}
+		if (window.Dex) {
+			const species = window.Dex.species.get(set.species);
+			if (species && species.exists && species.battleOnly) return { species: set.species, isMega: true };
 		}
 		return { species: set.species, isMega: false };
 	}
@@ -3794,6 +3808,16 @@
 					// whether the box still needs more pages loaded — a resize can make an
 					// already-scrolled box tall enough to stop overflowing, which would otherwise
 					// silently stall pagination since no more `scroll` events would ever fire.
+					//
+					// Also invalidates any loadMoreSimilarTeams fetch already in flight — it
+					// captured the *old* `.cf-pika-rows` node before this redraw replaces it below,
+					// so letting that fetch's own now-stale token still match on resolve would have
+					// it insertAdjacentHTML onto a detached node: the fetched page would be silently
+					// invisible even though it's still concatenated into lastSimilarTeamsMatches,
+					// desyncing every later row's data-cf-similarteam-idx from its real array index.
+					// Bumping the token here makes that fetch's own staleness check correctly no-op
+					// instead — the next scroll/fill re-fetches that same page against a fresh node.
+					similarTeamsRenderToken++;
 					const oldRowsEl = panelEl.querySelector('.cf-pika-rows');
 					const oldScrollTop = oldRowsEl ? oldRowsEl.scrollTop : 0;
 					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(lastSimilarTeamsMatches, curRosterSpeciesOrder(tbRoom)));
@@ -4270,11 +4294,24 @@
 					threatsEl.innerHTML = buildTeamThreatsSectionHTML([]);
 					return;
 				}
-				Promise.all(ranked.map((t) => window.CF_Pikalytics.getSpeciesData(formatId, t.pokemon))).then((mons) => {
+				// Returned (not fire-and-forget) so a rejection/throw in here is caught by the
+				// .catch below too, not just the outer Promise.all's own — without this, an error
+				// here would be an unhandled rejection this function never learns about at all.
+				return Promise.all(ranked.map((t) => window.CF_Pikalytics.getSpeciesData(formatId, t.pokemon))).then((mons) => {
 					if (token !== teamThreatsRenderToken) return; // superseded by a newer render
 					lastTeamThreats = ranked.map((t, i) => enrichTeamThreat(tbRoom, t, mons[i]));
 					threatsEl.innerHTML = buildTeamThreatsSectionHTML(lastTeamThreats);
 				});
+			}).catch((e) => {
+				if (token !== teamThreatsRenderToken) return; // superseded by a newer render
+				// Clears the key (rather than leaving it set) so the next real render attempt —
+				// a roster/format change, or just reopening this screen — retries from scratch
+				// instead of the guard at this function's own top silently treating the failed
+				// key as "already showing (or loading)" forever.
+				delete threatsEl.dataset.cfTeamThreatsKey;
+				lastTeamThreats = null;
+				console.error('[Better Teambuilder] Team threats lookup failed:', e);
+				threatsEl.innerHTML = pikaSectionHTML('Biggest Threats', '<p class="cf-pika-empty">Failed to load.</p>');
 			});
 		}
 		// onMouseOver needs the currently-rendered, already-enriched threats by square index
