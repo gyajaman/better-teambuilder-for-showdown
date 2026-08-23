@@ -412,9 +412,9 @@
 	/** How much higher a threat's real computed offensive stat has to be than the defending
 	 *  team member's real computed defensive stat before computeThreatReasons below calls it
 	 *  out as a stat-based reason (as opposed to genuinely comparable stats that just happen to
-	 *  differ a little) — 1.3 meaning "at least 30% higher." Same "starting guess" caveat as
+	 *  differ a little) — 1.5 meaning "at least 50% higher." Same "starting guess" caveat as
 	 *  TEAM_THREATS_MOVE_USAGE_MIN_PERCENT above. */
-	const TEAM_THREATS_STAT_RATIO_THRESHOLD = 1.3;
+	const TEAM_THREATS_STAT_RATIO_THRESHOLD = 1.5;
 	/** How many distinct super-effective moves computeThreatMoveReasons is willing to name at
 	 *  once — a real threat can have more than one genuinely dangerous option (own doc comment
 	 *  on why usage alone was the wrong ranking), and showing a couple is worth the extra table

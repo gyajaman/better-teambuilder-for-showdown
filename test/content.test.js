@@ -2059,7 +2059,7 @@ describe('computeThreatReasons', () => {
 	it('omits a stat reason when the ratio does not clear the threshold', () => {
 		mockThreatsDex();
 		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], atk: 60, spa: 100 };
-		const defender = { types: ['neutral'], def: 100, spd: 90 }; // 100/90 = 1.11, below 1.3
+		const defender = { types: ['neutral'], def: 100, spd: 90 }; // 100/90 = 1.11, below 1.5
 		expect(computeThreatReasons(threat, defender)).toEqual([]);
 	});
 
