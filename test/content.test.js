@@ -19,6 +19,13 @@ const {
 	buildSpreadsSection, buildTeammatesSection,
 	computeSpeedSpectrumEntries, computeSpeedSpectrumDomain, resolveSpeedSpectrumSpecies,
 	assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
+	ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, applyDefensiveAbility, resolveMemberAbility,
+	computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
+	aggregateTeamThreats, isDamagingMove, effectiveMoveType, computeThreatMoveReason, computeThreatSpeedReason,
+	threatHasMoveOfCategory,
+	computeThreatReasons,
+	enrichTeamThreat, buildTeamThreatSquareHTML, buildTeamThreatsSectionHTML,
+	buildTeamThreatReasonCellHTML, buildTeamThreatTooltipHTML,
 	buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
 	buildSpeciesPreviewTooltipHTML, patchDexSearch,
 } = require('../src/content.js');
@@ -1014,6 +1021,242 @@ describe('buildSpeedSpectrumHTML', () => {
 	});
 });
 
+/** Minimal window.Dex for computeTeamDefensiveProfile/buildTeamDefensiveProfileHTML tests — a
+ *  hand-picked slice giving each of two species exactly one real weakness/resistance, everything
+ *  else left to typeEffectivenessMultiplier's own neutral default, the same "small, internally
+ *  consistent, not the real type chart" approach mockThreatsDex takes. */
+function mockDefMatrixDex() {
+	const types = {
+		water: { exists: true, damageTaken: { Electric: 1 } }, // weak to Electric (2x)
+		grass: { exists: true, damageTaken: { Fire: 1, Water: 2 } }, // weak to Fire (2x), resists Water (.5x)
+	};
+	const species = {
+		blastoise: { exists: true, types: ['Water'] },
+		sceptile: { exists: true, types: ['Grass'] },
+	};
+	window.Dex = {
+		getPokemonIcon: (s) => `background:url(${s})`,
+		getTypeIcon: (t) => `<img alt="${t}">`,
+		types: { get: (name) => types[String(name).toLowerCase()] || { exists: false } },
+		species: { get: (name) => species[String(name).toLowerCase()] || { exists: false } },
+	};
+}
+
+describe('ALL_TYPES', () => {
+	it('lists all 18 real types, each exactly once', () => {
+		expect(ALL_TYPES).toHaveLength(18);
+		expect(new Set(ALL_TYPES).size).toBe(18);
+	});
+});
+
+describe('DEFENSIVE_ABILITY_IMMUNITIES', () => {
+	it('lists exactly the 11 real flat-type-immunity abilities (verified against pokemon-showdown\'s own data/abilities.ts)', () => {
+		expect(DEFENSIVE_ABILITY_IMMUNITIES).toEqual({
+			waterabsorb: 'Water', dryskin: 'Water', stormdrain: 'Water',
+			voltabsorb: 'Electric', lightningrod: 'Electric', motordrive: 'Electric',
+			flashfire: 'Fire', wellbakedbody: 'Fire',
+			sapsipper: 'Grass',
+			levitate: 'Ground', eartheater: 'Ground',
+		});
+	});
+});
+
+describe('applyDefensiveAbility', () => {
+	it('zeroes out the one type each real immunity ability blocks', () => {
+		expect(applyDefensiveAbility(1, 'Water', 'Water Absorb')).toBe(0);
+		expect(applyDefensiveAbility(2, 'Water', 'Dry Skin')).toBe(0);
+		expect(applyDefensiveAbility(1, 'Water', 'Storm Drain')).toBe(0);
+		expect(applyDefensiveAbility(1, 'Electric', 'Volt Absorb')).toBe(0);
+		expect(applyDefensiveAbility(1, 'Electric', 'Lightning Rod')).toBe(0);
+		expect(applyDefensiveAbility(1, 'Electric', 'Motor Drive')).toBe(0);
+		expect(applyDefensiveAbility(2, 'Fire', 'Flash Fire')).toBe(0);
+		expect(applyDefensiveAbility(1, 'Fire', 'Well-Baked Body')).toBe(0);
+		expect(applyDefensiveAbility(1, 'Grass', 'Sap Sipper')).toBe(0);
+		expect(applyDefensiveAbility(1, 'Ground', 'Levitate')).toBe(0);
+		expect(applyDefensiveAbility(1, 'Ground', 'Earth Eater')).toBe(0);
+	});
+
+	it('leaves every other type unaffected by a real immunity ability', () => {
+		expect(applyDefensiveAbility(2, 'Grass', 'Water Absorb')).toBe(2); // Water Absorb doesn't touch Grass
+		expect(applyDefensiveAbility(0.5, 'Ground', 'Flash Fire')).toBe(0.5); // Flash Fire only blocks Fire
+	});
+
+	it('passes the raw multiplier through unchanged with no ability, an unrelated one, or a resistance-only one (Thick Fat)', () => {
+		expect(applyDefensiveAbility(2, 'Water', '')).toBe(2);
+		expect(applyDefensiveAbility(2, 'Water', 'Intimidate')).toBe(2);
+		expect(applyDefensiveAbility(2, 'Fire', 'Thick Fat')).toBe(2); // real mechanic is a 0.5x modifier, not modeled here
+	});
+
+	it('applies Wonder Guard\'s own rule instead — everything below super effective becomes 0', () => {
+		expect(applyDefensiveAbility(1, 'Normal', 'Wonder Guard')).toBe(0); // neutral -> blocked
+		expect(applyDefensiveAbility(0.5, 'Fire', 'Wonder Guard')).toBe(0); // resisted -> blocked
+		expect(applyDefensiveAbility(0, 'Ground', 'Wonder Guard')).toBe(0); // already immune -> still 0
+		expect(applyDefensiveAbility(2, 'Ice', 'Wonder Guard')).toBe(2); // super effective -> passes through real
+		expect(applyDefensiveAbility(4, 'Rock', 'Wonder Guard')).toBe(4); // quad -> passes through real
+	});
+});
+
+describe('computeTeamDefensiveProfile', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('returns empty members/rows for an empty roster', () => {
+		expect(computeTeamDefensiveProfile({ curSetList: [] })).toEqual({ members: [], rows: [] });
+	});
+
+	it('skips blank slots, includes only types where at least one member deviates from neutral, in ALL_TYPES order', () => {
+		mockDefMatrixDex();
+		const tbRoom = { curSetList: [{ species: 'Blastoise', name: '' }, { species: '' }, { species: 'Sceptile', name: '' }] };
+		const profile = computeTeamDefensiveProfile(tbRoom);
+		expect(profile.members).toEqual([
+			{ species: 'Blastoise', name: 'Blastoise', canToggle: false, displayAsMega: false },
+			{ species: 'Sceptile', name: 'Sceptile', canToggle: false, displayAsMega: false },
+		]);
+		expect(profile.rows.map((r) => r.type)).toEqual(['Fire', 'Water', 'Electric']); // ALL_TYPES order, not alphabetical
+		expect(profile.rows.find((r) => r.type === 'Fire').multipliers).toEqual([1, 2]); // neutral vs Blastoise, weak vs Sceptile
+		expect(profile.rows.find((r) => r.type === 'Water').multipliers).toEqual([1, 0.5]); // neutral vs Blastoise, resisted vs Sceptile
+		expect(profile.rows.find((r) => r.type === 'Electric').multipliers).toEqual([2, 1]); // weak vs Blastoise, neutral vs Sceptile
+	});
+
+	it('omits a type row entirely when every member is exactly neutral to it', () => {
+		mockDefMatrixDex();
+		const profile = computeTeamDefensiveProfile({ curSetList: [{ species: 'Blastoise', name: '' }] });
+		expect(profile.rows.some((r) => r.type === 'Normal')).toBe(false); // nothing in the fixture touches Normal
+	});
+
+	it('resolves a Mega-Stone holder to the Mega forme before looking up its defensive types, defaulting to displaying as Mega', () => {
+		mockBattleDex();
+		const tbRoom = { curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', name: '' }] };
+		expect(computeTeamDefensiveProfile(tbRoom).members).toEqual([
+			{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', canToggle: true, displayAsMega: true },
+		]);
+	});
+
+	it('shows the real base forme instead when that slot\'s index is in baseFormeSlots', () => {
+		mockBattleDex();
+		const tbRoom = { curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', ability: 'Torrent', name: '' }] };
+		const profile = computeTeamDefensiveProfile(tbRoom, new Set([0]));
+		expect(profile.members).toEqual([
+			{ species: 'Blastoise', name: 'Blastoise', canToggle: true, displayAsMega: false },
+		]);
+	});
+
+	it('ignores a baseFormeSlots index that isn\'t actually Mega-capable — a harmless no-op', () => {
+		mockDefMatrixDex();
+		const tbRoom = { curSetList: [{ species: 'Blastoise', name: '' }] };
+		const profile = computeTeamDefensiveProfile(tbRoom, new Set([0]));
+		expect(profile.members).toEqual([
+			{ species: 'Blastoise', name: 'Blastoise', canToggle: false, displayAsMega: false },
+		]);
+	});
+
+	it('folds a real held ability\'s immunity into the multiplier — Water Absorb blocks Water outright', () => {
+		mockDefMatrixDex();
+		const tbRoom = { curSetList: [{ species: 'Blastoise', name: '', ability: 'Water Absorb' }, { species: 'Sceptile', name: '' }] };
+		const profile = computeTeamDefensiveProfile(tbRoom);
+		// Water: Blastoise would normally be neutral (1x), but Water Absorb makes it 0 — still a
+		// real row (Sceptile's own .5x keeps it non-neutral), just with the ability's own 0 for
+		// the Blastoise column instead of typing alone.
+		expect(profile.rows.find((r) => r.type === 'Water').multipliers).toEqual([0, 0.5]);
+	});
+
+	it('uses a real Mega Evolution\'s own fixed ability, not the base set\'s chosen one', () => {
+		window.Dex = {
+			items: { get: (name) => (String(name).toLowerCase() === 'blastoisinite' ? { exists: true, megaStone: { Blastoise: 'Blastoise-Mega' } } : { exists: false }) },
+			types: { get: () => ({ exists: false }) }, // irrelevant to this test — isolates the ability override from real type-chart math
+			species: { get: (name) => (name === 'Blastoise-Mega' ? { exists: true, types: ['Water'], abilities: { 0: 'Water Absorb' } } : { exists: false }) },
+		};
+		const tbRoom = { curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', ability: 'Torrent', name: '' }] };
+		const profile = computeTeamDefensiveProfile(tbRoom);
+		// Torrent (the base set's own chosen ability, ignored here) does nothing to Water; Water
+		// Absorb (the Mega's own real, fixed ability) is what actually applies. If the base
+		// ability had been used instead this row wouldn't exist at all — nothing in this test's
+		// bare-neutral type mock produces a non-1x result on its own.
+		expect(profile.rows.find((r) => r.type === 'Water').multipliers).toEqual([0]);
+	});
+});
+
+describe('resolveMemberAbility', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('returns the set\'s own chosen ability unchanged for a non-Mega member', () => {
+		expect(resolveMemberAbility({ ability: 'Torrent' }, 'Blastoise', false)).toBe('Torrent');
+	});
+
+	it('overrides with the Mega forme\'s own real fixed ability when isMega is true', () => {
+		window.Dex = { species: { get: (name) => (name === 'Blastoise-Mega' ? { exists: true, abilities: { 0: 'Mega Launcher' } } : { exists: false }) } };
+		expect(resolveMemberAbility({ ability: 'Torrent' }, 'Blastoise-Mega', true)).toBe('Mega Launcher');
+	});
+
+	it('falls back to the set\'s own ability if the Mega species entry has no abilities data', () => {
+		window.Dex = { species: { get: () => ({ exists: false }) } };
+		expect(resolveMemberAbility({ ability: 'Torrent' }, 'Blastoise-Mega', true)).toBe('Torrent');
+	});
+
+	it('falls back to the set\'s own ability without window.Dex at all', () => {
+		expect(resolveMemberAbility({ ability: 'Torrent' }, 'Blastoise-Mega', true)).toBe('Torrent');
+	});
+});
+
+describe('defensiveTierClass', () => {
+	it('maps all six discrete type-chart products to their own tier', () => {
+		expect(defensiveTierClass(4)).toBe('cf-defmatrix-quadweak');
+		expect(defensiveTierClass(2)).toBe('cf-defmatrix-weak');
+		expect(defensiveTierClass(1)).toBe('');
+		expect(defensiveTierClass(0.5)).toBe('cf-defmatrix-resist');
+		expect(defensiveTierClass(0.25)).toBe('cf-defmatrix-quadresist');
+		expect(defensiveTierClass(0)).toBe('cf-defmatrix-immune');
+	});
+
+	it('distinguishes a real double-resist (.25x, still hittable) from true immunity (0x)', () => {
+		expect(defensiveTierClass(0.25)).not.toBe(defensiveTierClass(0));
+	});
+});
+
+describe('defensiveCellText', () => {
+	it('writes 0/¼×/½× for the three sub-1 multipliers, and a plain ×-suffixed number otherwise', () => {
+		expect(defensiveCellText(0)).toBe('0');
+		expect(defensiveCellText(0.25)).toBe('¼×');
+		expect(defensiveCellText(0.5)).toBe('½×');
+		expect(defensiveCellText(1)).toBe('1×');
+		expect(defensiveCellText(2)).toBe('2×');
+		expect(defensiveCellText(4)).toBe('4×');
+	});
+});
+
+describe('buildTeamDefensiveProfileHTML', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('shows the empty-state message with no roster at all', () => {
+		expect(buildTeamDefensiveProfileHTML({ members: [], rows: [] })).toContain('No Pokémon on your team yet.');
+	});
+
+	it('shows a distinct message when the roster has no notable weaknesses/resistances', () => {
+		const html = buildTeamDefensiveProfileHTML({ members: [{ species: 'Blastoise', name: 'Blastoise' }], rows: [] });
+		expect(html).toContain('No notable team-wide weaknesses or resistances.');
+	});
+
+	it('renders one header cell per member and one row per type, with a colored/labeled non-neutral cell', () => {
+		mockDefMatrixDex();
+		const profile = {
+			members: [{ species: 'Blastoise', name: 'Blastoise' }, { species: 'Sceptile', name: 'Sceptile' }],
+			rows: [{ type: 'Fire', multipliers: [1, 2] }],
+		};
+		const html = buildTeamDefensiveProfileHTML(profile);
+		expect(html).toContain('background:url(Blastoise)');
+		expect(html).toContain('background:url(Sceptile)');
+		expect(html).toContain('<img alt="Fire">');
+		expect(html).toContain('cf-defmatrix-weak');
+		expect(html).toContain('2×');
+	});
+
+	it('renders a neutral (1x) cell blank, with no tier class', () => {
+		mockDefMatrixDex();
+		const profile = { members: [{ species: 'Blastoise', name: 'Blastoise' }], rows: [{ type: 'Fire', multipliers: [1] }] };
+		const html = buildTeamDefensiveProfileHTML(profile);
+		expect(html).toMatch(/<td class="cf-defmatrix-cell"><\/td>/);
+	});
+});
+
 describe('isBlankSlot', () => {
 	it('is true for a real, currently-open slot with no species/name yet', () => {
 		expect(isBlankSlot({ curSet: { species: '', name: '' } })).toBe(true);
@@ -1108,13 +1351,17 @@ describe('bestTeamCoverageMultiplier', () => {
 });
 
 describe('coverageTierClass', () => {
-	it('maps the discrete type-chart products to the five documented tiers', () => {
+	it('maps the discrete type-chart products to the six documented tiers', () => {
 		expect(coverageTierClass(4)).toBe('cf-coverage-quad');
 		expect(coverageTierClass(2)).toBe('cf-coverage-super');
 		expect(coverageTierClass(1)).toBe('');
 		expect(coverageTierClass(0.5)).toBe('cf-coverage-resist');
-		expect(coverageTierClass(0.25)).toBe('cf-coverage-immune');
+		expect(coverageTierClass(0.25)).toBe('cf-coverage-quadresist');
 		expect(coverageTierClass(0)).toBe('cf-coverage-immune');
+	});
+
+	it('distinguishes a real double-resist (.25x, still hittable) from true immunity (0x)', () => {
+		expect(coverageTierClass(0.25)).not.toBe(coverageTierClass(0));
 	});
 
 	it('is also the neutral (no) class for "nothing to compute" (null)', () => {
@@ -1210,6 +1457,640 @@ describe('aggregateTopTeams', () => {
 
 	it('ignores malformed entries without a pokemon array', () => {
 		expect(aggregateTopTeams([{ author: 'Ash' }], ['incineroar'])).toEqual([]);
+	});
+});
+
+describe('aggregateTeamThreats', () => {
+	it('weights a lower-ranked (more severe) counter higher than a higher-ranked one', () => {
+		const threats = aggregateTeamThreats([
+			{ member: 'Incineroar', counters: [{ pokemon: 'Staraptor', rank: 1 }] },
+			{ member: 'Garchomp', counters: [{ pokemon: 'Sylveon', rank: 10 }] },
+		]);
+		expect(threats.map((t) => t.pokemon)).toEqual(['Staraptor', 'Sylveon']); // rank 1 (weight 10) outranks rank 10 (weight 1)
+	});
+
+	it('sums score across every member a threat counters, not just counting appearances', () => {
+		const threats = aggregateTeamThreats([
+			{ member: 'Incineroar', counters: [{ pokemon: 'Staraptor', rank: 5 }] }, // weight 6
+			{ member: 'Garchomp', counters: [{ pokemon: 'Staraptor', rank: 8 }] }, // weight 3
+			{ member: 'Rillaboom', counters: [{ pokemon: 'Sylveon', rank: 1 }] }, // weight 10
+		]);
+		expect(threats[0].pokemon).toBe('Sylveon'); // single severe threat (10) beats two mild ones (6+3=9)
+		expect(threats[0].score).toBe(10);
+		expect(threats[1]).toMatchObject({ pokemon: 'Staraptor', score: 9 });
+		expect(threats[1].members).toEqual(['Incineroar', 'Garchomp']);
+	});
+
+	it('breaks a score tie by how many members it threatens, then by name', () => {
+		const threats = aggregateTeamThreats([
+			{ member: 'A', counters: [{ pokemon: 'Zapdos', rank: 1 }] }, // weight 10
+			{ member: 'B', counters: [{ pokemon: 'Raichu', rank: 5 }] }, // weight 6
+			{ member: 'C', counters: [{ pokemon: 'Raichu', rank: 5 }] }, // weight 6 -> Raichu totals 12
+		]);
+		// Zapdos (10, 1 member) vs Raichu (12, 2 members): Raichu's higher score wins outright.
+		expect(threats.map((t) => t.pokemon)).toEqual(['Raichu', 'Zapdos']);
+	});
+
+	it('collapses a Mega/base-forme counter reported under two different names into one threat', () => {
+		window.CF_Pikalytics = { resolveQuerySpecies: (n) => n.replace('-Mega', '') }; // baseSpeciesID's own doc comment
+		const threats = aggregateTeamThreats([
+			{ member: 'Incineroar', counters: [{ pokemon: 'Blastoise-Mega', rank: 2 }] },
+			{ member: 'Garchomp', counters: [{ pokemon: 'Blastoise', rank: 3 }] },
+		]);
+		delete window.CF_Pikalytics;
+		expect(threats).toHaveLength(1);
+		expect(threats[0].score).toBe(9 + 8); // rank 2 -> weight 9, rank 3 -> weight 8
+		expect(threats[0].members).toEqual(['Incineroar', 'Garchomp']);
+	});
+
+	it('ignores members with no counters data and malformed counter entries', () => {
+		const threats = aggregateTeamThreats([
+			{ member: 'Incineroar', counters: null },
+			{ member: 'Garchomp', counters: [null, {}, { pokemon: 'Staraptor' }, { pokemon: 'Sylveon', rank: 1 }] },
+		]);
+		expect(threats.map((t) => t.pokemon)).toEqual(['Sylveon']);
+	});
+
+	it('returns nothing for an empty roster', () => {
+		expect(aggregateTeamThreats([])).toEqual([]);
+		expect(aggregateTeamThreats(undefined)).toEqual([]);
+	});
+});
+
+/** Minimal window.Dex for the threat-reasons tests below — deliberately its own small fixture
+ *  rather than reusing the file's shared mockBattleDex() (defined near the top), since these
+ *  tests need a Special move and specific type matchups mockBattleDex doesn't define, and
+ *  extending a fixture 30+ other tests share is worth avoiding when a local one is this cheap. */
+function mockThreatsDex() {
+	const moves = {
+		'water spout': { exists: true, type: 'Water', category: 'Special' },
+		'brave bird': { exists: true, type: 'Flying', category: 'Physical' },
+		'protect': { exists: true, type: 'Normal', category: 'Status' },
+		// Fictional type assignment (real Detect is Fighting-type) — deliberately given the
+		// same type as Water Spout above so a test can prove a Status move is excluded on its
+		// own real category, not incidentally excluded for lacking a qualifying type. Mirrors
+		// the real bug this guards against: Detect showing as a reason to fear a Water-weak
+		// defender purely because Pikalytics' own move data tags every move with a type,
+		// Status moves included, with nothing marking "but this one deals zero damage."
+		'detect': { exists: true, type: 'Water', category: 'Status' },
+		// Real moves, real shape (type/category/flags) — for effectiveMoveType's own ability/
+		// weather tests below.
+		'hyper voice': { exists: true, type: 'Normal', category: 'Special', flags: { sound: 1 } },
+		'weather ball': { exists: true, type: 'Normal', category: 'Special' },
+	};
+	// Fictional defender types, not the real type chart — 'weak' takes super-effective (2x)
+	// damage from both Water and Flying (damageTaken code 1, per typeEffectivenessMultiplier's
+	// own DAMAGE_TAKEN_MULTIPLIERS), 'neutral' takes exactly 1x from everything (an unlisted
+	// attacking type defaults to code 0 -> neutral, same as a real Dex.types entry), 'resists'
+	// takes resisted (0.5x, code 2) damage from Water specifically. 'fairyweak'/'fireweak' are
+	// super-effective against Fairy/Fire specifically (and nothing else, Normal included) — for
+	// proving an ability/weather type conversion is what actually made a move qualify, not the
+	// move's own original type.
+	const types = {
+		weak: { exists: true, damageTaken: { Water: 1, Flying: 1 } },
+		neutral: { exists: true, damageTaken: {} },
+		resists: { exists: true, damageTaken: { Water: 2 } },
+		fairyweak: { exists: true, damageTaken: { Fairy: 1 } },
+		fireweak: { exists: true, damageTaken: { Fire: 1 } },
+	};
+	window.Dex = {
+		getPokemonIcon: (species) => `background:url(${species})`,
+		getTypeIcon: (type) => `<img alt="${type}">`,
+		moves: { get: (name) => moves[String(name).toLowerCase()] || { exists: false } },
+		types: { get: (name) => types[String(name).toLowerCase()] || { exists: false } },
+	};
+}
+
+describe('effectiveMoveType', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('leaves a move\'s type unchanged with no ability, an unrelated one, or no window.Dex', () => {
+		expect(effectiveMoveType('Hyper Voice', 'Normal', '')).toBe('Normal');
+		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Intimidate')).toBe('Normal');
+		mockThreatsDex();
+		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Intimidate')).toBe('Normal');
+	});
+
+	it('turns a Normal move into the ability\'s own type — Pixilate: Fairy (Sylveon\'s real case)', () => {
+		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Pixilate')).toBe('Fairy');
+	});
+
+	it('does the same for Aerilate/Galvanize/Refrigerate', () => {
+		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Aerilate')).toBe('Flying');
+		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Galvanize')).toBe('Electric');
+		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Refrigerate')).toBe('Ice');
+	});
+
+	it('never converts a move that isn\'t actually Normal-type, even with a converting ability', () => {
+		expect(effectiveMoveType('Water Spout', 'Water', 'Pixilate')).toBe('Water');
+	});
+
+	it('Normalize converts any move to Normal, not just Normal ones', () => {
+		expect(effectiveMoveType('Water Spout', 'Water', 'Normalize')).toBe('Normal');
+	});
+
+	it('Liquid Voice converts a sound-flagged move to Water, real move flags checked via window.Dex', () => {
+		mockThreatsDex();
+		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Liquid Voice')).toBe('Water');
+		expect(effectiveMoveType('Water Spout', 'Water', 'Liquid Voice')).toBe('Water'); // already Water, no-op either way
+	});
+
+	it('Liquid Voice leaves a non-sound move alone', () => {
+		mockThreatsDex();
+		expect(effectiveMoveType('Brave Bird', 'Flying', 'Liquid Voice')).toBe('Flying');
+	});
+
+	it('leaves Liquid Voice\'s own sound check unresolved (no conversion) without window.Dex to check flags against', () => {
+		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Liquid Voice')).toBe('Normal');
+	});
+
+	it('excludes Weather Ball from every type-converting ability — it resolves its own type below instead', () => {
+		expect(effectiveMoveType('Weather Ball', 'Normal', 'Pixilate')).toBe('Normal'); // no weather-setter, no conversion either way
+	});
+
+	it('sets Weather Ball\'s real type from the weather its own ability sets — Drought: Fire (Charizard\'s real case)', () => {
+		expect(effectiveMoveType('Weather Ball', 'Normal', 'Drought')).toBe('Fire');
+	});
+
+	it('does the same for the other three weather-setters', () => {
+		expect(effectiveMoveType('Weather Ball', 'Normal', 'Drizzle')).toBe('Water');
+		expect(effectiveMoveType('Weather Ball', 'Normal', 'Sand Stream')).toBe('Rock');
+		expect(effectiveMoveType('Weather Ball', 'Normal', 'Snow Warning')).toBe('Ice');
+	});
+
+	it('leaves Weather Ball at its own listed type with no weather-setting ability', () => {
+		expect(effectiveMoveType('Weather Ball', 'Normal', 'Blaze')).toBe('Normal');
+		expect(effectiveMoveType('Weather Ball', 'Normal', '')).toBe('Normal');
+	});
+});
+
+describe('isDamagingMove', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('is true for a real Physical/Special move', () => {
+		mockThreatsDex();
+		expect(isDamagingMove('Water Spout')).toBe(true);
+		expect(isDamagingMove('Brave Bird')).toBe(true);
+	});
+
+	it('is false for a real Status move, regardless of its own flavor type', () => {
+		mockThreatsDex();
+		expect(isDamagingMove('Protect')).toBe(false);
+		expect(isDamagingMove('Detect')).toBe(false);
+	});
+
+	it('is false without window.Dex — an unverifiable claim is worse than a skipped one', () => {
+		expect(isDamagingMove('Water Spout')).toBe(false);
+	});
+
+	it('is false for a move Dex doesn\'t recognize', () => {
+		mockThreatsDex();
+		expect(isDamagingMove('Not A Real Move')).toBe(false);
+	});
+});
+
+describe('computeThreatMoveReason', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('picks the highest-usage move that is both commonly used and super effective', () => {
+		mockThreatsDex();
+		const moves = [
+			{ move: 'Protect', percent: '90', type: 'Normal' }, // common, but not super effective (1x)
+			{ move: 'Water Spout', percent: '40', type: 'Water' }, // super effective, lower usage
+			{ move: 'Brave Bird', percent: '75', type: 'Flying' }, // super effective, highest usage
+		];
+		const reason = computeThreatMoveReason(moves, ['weak']);
+		expect(reason).toEqual({ move: 'Brave Bird', type: 'Flying', percent: 75 });
+	});
+
+	it('ignores a super-effective move below the commonly-used usage threshold', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Water Spout', percent: '10', type: 'Water' }]; // below 20%
+		expect(computeThreatMoveReason(moves, ['weak'])).toBeNull();
+	});
+
+	it('returns null when nothing is super effective', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Protect', percent: '90', type: 'Normal' }];
+		expect(computeThreatMoveReason(moves, ['weak'])).toBeNull();
+	});
+
+	it('never credits a Status move, even one whose own flavor type would otherwise be super effective (the real Detect-vs-Tyranitar bug)', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Detect', percent: '90', type: 'Water' }]; // Status — see mockThreatsDex's own comment
+		expect(computeThreatMoveReason(moves, ['weak'])).toBeNull();
+	});
+
+	it('checks a move\'s real effective type, not its bare listed one — Pixilate Sylveon\'s Hyper Voice reads as Fairy', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Hyper Voice', percent: '90', type: 'Normal' }];
+		// 'fairyweak' is only super effective against Fairy — Normal alone wouldn't qualify.
+		expect(computeThreatMoveReason(moves, ['fairyweak'], 'Pixilate')).toEqual({ move: 'Hyper Voice', type: 'Fairy', percent: 90 });
+		expect(computeThreatMoveReason(moves, ['fairyweak'])).toBeNull(); // no ability given -> stays Normal, doesn't qualify
+	});
+
+	it('checks Weather Ball\'s real weather-driven type — Drought Charizard\'s Weather Ball reads as Fire', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Weather Ball', percent: '90', type: 'Normal' }];
+		expect(computeThreatMoveReason(moves, ['fireweak'], 'Drought')).toEqual({ move: 'Weather Ball', type: 'Fire', percent: 90 });
+		expect(computeThreatMoveReason(moves, ['fireweak'])).toBeNull(); // no weather-setter -> stays Normal, doesn't qualify
+	});
+
+	it('returns null for empty/missing moves', () => {
+		mockThreatsDex();
+		expect(computeThreatMoveReason([], ['weak'])).toBeNull();
+		expect(computeThreatMoveReason(undefined, ['weak'])).toBeNull();
+	});
+});
+
+describe('threatHasMoveOfCategory', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('is true when a commonly-used move of that category exists', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Water Spout', percent: '40', type: 'Water' }];
+		expect(threatHasMoveOfCategory(moves, 'Special')).toBe(true);
+	});
+
+	it('is false when the only matching move is below the usage threshold', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Water Spout', percent: '5', type: 'Water' }];
+		expect(threatHasMoveOfCategory(moves, 'Special')).toBe(false);
+	});
+
+	it('is false when no move of that category is present', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Protect', percent: '90', type: 'Normal' }];
+		expect(threatHasMoveOfCategory(moves, 'Special')).toBe(false);
+	});
+
+	it('is false without window.Dex — an unverifiable claim is worse than a skipped one', () => {
+		const moves = [{ move: 'Water Spout', percent: '90', type: 'Water' }];
+		expect(threatHasMoveOfCategory(moves, 'Special')).toBe(false);
+	});
+});
+
+describe('computeThreatSpeedReason', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('credits a natural outspeed backed by a real, commonly-used non-resisted move', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], baseSpeed: 150, scarfSpeed: null };
+		const defender = { types: ['neutral'], speed: 100 };
+		expect(computeThreatSpeedReason(threat, defender)).toEqual(
+			{ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: false });
+	});
+
+	it('checks a move\'s real effective type via threat.ability — outspeeding with a Pixilate Hyper Voice reports Fairy, not Normal', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Hyper Voice', percent: '90', type: 'Normal' }], ability: 'Pixilate', baseSpeed: 150, scarfSpeed: null };
+		expect(computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100 })).toEqual(
+			{ kind: 'speed', move: 'Hyper Voice', type: 'Fairy', percent: 90, viaScarf: false });
+	});
+
+	it('never credits an outspeed on a Status move alone — outspeeding and using Detect doesn\'t connect for damage', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Detect', percent: '90', type: 'Water' }], baseSpeed: 150, scarfSpeed: null };
+		expect(computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100 })).toBeNull();
+	});
+
+	it('credits an outspeed that only holds with a real, common-enough Choice Scarf', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], baseSpeed: 80, scarfSpeed: 120 };
+		const defender = { types: ['neutral'], speed: 100 };
+		expect(computeThreatSpeedReason(threat, defender)).toEqual(
+			{ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: true });
+	});
+
+	it('prefers the natural (non-Scarf) outspeed when both would clear it', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], baseSpeed: 150, scarfSpeed: 225 };
+		expect(computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100 }).viaScarf).toBe(false);
+	});
+
+	it('returns null when not even Scarf is enough to outspeed', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], baseSpeed: 80, scarfSpeed: 90 };
+		expect(computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100 })).toBeNull();
+	});
+
+	it('returns null when it outspeeds but every real move is resisted', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], baseSpeed: 150, scarfSpeed: null };
+		expect(computeThreatSpeedReason(threat, { types: ['resists'], speed: 100 })).toBeNull();
+	});
+
+	it('returns null when the only backing move is below the commonly-used usage threshold', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '10', type: 'Water' }], baseSpeed: 150, scarfSpeed: null };
+		expect(computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100 })).toBeNull();
+	});
+
+	it('returns null without a real defender Speed to compare against', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], baseSpeed: 150, scarfSpeed: null };
+		expect(computeThreatSpeedReason(threat, { types: ['neutral'], speed: null })).toBeNull();
+	});
+
+	it('picks the highest-usage qualifying move among several', () => {
+		mockThreatsDex();
+		const threat = {
+			moves: [
+				{ move: 'Water Spout', percent: '40', type: 'Water' },
+				{ move: 'Brave Bird', percent: '75', type: 'Flying' },
+			],
+			baseSpeed: 150,
+			scarfSpeed: null,
+		};
+		const reason = computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100 });
+		expect(reason.move).toBe('Brave Bird');
+	});
+});
+
+describe('computeThreatReasons', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('leads with the named move reason, then a gated physical/special stat reason', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Water Spout', percent: '90', type: 'Water' }]; // Special
+		const threat = { moves, atk: 60, spa: 150 };
+		const defender = { types: ['weak'], def: 100, spd: 90 }; // spa/spd = 1.67 >= threshold; atk/def doesn't qualify
+		const reasons = computeThreatReasons(threat, defender);
+		expect(reasons).toEqual([
+			{ kind: 'move', move: 'Water Spout', type: 'Water', percent: 90 },
+			{ kind: 'stat', text: 'High Special Attack vs Low Special Defense' },
+		]);
+	});
+
+	it('shows only the speed reason, not also the move reason, when the threat both outspeeds and has a super-effective move', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Water Spout', percent: '90', type: 'Water' }]; // Special
+		const threat = { moves, atk: 60, spa: 200, baseSpeed: 150, scarfSpeed: null };
+		// Super effective (would otherwise be a move reason), outspeeds (speed reason), and a
+		// qualifying special mismatch (stat reason, backed by the same Special move) all at
+		// once — the speed reason already shows this exact move (with its own type icon), so
+		// restating "also super effective" as a separate line would just be the same fact twice.
+		const defender = { types: ['weak'], def: 100, spd: 50, speed: 100 };
+		expect(computeThreatReasons(threat, defender)).toEqual([
+			{ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: false },
+			{ kind: 'stat', text: 'High Special Attack vs Low Special Defense' },
+		]);
+	});
+
+	it('falls back to the plain move reason when there is no speed reason at all', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Water Spout', percent: '90', type: 'Water' }];
+		// Super effective, but doesn't outspeed either way (no baseSpeed/scarfSpeed given) — the
+		// move reason is the only thing left to show for this matchup.
+		const threat = { moves, atk: 60, spa: 60 };
+		const defender = { types: ['weak'], def: 100, spd: 100, speed: 100 };
+		expect(computeThreatReasons(threat, defender)).toEqual([
+			{ kind: 'move', move: 'Water Spout', type: 'Water', percent: 90 },
+		]);
+	});
+
+	it('omits a stat reason when the ratio does not clear the threshold', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], atk: 60, spa: 100 };
+		const defender = { types: ['neutral'], def: 100, spd: 90 }; // 100/90 = 1.11, below 1.3
+		expect(computeThreatReasons(threat, defender)).toEqual([]);
+	});
+
+	it('omits a stat reason when there is no backing move of that category, even with a big ratio', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Protect', percent: '90', type: 'Normal' }], atk: 60, spa: 200 };
+		const defender = { types: ['neutral'], def: 100, spd: 50 }; // 200/50 = 4x, but no Special move on record
+		expect(computeThreatReasons(threat, defender)).toEqual([]);
+	});
+
+	it('skips stat reasons entirely when the offensive stat is null (no spread data to derive one)', () => {
+		mockThreatsDex();
+		const threat = { moves: [], atk: null, spa: null };
+		expect(computeThreatReasons(threat, { types: ['weak'], def: 10, spd: 10 })).toEqual([]);
+	});
+});
+
+describe('enrichTeamThreat', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('derives real atk/spa from the top spread + nature via tbRoom.getStat, no item', () => {
+		mockThreatsDex();
+		const getStat = vi.fn((stat) => (stat === 'atk' ? 120 : stat === 'spa' ? 80 : 999));
+		const tbRoom = { curSetList: [{ species: 'Whatever', level: 50 }], getStat };
+		const mon = { moves: [], spreads: [{ ev: '252/0/0/0/4/252', percent: '50' }], natures: [{ nature: 'Timid', percent: '50' }] };
+		const threat = { pokemon: 'Staraptor', score: 10, members: [] };
+		const enriched = enrichTeamThreat(tbRoom, threat, mon);
+		expect(getStat).toHaveBeenCalledWith('atk', expect.objectContaining({ species: 'Staraptor', nature: 'Timid' }));
+		expect(enriched.memberReasons).toEqual([]);
+	});
+
+	it('extracts the threat\'s own top real ability and feeds it through to a move\'s effective type (Pixilate)', () => {
+		mockThreatsDex();
+		// 'fairyweak' (mockThreatsDex's own fixture) is only super effective against Fairy — the
+		// move's bare Normal type wouldn't qualify; only the Pixilate-converted Fairy does.
+		window.Dex.species = { get: () => ({ exists: true, types: ['fairyweak'] }) };
+		window.Dex.items = { get: () => ({ exists: false }) };
+		const memberSet = { species: 'Whatever', evs: {}, nature: '' };
+		const getStat = () => 10; // irrelevant to this test — only the move's own reported type matters
+		const tbRoom = { curSetList: [memberSet], getStat };
+		const mon = {
+			moves: [{ move: 'Hyper Voice', percent: '90', type: 'Normal' }],
+			abilities: [{ ability: 'Pixilate', percent: '95.0' }, { ability: 'Cute Charm', percent: '5.0' }],
+			spreads: [{ ev: '0/0/0/252/0/0', percent: '50' }],
+			natures: [{ nature: 'Modest', percent: '50' }],
+		};
+		const threat = { pokemon: 'Sylveon', score: 10, members: ['Whatever'] };
+		const enriched = enrichTeamThreat(tbRoom, threat, mon);
+		const moveReason = enriched.memberReasons[0].reasons.find((r) => r.kind === 'move');
+		expect(moveReason).toEqual({ kind: 'move', move: 'Hyper Voice', type: 'Fairy', percent: 90 });
+	});
+
+	it('leaves atk/spa null (skipping stat reasons downstream) when the threat has no spread data', () => {
+		const tbRoom = { curSetList: [], getStat: () => 999 };
+		const threat = { pokemon: 'Staraptor', score: 10, members: ['Incineroar'] };
+		// No window.Dex, no matching curSetList entry for 'Incineroar' — degrades to an empty reasons list.
+		const enriched = enrichTeamThreat(tbRoom, threat, { moves: [] });
+		expect(enriched.memberReasons).toEqual([{ member: 'Incineroar', reasons: [] }]);
+	});
+
+	it('computes real per-member reasons using each member\'s own set (real def/spd, real defensive types)', () => {
+		mockThreatsDex();
+		// 'weak' is mockThreatsDex's own fictional type, super-effective-vs-Flying included.
+		window.Dex.species = { get: (name) => (name === 'Sceptile' ? { exists: true, types: ['weak'] } : { exists: false }) };
+		window.Dex.items = { get: () => ({ exists: false }) };
+		const memberSet = { species: 'Sceptile', evs: {}, nature: '' };
+		const getStat = (stat, set) => {
+			if (set === memberSet) return stat === 'def' ? 60 : 200; // low physical bulk, irrelevant special bulk
+			return stat === 'atk' ? 130 : 50; // threat's own real Attack, from its top spread
+		};
+		const tbRoom = { curSetList: [memberSet], getStat };
+		const mon = {
+			moves: [{ move: 'Brave Bird', percent: '80', type: 'Flying' }], // Physical, super effective vs 'weak'
+			spreads: [{ ev: '252/252/0/0/0/4', percent: '50' }],
+			natures: [{ nature: 'Adamant', percent: '50' }],
+		};
+		const threat = { pokemon: 'Staraptor', score: 10, members: ['Sceptile'] };
+		const enriched = enrichTeamThreat(tbRoom, threat, mon);
+		expect(enriched.memberReasons).toEqual([{
+			member: 'Sceptile',
+			reasons: [
+				{ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 80 },
+				{ kind: 'stat', text: 'High Attack vs Low Defense' },
+			],
+		}]);
+	});
+
+	it('only credits an outspeed via Scarf when the threat\'s own real Scarf usage clears the threshold', () => {
+		mockThreatsDex();
+		window.Dex.species = { get: () => ({ exists: true, types: ['neutral'] }) };
+		window.Dex.items = { get: () => ({ exists: false }) };
+		const memberSet = { species: 'Whatever', evs: {}, nature: '' };
+		// Threat's own real (un-Scarfed) Speed (100) doesn't outspeed the member (140); Scarf's
+		// real 1.5x gets it to floor(100*1.5)=150, which does.
+		const getStat = (stat, set) => {
+			if (set === memberSet) return stat === 'spe' ? 140 : 10;
+			return stat === 'spe' ? 100 : 10;
+		};
+		const tbRoom = { curSetList: [memberSet], getStat };
+		const baseMon = {
+			moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }],
+			spreads: [{ ev: '0/0/0/0/0/252', percent: '50' }],
+			natures: [{ nature: 'Timid', percent: '50' }],
+		};
+		const threat = { pokemon: 'Staraptor', score: 10, members: ['Whatever'] };
+
+		const belowThreshold = enrichTeamThreat(tbRoom, threat,
+			Object.assign({}, baseMon, { items: [{ item: 'Choice Scarf', percent: '2' }] })); // under the 5% default
+		expect(belowThreshold.memberReasons[0].reasons.some((r) => r.kind === 'speed')).toBe(false);
+
+		const aboveThreshold = enrichTeamThreat(tbRoom, threat,
+			Object.assign({}, baseMon, { items: [{ item: 'Choice Scarf', percent: '30' }] }));
+		expect(aboveThreshold.memberReasons[0].reasons).toContainEqual(
+			{ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: true });
+	});
+
+	it('factors the threatened member\'s own held item into its real Speed, not just the threat\'s', () => {
+		mockThreatsDex();
+		window.Dex.species = { get: () => ({ exists: true, types: ['neutral'] }) };
+		window.Dex.items = { get: () => ({ exists: false }) };
+		const memberSet = { species: 'Whatever', item: 'Choice Scarf', evs: {}, nature: '' };
+		const getStat = (stat, set) => {
+			if (set === memberSet) return stat === 'spe' ? 100 : 10; // real base Speed, before ITS OWN item
+			return stat === 'spe' ? 140 : 10; // threat's own real (un-Scarfed) Speed
+		};
+		const tbRoom = { curSetList: [memberSet], getStat };
+		const mon = {
+			moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }],
+			spreads: [{ ev: '0/0/0/0/0/252', percent: '50' }],
+			natures: [{ nature: 'Timid', percent: '50' }],
+		};
+		const threat = { pokemon: 'Staraptor', score: 10, members: ['Whatever'] };
+		const enriched = enrichTeamThreat(tbRoom, threat, mon);
+		// The member's own real Choice Scarf boosts their raw 100 to floor(100*1.5)=150, now
+		// faster than the threat's own un-Scarfed 140 — no speed reason, even though the raw
+		// Speed *numbers* alone (140 vs 100) would have looked like an outspeed.
+		expect(enriched.memberReasons[0].reasons.some((r) => r.kind === 'speed')).toBe(false);
+	});
+});
+
+describe('buildTeamThreatSquareHTML', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('renders an icon-only square with no visible name/count, indexed for hover lookup', () => {
+		const html = buildTeamThreatSquareHTML({ pokemon: 'Staraptor', members: ['Incineroar', 'Garchomp'] }, 3);
+		expect(html).toContain('cf-teamthreats-square');
+		expect(html).toContain('data-cf-teamthreats-idx="3"');
+		expect(html).not.toContain('Staraptor'); // no visible name — detail lives in the hover tooltip
+		expect(html).not.toContain('2×');
+	});
+});
+
+describe('buildTeamThreatsSectionHTML', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('shows the empty-state message when there are no threats', () => {
+		expect(buildTeamThreatsSectionHTML([])).toContain('No threat data for this format.');
+	});
+
+	it('renders threats as a grid of side-by-side squares, indexed in order', () => {
+		const threats = [{ pokemon: 'Staraptor', members: ['Incineroar'] }, { pokemon: 'Sylveon', members: ['Garchomp'] }];
+		const html = buildTeamThreatsSectionHTML(threats);
+		expect(html).toContain('cf-teamthreats-grid');
+		expect(html).toContain('data-cf-teamthreats-idx="0"');
+		expect(html).toContain('data-cf-teamthreats-idx="1"');
+	});
+
+	it('caps the rendered squares at TEAM_THREATS_MAX_ROWS (8) even with more real threats than that', () => {
+		const threats = Array.from({ length: 12 }, (_, i) => ({ pokemon: 'Mon' + i, members: ['Incineroar'] }));
+		const html = buildTeamThreatsSectionHTML(threats);
+		expect((html.match(/class="cf-teamthreats-square"/g) || []).length).toBe(8);
+		expect(html).toContain('data-cf-teamthreats-idx="7"');
+		expect(html).not.toContain('data-cf-teamthreats-idx="8"');
+	});
+});
+
+describe('buildTeamThreatReasonCellHTML', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('renders a move reason with its real type icon, name, and usage percent', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const html = buildTeamThreatReasonCellHTML({ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 80 });
+		expect(html).toContain('<img alt="Flying">');
+		expect(html).toContain('Brave Bird');
+		expect(html).toContain('80%');
+	});
+
+	it('renders a plain stat reason with no icon', () => {
+		const html = buildTeamThreatReasonCellHTML({ kind: 'stat', text: 'High Attack vs Low Defense' });
+		expect(html).toContain('High Attack vs Low Defense');
+		expect(html).toContain('cf-teamthreats-reason-stat');
+	});
+
+	it('renders a speed reason with an "Outspeeds" label and no Scarf note when it holds unconditionally', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const html = buildTeamThreatReasonCellHTML({ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: false });
+		expect(html).toContain('Outspeeds');
+		expect(html).toContain('<img alt="Water">');
+		expect(html).toContain('Water Spout');
+		expect(html).toContain('90%');
+		expect(html).not.toContain('needs Scarf');
+	});
+
+	it('adds a "(needs Scarf)" note when the outspeed only holds with Choice Scarf', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const html = buildTeamThreatReasonCellHTML({ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: true });
+		expect(html).toContain('needs Scarf');
+	});
+});
+
+describe('buildTeamThreatTooltipHTML', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('renders a table with one sprite cell per member, rowspan-ed across its own reason rows', () => {
+		window.Dex = { getPokemonIcon: (species) => `background:url(${species})`, getTypeIcon: (type) => `<img alt="${type}">` };
+		const threat = {
+			pokemon: 'Staraptor',
+			memberReasons: [
+				{
+					member: 'Incineroar',
+					reasons: [
+						{ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 80 },
+						{ kind: 'stat', text: 'High Attack vs Low Defense' },
+					],
+				},
+				{ member: 'Garchomp', reasons: [] },
+			],
+		};
+		const html = buildTeamThreatTooltipHTML(threat);
+		expect(html).toContain('Staraptor');
+		expect(html).toContain('cf-teamthreats-table');
+		expect(html).toContain('background:url(Incineroar)');
+		expect(html).toContain('rowspan="2"'); // Incineroar's two reason rows share one sprite cell
+		expect(html).toContain('Brave Bird');
+		expect(html).toContain('High Attack vs Low Defense');
+		expect(html).toContain('background:url(Garchomp)');
+		expect(html).toContain('rowspan="1"'); // Garchomp's own single "no reason" row
+		expect(html).toContain('No specific reason found.');
 	});
 });
 

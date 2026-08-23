@@ -415,12 +415,26 @@ a[data-entry^="custom|"] .movedesccol {
 	color: #AAAAAA;
 }
 
-/* Single source of truth for the teambuilder room's width cap, shared with
- * #cf-teambuilder-sidebar's `left` and .cf-pika-grid's `max-width` below — three separate
- * rules that all need to agree on the same number, so it's a custom property instead of a
- * repeated magic value that could drift out of sync across edits. */
+/* Single source of truth for the teambuilder room's own width cap, shared with
+ * #cf-teambuilder-sidebar's `left` below — both need to agree on the same number (the sidebar's
+ * left edge has to land exactly on the room's actual right edge), so it's a custom property
+ * instead of a repeated magic value that could drift out of sync across edits. Deliberately NOT
+ * shared with the sidebar's own *content* width any more (--cf-sidebar-content-max-width,
+ * directly below) — the two used to be the same number, but the room's own real width and how
+ * wide the sidebar is willing to let its own content stretch are two genuinely different
+ * concerns that only happened to share a value by coincidence, not because either one is
+ * supposed to track the other. */
 :root {
 	--cf-teambuilder-max-width: 653px;
+	/* How wide the sidebar's own content (the six-section grid, Speed Spread, Defensive Profile,
+	 * Biggest Threats) is allowed to stretch — independent of --cf-teambuilder-max-width above,
+	 * on request: #cf-teambuilder-sidebar itself already isn't tied to the room's own width (it
+	 * absorbs whatever the capped room doesn't need, considerably wider than 653px on a large
+	 * monitor — see #cf-teambuilder-sidebar's own comment), so there was no real reason its own
+	 * content had to stay capped at the *room's* number specifically. Larger than
+	 * --cf-teambuilder-max-width on purpose — this is the number to raise further if the sidebar
+	 * still feels cramped on a wide monitor. */
+	--cf-sidebar-content-max-width: 900px;
 }
 
 /* Caps how wide the teambuilder room itself is ever allowed to render, regardless of monitor
@@ -540,6 +554,145 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
  * layout losing a sibling — no extra width rule needed on either element for this. */
 body.cf-teambuilder-team-overview #cf-speedtier-col {
 	display: none;
+}
+/* Team-overview screen again (content.js renderTeamOverviewPanel/ensureTeamOverviewPanelEls):
+ * #cf-speedspectrum-wrap (Speed Spread) and #cf-teamthreats-section (Biggest Threats) stack as
+ * two plain block children of #cf-pika-panel, each sized to its own content — neither is the
+ * fixed-height, internally-scrolling `.cf-pika-grid` cell the six-section per-species sidebar
+ * uses (.cf-pika-grid's own comment), so there's no per-section scroll to fall back on if the
+ * two stacked together are taller than the panel. #cf-pika-panel's `overflow: hidden` (above)
+ * is right for that grid case — every cell already scrolls itself, so anything past the edge
+ * really is meant to clip — but wrong here, where it would silently cut off the bottom of
+ * Biggest Threats on a short window with a tall roster/lane count instead. Scoped to this
+ * screen only, not a blanket change to #cf-pika-panel. */
+body.cf-teambuilder-team-overview #cf-pika-panel {
+	overflow-y: auto;
+}
+/* All three team-overview sections (Speed Spread, Defensive Profile, Biggest Threats) go through
+ * pikaSectionHTML the same as the six-section per-species sidebar's own sections do, which means
+ * each one's real content sits inside a `.cf-pika-rows` div — and .cf-pika-rows' own overflow-y:
+ * auto (its own rule, above) exists specifically for THAT grid's fixed-height cells, each
+ * independently scrolling within its own bounded row track. None of these three are in that
+ * grid — they're plain stacked/side-by-side blocks with no height of their own to bound a
+ * per-section scroll against — so left unscoped, that rule could turn any one of them into its
+ * own separate inner scrollbar instead of the three reading as one continuous piece of content
+ * that scrolls together via #cf-pika-panel's own overflow-y (right above). Overridden back to
+ * visible here, scoped to just these three wrappers rather than touching the shared
+ * `.cf-pika-rows` rule itself, which still needs to behave the normal (scrolling) way inside the
+ * six-section grid. */
+#cf-speedspectrum-wrap .cf-pika-rows,
+#cf-defmatrix-wrap .cf-pika-rows,
+#cf-teamthreats-section .cf-pika-rows {
+	overflow: visible;
+}
+/* Defensive Profile and Biggest Threats side by side (content.js ensureTeamOverviewPanelEls),
+ * not stacked full-width blocks — the matrix only ever needs its own narrow, natural content
+ * width (a handful of sprite columns), so giving it a whole row to itself the way an earlier
+ * version did left most of that row empty. `align-items: flex-start` keeps both anchored to
+ * the top instead of vertically centering against whichever one happens to be taller (typically
+ * the matrix, once several type rows are showing). max-width caps the row at the same
+ * --cf-sidebar-content-max-width every sidebar-content section here uses so it doesn't stretch
+ * to whatever #cf-teambuilder-sidebar's own uncapped width happens to be on a wide monitor. A
+ * little breathing room from the section above it — .cf-pika-header's own top margin (5px)
+ * reads as barely separated from a preceding block this size, not `.cf-pika-rows` padding
+ * either, this is spacing between two whole sections rather than inside one.
+ *
+ * Deliberately NOT flex-wrap: wrap — per the CSS Flexbox spec (not just reasoned loosely: a
+ * flex-wrap container decides which line an item lands on using that item's own *hypothetical*
+ * (un-shrunk) main size, before flex-shrink is ever applied), so #cf-teamthreats-section's own
+ * `flex: 1 1 auto` (below) never got a chance to shrink it down next to the matrix at all — its
+ * natural content width (eight 48px squares, unwrapped) simply didn't fit in whatever the matrix
+ * left over, so the *whole section* dropped to a new line under the matrix instead of sharing
+ * the row (an actual bug this had, on a real roster — fixed by removing flex-wrap here, not
+ * hypothetical). Single-line only lets flex-shrink actually run, which is what makes Threats
+ * narrow to fit the remaining space and its own inner .cf-teamthreats-grid wrap *within* that —
+ * not something a wrapping outer row can fall back to safely here anyway: the split itself never
+ * activates below SPLIT_THRESHOLD (1320px), which already guarantees #cf-teambuilder-sidebar at
+ * least 1320 - 653 = 667px whenever this row exists at all — comfortably more than this row's
+ * own cap *was* when that was still tied to the room's 653px, though no longer a guarantee now
+ * that --cf-sidebar-content-max-width (900px) can exceed it; the row's own flex-wrap-less
+ * single-line design (above) degrades to horizontal scroll under #cf-pika-panel's own
+ * overflow-x, not to a broken layout, if that ever actually happens on a narrower split.
+ *
+ * `margin: 0 4px`, not `margin-top` too — the same 4px left/right #cf-speedspectrum-wrap (above)
+ * already carries, so both share an identical box model (same max-width, same side margins) and
+ * their edges land on the same two x-coordinates instead of this row silently rendering 8px
+ * wider overall (4px each side) than the diagram sitting above it. No top margin of its own:
+ * #cf-speedspectrum-wrap's own bottom margin (8px) is the single source of the gap between the
+ * two — adding one here too would either double it (if the two margins didn't collapse) or just
+ * be redundant (if they did), rather than the one deliberate, easy-to-tune number either way. */
+#cf-teamoverview-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 16px;
+	margin: 0 4px;
+	max-width: var(--cf-sidebar-content-max-width);
+}
+/* Sized to its own natural content width (see .cf-defmatrix-table's own comment) — never grows
+ * to fill leftover row space itself, so #cf-teamthreats-section's own `flex: 1 1 auto` below is
+ * what actually claims whatever the matrix doesn't need. */
+#cf-defmatrix-wrap {
+	flex: 0 0 auto;
+}
+/* content.js buildTeamThreatsSectionHTML: side-by-side icon squares (wrapping onto a new line
+ * once the section's own width runs out), not the name/percent rows every other Pikalytics-
+ * derived section uses — a deliberately quieter "here's who to watch for" glance, all the real
+ * detail living in the hover tooltip (cf-teamthreats-tooltip below) rather than on the row
+ * itself. `flex: 1 1 auto` on the section (not the grid itself) is what claims the row's
+ * remaining width next to the narrower Defensive Profile matrix; `min-width: 0` is required
+ * for a flex item to actually shrink to fit instead of refusing to go below its content's own
+ * intrinsic width (the same reasoning #cf-pika-panel's own min-width: 0 documents). */
+#cf-teamthreats-section {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+/* Explicit max-width here, not just #cf-teamthreats-section's own `flex: 1 1 auto` shrinking in
+ * the row above — that alone leaves the *section*'s outer box correctly sized, but this grid is
+ * three levels further in (through .cf-pika-section/.cf-pika-rows, both plain block/stretch
+ * children with no width constraint of their own), and enough 48px squares at 6px gaps to
+ * exceed this cap want more natural content width than the section would ever actually be
+ * shrunk to next to the matrix, so without its own cap this grid was overflowing its shrunk
+ * parent sideways instead of wrapping onto more rows within it. Matches one column of the
+ * six-section sidebar's own .cf-pika-grid (below) — that grid is exactly
+ * --cf-sidebar-content-max-width wide with two 1fr columns and a 16px gap between them, so one
+ * column is (--cf-sidebar-content-max-width - 16px) / 2; calc() against the same variable
+ * .cf-pika-grid itself uses, not a separately hand-measured number that could drift out of sync
+ * with it. */
+.cf-teamthreats-grid {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	max-width: calc((var(--cf-sidebar-content-max-width) - 16px) / 2);
+}
+/* A true 48x48 square (equal width/height, `flex: 0 0 auto` so the wrapping flex row above
+ * can't squash it narrower under space pressure) around a .picon (40x30, Showdown's own sprite
+ * size) — a few px of breathing room on every side rather than a tightly-cropped box, so the
+ * border reads as its own distinct shape instead of an outline traced directly around the
+ * sprite. Border/radius/hover copied from .cf-speedtier-row (the Popular column's own bordered
+ * icon boxes) so this reads as the same "boxed sprite" idiom already established elsewhere in
+ * the sidebar, not a new one. */
+.cf-teamthreats-square {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 48px;
+	height: 48px;
+	border: 1px solid #AAAAAA;
+	border-radius: 4px;
+	cursor: default;
+	box-sizing: border-box;
+	flex: 0 0 auto;
+}
+.cf-teamthreats-square:hover {
+	border-color: #555555;
+	background: rgba(248, 248, 248, .4);
+}
+.dark .cf-teamthreats-square {
+	border-color: #555555;
+}
+.dark .cf-teamthreats-square:hover {
+	border-color: #BBBBBB;
+	background: rgba(100, 100, 100, .2);
 }
 .cf-speedtier-row {
 	display: flex;
@@ -666,6 +819,17 @@ body.cf-teambuilder-team-overview #cf-speedtier-col {
 	border-width: 2px;
 	background: rgba(208, 138, 30, .12);
 }
+/* Between resist (orange, still fine damage) and true immune (red, no damage at all) — a real,
+ * distinct outcome (coverageTierClass's own doc comment: two resisted types stacking on a
+ * dual-type defender, .25x) that used to be misclassified as flatly immune. A burnt orange-red,
+ * deliberately between the two neighboring hues rather than a color unrelated to either, so the
+ * four-tier "getting worse" progression (green -> orange -> this -> red) still reads as one
+ * continuous scale at a glance. */
+.cf-speedtier-box.cf-coverage-quadresist {
+	border-color: #C0631E;
+	border-width: 2px;
+	background: rgba(192, 99, 30, .12);
+}
 .cf-speedtier-box.cf-coverage-immune {
 	border-color: #C0392B;
 	border-width: 2px;
@@ -682,6 +846,10 @@ body.cf-teambuilder-team-overview #cf-speedtier-col {
 .dark .cf-speedtier-box.cf-coverage-resist {
 	border-color: #E0A94A;
 	background: rgba(224, 169, 74, .18);
+}
+.dark .cf-speedtier-box.cf-coverage-quadresist {
+	border-color: #E0954A;
+	background: rgba(224, 149, 74, .18);
 }
 .dark .cf-speedtier-box.cf-coverage-immune {
 	border-color: #E0685A;
@@ -727,9 +895,9 @@ body.cf-teambuilder-team-overview #cf-speedtier-col {
 	color: #AAAAAA;
 }
 /* Takes whatever width #cf-speedtier-col doesn't need; .cf-pika-grid inside (style.css below)
- * still separately caps itself at --cf-teambuilder-max-width, so this flex item can be wider
- * than its content without stretching the grid — min-width: 0 is required for that (a flex
- * item's default min-width: auto would otherwise refuse to shrink below the grid's own
+ * still separately caps itself at --cf-sidebar-content-max-width, so this flex item can be
+ * wider than its content without stretching the grid — min-width: 0 is required for that (a
+ * flex item's default min-width: auto would otherwise refuse to shrink below the grid's own
  * intrinsic width, defeating the cap here the same way it would inside a grid track). */
 #cf-pika-panel {
 	flex: 1 1 auto;
@@ -764,22 +932,22 @@ body.cf-teambuilder-team-overview #cf-speedtier-col {
  * child, same refusal inside a flex column) is what actually makes the internal scrolling work
  * instead of the cell silently growing past its row's bound.
  *
- * max-width caps the grid at the same --cf-teambuilder-max-width the room itself is capped to
- * (see that rule's comment) — #cf-teambuilder-sidebar can now be considerably wider than that
- * on a big monitor (it absorbs whatever the capped room doesn't need), and without this the
- * grid's `1fr 1fr` columns would stretch to fill all of it: .cf-pika-name's `flex: 1 1 auto`
- * would push each row's percentage far out to the right with a long empty gap in between
- * instead of sitting close to the name, exactly the "flying all over the page" look this
- * avoids. Left-aligned, not centered — reads as "the panel has extra room to its right"
- * (consistent with the room's own cap leaving blank space) rather than floating detached from
- * the divider it's docked against. */
+ * max-width caps the grid at --cf-sidebar-content-max-width — #cf-teambuilder-sidebar can be
+ * considerably wider than that on a big monitor (it absorbs whatever the capped room doesn't
+ * need — see #cf-teambuilder-sidebar's own comment — and isn't tied to the room's own
+ * --cf-teambuilder-max-width at all), and without this the grid's `1fr 1fr` columns would
+ * stretch to fill all of it: .cf-pika-name's `flex: 1 1 auto` would push each row's percentage
+ * far out to the right with a long empty gap in between instead of sitting close to the name,
+ * exactly the "flying all over the page" look this avoids. Left-aligned, not centered — reads
+ * as "the panel has extra room to its right" rather than floating detached from the divider
+ * it's docked against. */
 .cf-pika-grid {
 	display: grid;
 	grid-template-columns: 1fr 1fr;
 	grid-template-rows: repeat(3, 1fr);
 	gap: 4px 16px;
 	height: 100%;
-	max-width: var(--cf-teambuilder-max-width);
+	max-width: var(--cf-sidebar-content-max-width);
 }
 .cf-pika-section {
 	display: flex;
@@ -1018,7 +1186,7 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 }
 /* Author + placement/tournament (content.js buildSimilarTeamRowHTML) — fills the wide gap a bare
  * sprite-strip-plus-record row otherwise left empty (a 6-sprite strip is ~240px, #cf-pika-panel
- * can run to --cf-teambuilder-max-width, 653px), and answers the two questions a bare "13-2"
+ * can run to --cf-sidebar-content-max-width, 900px), and answers the two questions a bare "13-2"
  * record couldn't on its own: who built this, and at what event. Stacked two lines rather than
  * run together on one, so the author name (the more scannable of the two down a whole column of
  * rows) stays visually distinct from the longer, more variable tournament text under it. */
@@ -1074,6 +1242,191 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 #cf-tooltipwrapper .cf-tooltip.cf-similarteam-tooltip {
 	width: 620px;
 }
+
+/* Biggest Threats hover tooltip (content.js buildTeamThreatTooltipHTML) — a table, not the base
+ * .cf-tooltip's stacked paragraphs, so it needs its own width (a move reason's type icon + name
+ * + percent needs more room than the default 300px gives comfortably) and its own table styling,
+ * copied from .cf-spread-table's own conventions (border-collapse, cell padding/border, row
+ * hover, .cf-pika-pct reused verbatim for the usage percent) rather than a new table look. */
+#cf-tooltipwrapper .cf-tooltip.cf-teamthreats-tooltip {
+	width: 340px;
+}
+.cf-teamthreats-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: Verdana, sans-serif;
+	font-size: 8.5pt;
+}
+.cf-teamthreats-table td {
+	padding: 3px 5px;
+	border-bottom: 1px solid #D8D8D8;
+	vertical-align: middle;
+	color: #000000;
+}
+.dark .cf-teamthreats-table td {
+	border-bottom-color: #4A4D50;
+	color: #EEEEEE;
+}
+.cf-teamthreats-table tbody tr:hover {
+	background: #F8F8F8;
+}
+.dark .cf-teamthreats-table tbody tr:hover {
+	background: rgba(100, 100, 100, .5);
+}
+/* The member's own sprite — one per member, `rowspan`-ed down its own reason rows (see
+ * buildTeamThreatTooltipHTML) — vertically centered against however many reason rows that
+ * turns out to be. */
+.cf-teamthreats-sprite {
+	width: 40px;
+	text-align: center;
+	vertical-align: middle;
+}
+.cf-teamthreats-move-type {
+	display: inline-flex;
+	align-items: center;
+	vertical-align: middle;
+	margin-right: 4px;
+}
+.cf-teamthreats-move-name {
+	margin-right: 4px;
+}
+/* "Outspeeds" label on a `speed`-kind reason cell (buildTeamThreatReasonCellHTML) — bold and
+ * slightly larger than the move name it precedes, so the headline claim ("this moves first")
+ * reads before the move backing it up, on its own line above rather than crowded onto the same
+ * line as the type icon/name/percent. */
+.cf-teamthreats-reason-label {
+	display: block;
+	font-weight: bold;
+	margin-bottom: 2px;
+}
+/* "(needs Scarf)" — only present when computeThreatSpeedReason's own viaScarf is true, i.e. the
+ * outspeed only holds with a real, common-enough Choice Scarf (CF_SETTINGS.scarfThresholdPercent)
+ * rather than on a bare stat spread. Muted and small so it reads as a qualifier, not a claim of
+ * its own equal weight to the rest of the cell. */
+.cf-teamthreats-scarf-note {
+	margin-left: 4px;
+	font-size: 7.5pt;
+	font-style: italic;
+	color: #777777;
+}
+.dark .cf-teamthreats-scarf-note {
+	color: #AAAAAA;
+}
+.cf-teamthreats-reason-none {
+	color: #777777;
+	font-style: italic;
+}
+.dark .cf-teamthreats-reason-none {
+	color: #AAAAAA;
+}
+
+/* Defensive Profile matrix (content.js buildTeamDefensiveProfileHTML) — sits in
+ * #cf-teamoverview-row next to Biggest Threats (that rule's own comment). Table conventions
+ * (border-collapse, cell padding/border, header background) copied from .cf-spread-table rather
+ * than reinvented. Deliberately no `width` at all — plain HTML table auto-layout already sizes
+ * every column to its own content (a sprite column only needs a sprite's width, the type-icon
+ * label column only needs an icon plus a little padding), which is exactly the compact width
+ * this table actually needs; forcing `width: 100%` would stretch every column apart to fill
+ * whatever's available instead, wasting the row's own remaining space that
+ * #cf-teamthreats-section's `flex: 1 1 auto` is what's meant to claim. */
+.cf-defmatrix-table {
+	border-collapse: collapse;
+	font-family: Verdana, sans-serif;
+	font-size: 8pt;
+}
+.cf-defmatrix-table th,
+.cf-defmatrix-table td {
+	padding: 3px 6px;
+	text-align: center;
+	border-bottom: 1px solid #D8D8D8;
+}
+.dark .cf-defmatrix-table th,
+.dark .cf-defmatrix-table td {
+	border-bottom-color: #4A4D50;
+}
+.cf-defmatrix-table thead th {
+	padding: 4px 6px;
+	background: #DAE5F0;
+	color: black;
+	border-bottom: 1px solid #AAAAAA;
+	font-weight: normal;
+	text-shadow: 1px 1px 0 rgba(255, 255, 255, .6);
+}
+.dark .cf-defmatrix-table thead th {
+	background: #636363;
+	color: #F1F1F1;
+	border-bottom: 1px solid #A9A9A9;
+	text-shadow: 1px 1px 0 rgb(40, 43, 45);
+}
+/* The type-icon row label — left-aligned and never wrapping, unlike the centered numeric cells
+ * next to it, so it reads as a row heading rather than just another data cell. */
+.cf-defmatrix-type {
+	text-align: left;
+	white-space: nowrap;
+}
+/* A Mega-capable member's own header cell (content.js buildTeamDefensiveProfileHTML/
+ * onPikaSidebarClick) — clickable to toggle that column between its Mega forme (the default)
+ * and its real base forme. Hover treatment copied from .cf-pika-row's own (border + tinted
+ * background) so this reads as the same "clickable" idiom already established elsewhere in the
+ * sidebar, not a new one; a plain (non-toggleable) member header gets neither the cursor nor
+ * the hover, so nothing implies it's interactive when there's nothing to toggle. */
+.cf-defmatrix-member-toggleable {
+	cursor: pointer;
+	border-radius: 3px;
+}
+.cf-defmatrix-member-toggleable:hover {
+	background: #F8F8F8;
+}
+.dark .cf-defmatrix-member-toggleable:hover {
+	background: rgba(100, 100, 100, .5);
+}
+.cf-defmatrix-cell {
+	color: #000000;
+	font-weight: bold;
+}
+.dark .cf-defmatrix-cell {
+	color: #EEEEEE;
+}
+/* Five real, distinct outcomes (defensiveTierClass's own doc comment) — reusing the exact same
+ * red/green/purple hues the Popular column's own offensive coverage tint already established
+ * (cf-coverage-quad/-super/-immune, above) rather than inventing a new palette, just applied to
+ * the opposite (defensive) direction and with two intensities per color instead of one, since
+ * every one of the five is a real, common outcome here (that function's own doc comment on why
+ * this can't just reuse coverageTierClass's fewer tiers). Text color carries the tier — bold on
+ * a colored background reads clearly at this font size — background is a light tint of the same
+ * hue, not a competing color. */
+.cf-defmatrix-cell.cf-defmatrix-weak {
+	color: #C0392B;
+	background: rgba(192, 57, 43, .12);
+}
+.cf-defmatrix-cell.cf-defmatrix-quadweak {
+	color: #C0392B;
+	background: rgba(192, 57, 43, .28);
+}
+.cf-defmatrix-cell.cf-defmatrix-resist {
+	color: #2E9E44;
+	background: rgba(46, 158, 68, .12);
+}
+.cf-defmatrix-cell.cf-defmatrix-quadresist {
+	color: #2E9E44;
+	background: rgba(46, 158, 68, .28);
+}
+.cf-defmatrix-cell.cf-defmatrix-immune {
+	color: #9B59B6;
+	background: rgba(155, 89, 182, .18);
+}
+.dark .cf-defmatrix-cell.cf-defmatrix-weak,
+.dark .cf-defmatrix-cell.cf-defmatrix-quadweak {
+	color: #E0685A;
+}
+.dark .cf-defmatrix-cell.cf-defmatrix-resist,
+.dark .cf-defmatrix-cell.cf-defmatrix-quadresist {
+	color: #5CBF74;
+}
+.dark .cf-defmatrix-cell.cf-defmatrix-immune {
+	color: #B980D1;
+}
+
 .cf-similarteam-tooltip-columns {
 	display: flex;
 	padding: 8px 6px;
@@ -1116,9 +1469,38 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
  * actually needed, not a fixed guess) and set as an inline style, same reason every icon's own
  * left/top below is inline rather than a CSS class — position:relative is what makes those
  * percentage/pixel values mean something (relative to *this* box, not the page). */
+/* #cf-speedspectrum-wrap (not .cf-speedspectrum itself) carries the width cap and side/bottom
+ * margin. .cf-speedspectrum is only one of TWO children buildSpeedSpectrumHTML's own output
+ * produces inside the wrap — pikaSectionHTML also renders a .cf-pika-header title bar as
+ * .cf-speedspectrum's own *sibling*, not its parent — so capping .cf-speedspectrum alone left
+ * that header stretching to the wrap's full uncapped width while the diagram beneath it
+ * rendered narrower: a real, visible mismatch (the header read as noticeably wider than its own
+ * content, and than the equally-capped row below it). Capping the wrap instead constrains both
+ * children uniformly, since .cf-pika-section (pikaSectionHTML's own wrapper — a block flex
+ * column, default align-items: stretch) fills 100% of whatever width its parent computes to.
+ *
+ * max-width matches #cf-teamoverview-row below it (Defensive Profile + Biggest Threats,
+ * style.css) — both --cf-sidebar-content-max-width, and both carrying the identical 4px
+ * left/right side margin (the row's own comment explains why it copies this exact margin rather
+ * than having none), so the two report the same max-width AND the same box model — their
+ * left/right edges land on the same two x-coordinates instead of merely reporting equal numbers
+ * while actually rendering offset from each other. Without this cap, this section would
+ * otherwise stretch to whatever #cf-teambuilder-sidebar's own uncapped width happens to be on a
+ * wide monitor, while the row below it stays capped.
+ *
+ * Bottom margin (was 28px on .cf-speedspectrum itself, cut down here on direct feedback that it
+ * read as too much dead space before #cf-teamoverview-row below) is pure breathing room, not
+ * load-bearing — every threshold marker's own height is already folded into .cf-speedspectrum's
+ * own inline `height` (containerHeight, buildSpeedSpectrumHTML), so nothing here is relying on
+ * the margin for clearance. 8px matches the standard section-to-section gap used elsewhere (was
+ * #cf-teamthreats-section's own margin-top before the row restructuring). */
+#cf-speedspectrum-wrap {
+	margin: 0 4px 8px 4px;
+	max-width: var(--cf-sidebar-content-max-width);
+}
 .cf-speedspectrum {
 	position: relative;
-	margin: 12px 4px 28px 4px;
+	margin-top: 12px;
 }
 /* content.js sets `left`/`right` inline, both equal to SPEED_SPECTRUM_LABEL_RESERVE — the
  * margin a threshold marker's sprite (speedSpectrumThresholdHTML, anchored exactly at this

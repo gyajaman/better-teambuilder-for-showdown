@@ -71,6 +71,38 @@ Hovering a Pokémon in the Speed Tiers column opens a popup comparing its expect
 - Nine scenario rows: a baseline, then Tailwind, paralysis, and a −1/−2 stage drop, each applied to one side at a time.
 - Conditional columns, shown only when relevant: one **Mega** column per Mega Stone that crosses its usage threshold (a species can have more than one viable Mega Stone), a **Scarf** column for the same idea with Choice Scarf, and an **Iron Ball** column for the same idea again with Iron Ball. Each is badged with the real item icon and its actual usage percentage.
 
+## Team overview screen
+
+When no slot is open for editing — the screen showing all six roster icons together — the narrow Speed Tiers column gives way to three panels in the freed-up space: Speed Spread (full width), then Defensive Profile and Biggest Threats side by side underneath it.
+
+### Speed Spread
+
+Every real roster member's actual Speed (Mega forme and held Choice Scarf/Iron Ball included) plotted on a single low-to-high spectrum against the format's own real fastest and slowest legal Pokémon, not a padded range around your own roster's Speeds. A Pokémon built to actually match the format's ceiling or floor lines up exactly with the threshold marker.
+
+### Defensive Profile
+
+A matrix of your whole roster's real defensive type matchups: one sprite column per team member, one row per attacking type that isn't neutral against at least one of them (a type every member takes evenly is left out — the point is the exceptions, not confirming neutrality eighteen times over). Each cell is colored and labeled by the real multiplier — weak (2×/4×), resisted (½×/¼×, distinct tiers since a double resist and a single resist are genuinely different outcomes), or immune (0).
+
+Real held abilities are factored in, not just typing — a Water Absorb, Dry Skin, Storm Drain, Volt Absorb, Lightning Rod, Motor Drive, Flash Fire, Well-Baked Body, Sap Sipper, Levitate, or Earth Eater holder shows as genuinely immune to the type it blocks, and Wonder Guard shows immune to everything except what's already super effective — the exact same rules Pokémon Showdown's own battle engine uses (checked directly against its `data/abilities.ts`, not assumed).
+
+A Mega-capable member defaults to its Mega forme (typing, ability, and all — a real Mega Blastoise reads as Mega Launcher here, not whatever ability its base build actually has selected) — click its sprite to toggle that one column back to its real base forme, and again to switch back. A Pokémon genuinely is still its base forme until it actually Mega Evolves mid-battle, so both matchup profiles are worth seeing.
+
+### Biggest Threats
+
+A row of icon squares for the real Pokémon most likely to give your whole roster trouble, ranked left to right, built from Pikalytics' own per-species "counters" data (the same ranked "what beats this Pokémon" list Pikalytics shows on its own site) for every member you've added, not just one. A threat that severely counters even one or two of your Pokémon can outrank one that only mildly counters several, and vice versa.
+
+Hover a square for a table of exactly which of your team it threatens and, where the data supports it, why: your Pokémon's sprite on one side, and one or more of:
+
+- **Outspeeds** with a real, commonly-used, actually-damaging move that isn't resisted — real Speed on both sides (your Pokémon's actual EVs/nature/item, the threat's own top real spread) via the same Speed math the rest of the extension uses, factoring in a real, common-enough Choice Scarf on the threat's side too; tagged "(needs Scarf)" when the outspeed only holds with one. Shown instead of the line below, not alongside it, whenever it applies — "moves first and hits" already covers "hits," so restating the same move as a separate super-effective line would just be the same fact twice.
+- A commonly-used **super-effective move** — its real type icon, name, and usage percent. Only shown when the outspeed line above doesn't already apply.
+- A stat-based mismatch — "High Attack vs Low Defense" / "High Special Attack vs Low Special Defense" — only shown when the threat's own moveset actually backs the stat up, not from the raw numbers alone.
+
+A Status move (Protect, Detect, and the like) never counts toward any of these — Pikalytics tags every move with a type, Status moves included, but a move that deals no damage can't be "super effective" or "a real hit" no matter what type it's flavored as.
+
+A move's real *effective* type is used, not just its bare listed one, where the threat's own real ability changes it: a Pixilate Sylveon's Hyper Voice is checked as Fairy (same idea for Aerilate/Galvanize/Refrigerate/Normalize/Liquid Voice), and a Drought Charizard's Weather Ball is checked as Fire (same idea for Drizzle/Sand Stream/Snow Warning) — the same real rules Pokémon Showdown's own battle engine uses, checked directly against its `data/abilities.ts`/`data/moves.ts`.
+
+A member with no specific reason found still gets its own row, just without one. Shows "No Pokémon on your team yet" until a real slot has a species in it.
+
 ## Add Pokémon screen
 
 The same column and sidebar repurpose themselves when the slot currently open for editing is blank (a fresh "Add Pokémon" click) rather than an existing team member — no recommendations or synthesized advice, just real usage data laid out for you to act on.
@@ -79,7 +111,7 @@ The same column and sidebar repurpose themselves when the slot currently open fo
 
 The Speed Tiers column relabels itself **Popular** and becomes clickable: click any row to fill the blank slot with that species outright (`TeambuilderRoom.prototype.setPokemon`), the same as picking it from Showdown's own species search.
 
-- Each row's border is colored by how hard your team's existing damaging move types already hit that species — solid green (4×), light green (2×), untinted (neutral or nothing to compare against yet), light red (resisted), dark red (immune) — so a glance down the column shows which popular Pokémon your team already threatens and which it doesn't, without reading any numbers.
+- Each row's border is colored by how hard your team's existing damaging move types already hit that species — solid green (4×), light green (2×), untinted (neutral or nothing to compare against yet), orange (resisted, ½×), burnt orange-red (double-resisted, ¼× — a real, distinct outcome, not lumped in with true immunity), dark red (immune, 0×) — so a glance down the column shows which popular Pokémon your team already threatens and which it doesn't, without reading any numbers.
 - A species commonly built with a Speed-relevant item gets a small corner badge — Choice Scarf, or its most popular Mega Stone — whichever one actually clears its own usage threshold *and* has the higher real usage percent (not "Scarf always wins"); a Mega row also swaps its displayed Speed to the Mega forme's own base stat.
 - Hovering a row (without clicking) shows a preview tooltip: base stats, top moves, ability, item, nature, and spread, each with real usage percentages — the same shape of data as the six-section per-species sidebar, just for a Pokémon you haven't added yet.
 
