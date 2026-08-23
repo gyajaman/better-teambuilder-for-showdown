@@ -480,24 +480,39 @@
 	 *      TYPE_CHANGE_EXCLUDED_MOVES move (own doc comment).
 	 *  Falls back to the move's own real type unchanged when neither applies, `ability` is
 	 *  empty/unrecognized, or window.Dex isn't available to check the move's own flags against
-	 *  (Liquid Voice only). */
+	 *  (Liquid Voice only).
+	 *
+	 *  `moveType` is normalized to Titlecase up front — confirmed live: Pikalytics' own per-move
+	 *  data sends it lowercase ("normal", "fairy", ...), not the Titlecase typeEffectivenessMultiplier/
+	 *  window.Dex/this file's own constants (NORMAL_CONVERTING_ABILITIES's values, WEATHER_BALL_TYPE's
+	 *  values, 'Normal'/'Water' above) all use — a bare `moveType === 'Normal'` check against the
+	 *  real, unnormalized value silently never matched anything, the actual live bug this
+	 *  comment is here to keep from recurring: every Normal-type-converting ability, Pixilate
+	 *  included, quietly never fired against real Pikalytics data despite working in any test
+	 *  that (wrongly) typed its own fixture data in Titlecase to begin with.
+	 *  typeEffectivenessMultiplier gets away with this because it does its own normalizing
+	 *  internally; a raw `===` comparison here does not, so it has to be done explicitly. The
+	 *  returned type is always Titlecase too, matching every other type string this file passes
+	 *  to window.Dex.getTypeIcon/typeEffectivenessMultiplier, regardless of what case `moveType`
+	 *  arrived in. */
 	function effectiveMoveType(moveName, moveType, ability) {
 		const abilityId = toIDSafe(ability);
 		const moveId = toIDSafe(moveName);
+		const type = moveType ? moveType.charAt(0).toUpperCase() + moveType.slice(1).toLowerCase() : moveType;
 
 		if (moveId === 'weatherball') {
 			const weather = WEATHER_SETTING_ABILITIES[abilityId];
-			return weather ? WEATHER_BALL_TYPE[weather] : moveType;
+			return weather ? WEATHER_BALL_TYPE[weather] : type;
 		}
-		if (TYPE_CHANGE_EXCLUDED_MOVES.has(moveId)) return moveType;
+		if (TYPE_CHANGE_EXCLUDED_MOVES.has(moveId)) return type;
 
 		if (abilityId === 'normalize') return 'Normal';
-		if (NORMAL_CONVERTING_ABILITIES[abilityId] && moveType === 'Normal') return NORMAL_CONVERTING_ABILITIES[abilityId];
+		if (NORMAL_CONVERTING_ABILITIES[abilityId] && type === 'Normal') return NORMAL_CONVERTING_ABILITIES[abilityId];
 		if (abilityId === 'liquidvoice') {
 			const moveData = window.Dex && window.Dex.moves.get(moveName);
 			if (moveData && moveData.exists && moveData.flags && moveData.flags.sound) return 'Water';
 		}
-		return moveType;
+		return type;
 	}
 
 	/** The single most-used move in `moves` (Pikalytics' own per-species move list — `{move,

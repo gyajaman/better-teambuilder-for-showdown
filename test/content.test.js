@@ -1575,6 +1575,14 @@ describe('effectiveMoveType', () => {
 		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Pixilate')).toBe('Fairy');
 	});
 
+	it('normalizes a lowercase moveType before comparing — real Pikalytics move data sends "normal", not "Normal" (the actual live Sylveon-vs-Tyranitar bug)', () => {
+		expect(effectiveMoveType('Hyper Voice', 'normal', 'Pixilate')).toBe('Fairy');
+	});
+
+	it('returns a Titlecase type even when nothing converts it, regardless of the input\'s own case', () => {
+		expect(effectiveMoveType('Water Spout', 'water', '')).toBe('Water');
+	});
+
 	it('does the same for Aerilate/Galvanize/Refrigerate', () => {
 		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Aerilate')).toBe('Flying');
 		expect(effectiveMoveType('Hyper Voice', 'Normal', 'Galvanize')).toBe('Electric');
@@ -1683,7 +1691,10 @@ describe('computeThreatMoveReason', () => {
 
 	it('checks a move\'s real effective type, not its bare listed one — Pixilate Sylveon\'s Hyper Voice reads as Fairy', () => {
 		mockThreatsDex();
-		const moves = [{ move: 'Hyper Voice', percent: '90', type: 'Normal' }];
+		// Lowercase 'normal', matching real Pikalytics move data exactly (confirmed live) — not
+		// 'Normal': an earlier version of this test used the wrong (Titlecase) shape and so
+		// didn't actually catch effectiveMoveType's own real case-sensitivity bug.
+		const moves = [{ move: 'Hyper Voice', percent: '90', type: 'normal' }];
 		// 'fairyweak' is only super effective against Fairy — Normal alone wouldn't qualify.
 		expect(computeThreatMoveReason(moves, ['fairyweak'], 'Pixilate')).toEqual({ move: 'Hyper Voice', type: 'Fairy', percent: 90 });
 		expect(computeThreatMoveReason(moves, ['fairyweak'])).toBeNull(); // no ability given -> stays Normal, doesn't qualify
@@ -1894,7 +1905,11 @@ describe('enrichTeamThreat', () => {
 		const getStat = () => 10; // irrelevant to this test — only the move's own reported type matters
 		const tbRoom = { curSetList: [memberSet], getStat };
 		const mon = {
-			moves: [{ move: 'Hyper Voice', percent: '90', type: 'Normal' }],
+			// Lowercase 'normal', matching real Pikalytics move data exactly (confirmed live
+			// against Sylveon's own real API response) — this end-to-end path is what actually
+			// broke live (Hyper Voice never reading as a threat to Tyranitar) despite passing
+			// with the wrong (Titlecase) test data an earlier version of this test used.
+			moves: [{ move: 'Hyper Voice', percent: '90', type: 'normal' }],
 			abilities: [{ ability: 'Pixilate', percent: '95.0' }, { ability: 'Cute Charm', percent: '5.0' }],
 			spreads: [{ ev: '0/0/0/252/0/0', percent: '50' }],
 			natures: [{ nature: 'Modest', percent: '50' }],
