@@ -21,7 +21,7 @@ const {
 	assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
 	ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, applyDefensiveAbility, resolveMemberAbility,
 	computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
-	aggregateTeamThreats, isDamagingMove, movePower, effectiveMoveType, computeThreatMoveReasons, computeThreatSpeedReason,
+	aggregateTeamThreats, isDamagingMove, movePower, effectiveMoveType, stabAdjustedPower, computeThreatMoveReasons, computeThreatSpeedReason,
 	threatHasMoveOfCategory,
 	computeThreatReasons,
 	enrichTeamThreat, buildTeamThreatSquareHTML, buildTeamThreatsSectionHTML,
@@ -1543,6 +1543,12 @@ function mockThreatsDex() {
 		// weather tests below.
 		'hyper voice': { exists: true, type: 'Normal', category: 'Special', flags: { sound: 1 }, basePower: 90 },
 		'weather ball': { exists: true, type: 'Normal', category: 'Special', basePower: 50 },
+		// Real base powers, real shape — for stabAdjustedPower's own tests: the actual reported
+		// case, a non-STAB Solar Beam (120, Grass — not one of Charizard's own Fire/Flying types)
+		// outranking a real STAB Flamethrower (90, Fire) on raw power alone, despite Flamethrower
+		// hitting harder in practice (90 * 1.5 STAB = 135 > Solar Beam's un-boosted 120).
+		'solar beam': { exists: true, type: 'Grass', category: 'Special', basePower: 120 },
+		'flamethrower': { exists: true, type: 'Fire', category: 'Special', basePower: 90 },
 	};
 	// Fictional defender types, not the real type chart — 'weak' takes super-effective (2x)
 	// damage from both Water and Flying (damageTaken code 1, per typeEffectivenessMultiplier's
@@ -1558,12 +1564,20 @@ function mockThreatsDex() {
 		resists: { exists: true, damageTaken: { Water: 2 } },
 		fairyweak: { exists: true, damageTaken: { Fairy: 1 } },
 		fireweak: { exists: true, damageTaken: { Fire: 1 } },
+		// Super effective against both Grass and Fire — for proving STAB (not just raw power)
+		// decides the ranking between two moves that both already qualify.
+		stabtest: { exists: true, damageTaken: { Grass: 1, Fire: 1 } },
 	};
 	window.Dex = {
 		getPokemonIcon: (species) => `background:url(${species})`,
 		getTypeIcon: (type) => `<img alt="${type}">`,
 		moves: { get: (name) => moves[String(name).toLowerCase()] || { exists: false } },
 		types: { get: (name) => types[String(name).toLowerCase()] || { exists: false } },
+		// No species known by default (individual tests override window.Dex.species directly
+		// when they actually need one, e.g. for a Mega-Stone/STAB scenario) — just present so
+		// code that unconditionally calls window.Dex.species.get(...) doesn't throw for tests
+		// that don't care about species data at all.
+		species: { get: () => ({ exists: false }) },
 	};
 }
 
@@ -1680,6 +1694,21 @@ describe('movePower', () => {
 	});
 });
 
+describe('stabAdjustedPower', () => {
+	it('multiplies by 1.5 when the type is one of the attacker\'s own real types', () => {
+		expect(stabAdjustedPower(90, 'Fire', ['Fire', 'Flying'])).toBe(135);
+	});
+
+	it('leaves power unchanged when the type isn\'t one of the attacker\'s own types', () => {
+		expect(stabAdjustedPower(120, 'Grass', ['Fire', 'Flying'])).toBe(120);
+	});
+
+	it('leaves power unchanged with no/empty attackerTypes', () => {
+		expect(stabAdjustedPower(90, 'Fire', [])).toBe(90);
+		expect(stabAdjustedPower(90, 'Fire', undefined)).toBe(90);
+	});
+});
+
 describe('computeThreatMoveReasons', () => {
 	afterEach(() => { delete window.Dex; });
 
@@ -1692,6 +1721,20 @@ describe('computeThreatMoveReasons', () => {
 		expect(computeThreatMoveReasons(moves, ['weak'])).toEqual([
 			{ move: 'Wave Crash', type: 'Water', percent: 60 },
 			{ move: 'Aqua Jet', type: 'Water', percent: 80 },
+		]);
+	});
+
+	it('ranks by real STAB-adjusted power, not raw power — a Fire-type Charizard\'s Flamethrower (90 * 1.5 STAB = 135) beats its own non-STAB Solar Beam (120 raw)', () => {
+		mockThreatsDex();
+		const moves = [
+			{ move: 'Solar Beam', percent: '90', type: 'Grass' }, // 120 raw power, not one of Charizard's own types
+			{ move: 'Flamethrower', percent: '90', type: 'Fire' }, // 90 raw power, but real STAB on a Fire-type attacker
+		];
+		// 'stabtest' is super effective against both Grass and Fire, so both already qualify —
+		// this isolates the ranking itself, not which moves clear the >=2x bar.
+		expect(computeThreatMoveReasons(moves, ['stabtest'], '', ['Fire', 'Flying'])).toEqual([
+			{ move: 'Flamethrower', type: 'Fire', percent: 90 },
+			{ move: 'Solar Beam', type: 'Grass', percent: 90 },
 		]);
 	});
 
@@ -1877,6 +1920,21 @@ describe('computeThreatSpeedReason', () => {
 		};
 		const reason = computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100 });
 		expect(reason.move).toBe('Brave Bird');
+	});
+
+	it('ranks by real STAB-adjusted power, not raw power, when picking the outspeed move', () => {
+		mockThreatsDex();
+		const threat = {
+			moves: [
+				{ move: 'Solar Beam', percent: '90', type: 'Grass' }, // 120 raw, no STAB for this attacker
+				{ move: 'Flamethrower', percent: '90', type: 'Fire' }, // 90 raw * 1.5 STAB = 135
+			],
+			types: ['Fire', 'Flying'],
+			baseSpeed: 150,
+			scarfSpeed: null,
+		};
+		const reason = computeThreatSpeedReason(threat, { types: ['stabtest'], speed: 100 });
+		expect(reason.move).toBe('Flamethrower');
 	});
 });
 
@@ -2081,6 +2139,30 @@ describe('enrichTeamThreat', () => {
 		// faster than the threat's own un-Scarfed 140 — no speed reason, even though the raw
 		// Speed *numbers* alone (140 vs 100) would have looked like an outspeed.
 		expect(enriched.memberReasons[0].reasons.some((r) => r.kind === 'speed')).toBe(false);
+	});
+
+	it('extracts the threat\'s own real species types and feeds them through for real STAB-adjusted move ranking', () => {
+		mockThreatsDex();
+		// A real Fire/Flying Charizard: Flamethrower (90 * 1.5 STAB = 135) actually hits harder
+		// than its own non-STAB Solar Beam (120 raw) — the exact live case reported (Charizard
+		// showing as a threat to Sylveon via Solar Beam, ignoring its own real STAB).
+		window.Dex.species = { get: (name) => (name === 'Charizard' ? { exists: true, types: ['Fire', 'Flying'] } : { exists: true, types: ['stabtest'] }) };
+		window.Dex.items = { get: () => ({ exists: false }) };
+		const memberSet = { species: 'Sylveon', evs: {}, nature: '' };
+		const getStat = () => 10; // irrelevant here — only the STAB-driven move ranking matters
+		const tbRoom = { curSetList: [memberSet], getStat };
+		const mon = {
+			moves: [
+				{ move: 'Solar Beam', percent: '90', type: 'Grass' },
+				{ move: 'Flamethrower', percent: '90', type: 'Fire' },
+			],
+			spreads: [{ ev: '0/0/0/252/0/0', percent: '50' }],
+			natures: [{ nature: 'Modest', percent: '50' }],
+		};
+		const threat = { pokemon: 'Charizard', score: 10, members: ['Sylveon'] };
+		const enriched = enrichTeamThreat(tbRoom, threat, mon);
+		const moveReasons = enriched.memberReasons[0].reasons.filter((r) => r.kind === 'move');
+		expect(moveReasons[0]).toEqual({ kind: 'move', move: 'Flamethrower', type: 'Fire', percent: 90 });
 	});
 });
 

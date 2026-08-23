@@ -456,6 +456,24 @@
 		return (moveData && moveData.exists && typeof moveData.basePower === 'number') ? moveData.basePower : 0;
 	}
 
+	/** Real Same-Type-Attack-Bonus (STAB) — the real 1.5x every move gets when its own effective
+	 *  type (the post-effectiveMoveType type, not necessarily the move's bare listed one — a
+	 *  Pixilate Sylveon's Hyper Voice really does get STAB as Fairy, since Fairy is genuinely one
+	 *  of Sylveon's own types once the move's type is actually Fairy) matches one of the
+	 *  attacker's own real types. Folded into the power movePower's own ranking sorts by — raw
+	 *  base power alone already ranks the wrong move some of the time (that function's own doc
+	 *  comment); ignoring STAB compounds the same mistake in a different direction, a real
+	 *  reported case: a non-STAB Solar Beam (120 base power, Grass — not one of Charizard's own
+	 *  Fire/Flying types) was outranking a real STAB Fire move that hits harder in practice once
+	 *  the 1.5x is actually accounted for, despite the STAB move's own lower *raw* number. Not
+	 *  the extra 1.2x Pixilate-family abilities also grant on top of STAB in the real engine — a
+	 *  smaller, secondary effect this file doesn't model, unlike the primary STAB multiplier
+	 *  every damaging move gets. `attackerTypes` missing/empty (window.Dex or the threat's own
+	 *  species entry unavailable) just means no STAB bonus applies, not an error. */
+	function stabAdjustedPower(power, type, attackerTypes) {
+		return (attackerTypes && attackerTypes.includes(type)) ? power * 1.5 : power;
+	}
+
 	/** Real abilities that override a Normal-type move's own type outright — confirmed against
 	 *  Pokémon Showdown's own data/abilities.ts (every entry's real onModifyType hook), not
 	 *  assumed: a Pixilate Sylveon's Hyper Voice hits as Fairy, not Normal, and
@@ -550,14 +568,18 @@
 	 *  real/assumed ability, enrichTeamThreat) — a Pixilate Sylveon's Hyper Voice is checked and
 	 *  reported as Fairy, not the move's bare Normal. Returns `[]` if nothing qualifies.
 	 *
-	 *  Ranked by real base power first, usage percent only as a tiebreak — NOT by usage alone:
-	 *  a real, reported case, Basculegion commonly runs both Aqua Jet (base power 40) and Wave
-	 *  Crash (base power 120), and Aqua Jet's own real usage can outrank Wave Crash's even
-	 *  though Wave Crash is obviously the more threatening of the two (movePower's own doc
-	 *  comment). Usage still gates which moves are candidates at all (a real, commonly-used
-	 *  move, not just anything in the movepool) — it just isn't what orders them once they
-	 *  qualify. */
-	function computeThreatMoveReasons(moves, defenderTypes, ability) {
+	 *  Ranked by real STAB-adjusted power first (stabAdjustedPower, `attackerTypes` — the
+	 *  threat's own real types, enrichTeamThreat), usage percent only as a tiebreak — NOT by
+	 *  usage alone: a real, reported case, Basculegion commonly runs both Aqua Jet (base power
+	 *  40) and Wave Crash (base power 120), and Aqua Jet's own real usage can outrank Wave
+	 *  Crash's even though Wave Crash is obviously the more threatening of the two (movePower's
+	 *  own doc comment) — and STAB *specifically*, not just raw power, since a non-STAB move can
+	 *  otherwise still outrank a lower-raw-power move that actually hits harder once its own
+	 *  1.5x is accounted for (stabAdjustedPower's own doc comment: a real reported case, a
+	 *  non-STAB Solar Beam outranking a real STAB Fire move on a Fire-type attacker). Usage
+	 *  still gates which moves are candidates at all (a real, commonly-used move, not just
+	 *  anything in the movepool) — it just isn't what orders them once they qualify. */
+	function computeThreatMoveReasons(moves, defenderTypes, ability, attackerTypes) {
 		const candidates = [];
 		for (const m of (moves || [])) {
 			if (!m || !m.move || !m.type) continue;
@@ -566,7 +588,8 @@
 			if (!isDamagingMove(m.move)) continue;
 			const type = effectiveMoveType(m.move, m.type, ability);
 			if (typeEffectivenessMultiplier(type, defenderTypes) < 2) continue;
-			candidates.push({ move: m.move, type, percent, power: movePower(m.move) });
+			const power = stabAdjustedPower(movePower(m.move), type, attackerTypes);
+			candidates.push({ move: m.move, type, percent, power });
 		}
 		candidates.sort((a, b) => (b.power !== a.power) ? b.power - a.power : b.percent - a.percent);
 		return candidates.slice(0, TEAM_THREATS_MAX_MOVE_REASONS).map(({ move, type, percent }) => ({ move, type, percent }));
@@ -580,18 +603,19 @@
 	 *  `threat.ability` — a Charizard with Drought outspeeding and running Weather Ball is
 	 *  checked and reported as Fire, not the move's bare Normal). "Moves first and still lands a
 	 *  real hit" is its own distinct condition for counting as a real counter, separate from
-	 *  (and not requiring) computeThreatMoveReason's own >=2x bar — even a merely-neutral hit
+	 *  (and not requiring) computeThreatMoveReasons' own >=2x bar — even a merely-neutral hit
 	 *  that lands before the defender can act at all is a genuine threat that function alone
-	 *  would miss entirely. Picks the highest-usage qualifying move, same tiebreak reasoning as
-	 *  computeThreatMoveReason.
+	 *  would miss entirely. Picks the highest-STAB-adjusted-power qualifying move (`threat.types`
+	 *  — the threat's own real types, stabAdjustedPower), same ranking reasoning
+	 *  computeThreatMoveReasons' own doc comment gives.
 	 *
-	 *  `threat` is `{moves, ability, baseSpeed, scarfSpeed}` — scarfSpeed is null when Scarf
-	 *  isn't common enough on this species to credibly assume (enrichTeamThreat); `defender` is
-	 *  `{types, speed}` — the threatened member's own real computed Speed, its own held item
-	 *  included, the same number every other Speed comparison in this file already uses. Returns
-	 *  null when the threat doesn't outspeed either way, or has no move to back the claim with —
-	 *  a bare Speed advantage with nothing that actually connects isn't "countering" on its
-	 *  own. */
+	 *  `threat` is `{moves, ability, types, baseSpeed, scarfSpeed}` — scarfSpeed is null when
+	 *  Scarf isn't common enough on this species to credibly assume (enrichTeamThreat);
+	 *  `defender` is `{types, speed}` — the threatened member's own real computed Speed, its own
+	 *  held item included, the same number every other Speed comparison in this file already
+	 *  uses. Returns null when the threat doesn't outspeed either way, or has no move to back
+	 *  the claim with — a bare Speed advantage with nothing that actually connects isn't
+	 *  "countering" on its own. */
 	function computeThreatSpeedReason(threat, defender) {
 		if (!defender.speed) return null;
 		let viaScarf;
@@ -599,11 +623,12 @@
 		else if (threat.scarfSpeed && threat.scarfSpeed > defender.speed) viaScarf = true;
 		else return null;
 
-		// Ranked by real base power first, usage only as a tiebreak — same reasoning
+		// Ranked by real STAB-adjusted power first, usage only as a tiebreak — same reasoning
 		// computeThreatMoveReasons' own doc comment gives (Aqua Jet's real usage can outrank
-		// Wave Crash's even though Wave Crash is the obviously more threatening of the two): the
-		// backing move named here should be the one that actually makes outspeeding matter, not
-		// just whichever qualifying option happens to be the most common.
+		// Wave Crash's despite hitting far softer; a non-STAB Solar Beam can outrank a real STAB
+		// move on raw power alone despite the STAB move hitting harder in practice): the backing
+		// move named here should be the one that actually makes outspeeding matter, not just
+		// whichever qualifying option happens to be the most common or the highest *raw* number.
 		let best = null;
 		for (const m of (threat.moves || [])) {
 			if (!m || !m.move || !m.type) continue;
@@ -612,7 +637,7 @@
 			if (!isDamagingMove(m.move)) continue;
 			const type = effectiveMoveType(m.move, m.type, threat.ability);
 			if (typeEffectivenessMultiplier(type, defender.types) < 1) continue;
-			const power = movePower(m.move);
+			const power = stabAdjustedPower(movePower(m.move), type, threat.types);
 			if (!best || power > best.power || (power === best.power && percent > best.percent)) {
 				best = { move: m.move, type, percent, power };
 			}
@@ -641,18 +666,22 @@
 	}
 
 	/** The actual "why" behind one threat/team-member matchup, for the Biggest Threats hover
-	 *  tooltip (buildTeamThreatTooltipHTML). `threat` is `{moves, ability, atk, spa, baseSpeed,
-	 *  scarfSpeed}` — the threatening species' own Pikalytics move list and real most-common
-	 *  ability (enrichTeamThreat, its own top real Pikalytics ability — fed to effectiveMoveType
-	 *  inside computeThreatMoveReason/computeThreatSpeedReason so a Pixilate/Aerilate/Galvanize/
-	 *  Refrigerate/Normalize/Liquid Voice user's move is checked and reported as its real
-	 *  effective type, and a weather-setting ability's own species running Weather Ball is
-	 *  checked and reported as that weather's real type, not either move's bare listed type)
-	 *  plus its real computed offensive stats and Speed (enrichTeamThreat below derives those
-	 *  from its top real spread+nature, the same "no item" Foe-column technique
-	 *  buildSpeedComparisonTooltipHTML already uses, `scarfSpeed` additionally accounting for a
-	 *  real, common-enough Choice Scarf); `defender` is `{types, def, spd, speed}` — the
-	 *  threatened team member's own real defensive types/stats and Speed.
+	 *  tooltip (buildTeamThreatTooltipHTML). `threat` is `{moves, ability, types, atk, spa,
+	 *  baseSpeed, scarfSpeed}` — the threatening species' own Pikalytics move list, real
+	 *  most-common ability, and real own types (enrichTeamThreat: `ability` its own top real
+	 *  Pikalytics ability, fed to effectiveMoveType inside computeThreatMoveReasons/
+	 *  computeThreatSpeedReason so a Pixilate/Aerilate/Galvanize/Refrigerate/Normalize/Liquid
+	 *  Voice user's move is checked and reported as its real effective type, and a
+	 *  weather-setting ability's own species running Weather Ball is checked and reported as
+	 *  that weather's real type, not either move's bare listed type; `types` its own real
+	 *  species types, fed to stabAdjustedPower inside those same two functions so a move that
+	 *  matches one of the threat's own types is ranked with its real STAB bonus factored in, not
+	 *  just its bare base power) plus its real computed offensive stats and Speed
+	 *  (enrichTeamThreat below derives those from its top real spread+nature, the same "no item"
+	 *  Foe-column technique buildSpeedComparisonTooltipHTML already uses, `scarfSpeed`
+	 *  additionally accounting for a real, common-enough Choice Scarf); `defender` is `{types,
+	 *  def, spd, speed}` — the threatened team member's own real defensive types/stats and
+	 *  Speed.
 	 *
 	 *  Returns a handful of typed reason objects, ordered most-concrete-first: `{kind: 'speed',
 	 *  move, type, percent, viaScarf}` for outspeeding with a real, non-resisted hit
@@ -677,7 +706,7 @@
 		const reasons = [];
 		const speedReason = computeThreatSpeedReason(threat, defender);
 		if (speedReason) reasons.push(speedReason);
-		const moveReasons = computeThreatMoveReasons(threat.moves, defender.types, threat.ability)
+		const moveReasons = computeThreatMoveReasons(threat.moves, defender.types, threat.ability, threat.types)
 			.filter((r) => !speedReason || r.move !== speedReason.move);
 		for (const r of moveReasons) reasons.push({ kind: 'move', move: r.move, type: r.type, percent: r.percent });
 		if (threat.atk && defender.def && (threat.atk / defender.def) >= TEAM_THREATS_STAT_RATIO_THRESHOLD &&
@@ -732,6 +761,16 @@
 		// be meaningful — so computed unconditionally rather than gated behind that check.
 		const topAbility = ((mon && mon.abilities) || [])[0];
 		const ability = topAbility && topAbility.ability;
+		// The threat's own real species types (window.Dex — the same source the defender side
+		// already uses for its own types elsewhere in this function) — fed to stabAdjustedPower
+		// inside computeThreatReasons so a move matching one of the threat's own types is ranked
+		// with its real 1.5x STAB bonus factored in, not just its bare base power.
+		// Named threatTypes, not types — the per-member loop below has its own, unrelated
+		// `types` (the *defender's* own types) in a nested scope; sharing the name would shadow
+		// this one there without any error, silently feeding the wrong types into
+		// stabAdjustedPower.
+		const threatSpecies = window.Dex && window.Dex.species.get(threat.pokemon);
+		const threatTypes = (threatSpecies && threatSpecies.exists && threatSpecies.types) || [];
 		let atk = null;
 		let spa = null;
 		let baseSpeed = null;
@@ -768,7 +807,10 @@
 			const types = (resolved && resolved.exists && resolved.types) || [];
 			return {
 				member: memberSpeciesName,
-				reasons: computeThreatReasons({ moves, ability, atk, spa, baseSpeed, scarfSpeed }, { types, def, spd, speed }),
+				reasons: computeThreatReasons(
+					{ moves, ability, types: threatTypes, atk, spa, baseSpeed, scarfSpeed },
+					{ types, def, spd, speed },
+				),
 			};
 		});
 
@@ -1078,7 +1120,8 @@
 			assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
 			ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, applyDefensiveAbility, resolveMemberAbility,
 			computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
-			aggregateTeamThreats, isDamagingMove, movePower, effectiveMoveType, computeThreatMoveReasons, computeThreatSpeedReason,
+			aggregateTeamThreats, isDamagingMove, movePower, stabAdjustedPower, effectiveMoveType,
+			computeThreatMoveReasons, computeThreatSpeedReason,
 			threatHasMoveOfCategory,
 			computeThreatReasons,
 			enrichTeamThreat, buildTeamThreatSquareHTML, buildTeamThreatsSectionHTML,
