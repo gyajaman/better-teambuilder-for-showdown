@@ -415,6 +415,11 @@
 	 *  differ a little) — 1.3 meaning "at least 30% higher." Same "starting guess" caveat as
 	 *  TEAM_THREATS_MOVE_USAGE_MIN_PERCENT above. */
 	const TEAM_THREATS_STAT_RATIO_THRESHOLD = 1.3;
+	/** How many distinct super-effective moves computeThreatMoveReasons is willing to name at
+	 *  once — a real threat can have more than one genuinely dangerous option (own doc comment
+	 *  on why usage alone was the wrong ranking), and showing a couple is worth the extra table
+	 *  rows; showing every qualifying move it has would just be a movepool dump, not a reason. */
+	const TEAM_THREATS_MAX_MOVE_REASONS = 2;
 
 	/** Whether `moveName` actually deals damage at all — Pikalytics' own per-move data (`{move,
 	 *  percent, type}`) carries a type for every move, Status moves included (Detect/Protect are
@@ -429,6 +434,26 @@
 		if (!window.Dex) return false;
 		const moveData = window.Dex.moves.get(moveName);
 		return !!(moveData && moveData.exists && moveData.category !== 'Status');
+	}
+
+	/** A move's own real base power (window.Dex, not Pikalytics — usage% has nothing to do with
+	 *  how hard a move actually hits) — 0 for anything window.Dex can't confirm a real numeric
+	 *  base power for, the same "can't verify it, don't credit it" fallback isDamagingMove's own
+	 *  doc comment already uses, rather than treating an unknown move as maximally threatening.
+	 *  This is what computeThreatMoveReasons/computeThreatSpeedReason actually rank candidate
+	 *  moves by now, usage only as a tiebreak — real usage percent alone was picking the wrong
+	 *  move to lead with (a real, reported case: Basculegion commonly runs both Aqua Jet, base
+	 *  power 40, and Wave Crash, base power 120 — Aqua Jet's own real usage can outrank Wave
+	 *  Crash's, but Wave Crash is obviously the more threatening of the two, and a reason citing
+	 *  "commonly runs Aqua Jet" instead undersold the actual matchup). Not adjusted for STAB,
+	 *  the defender's own real bulk, secondary effects, or accuracy — a real, deliberately rough
+	 *  proxy for "how hard does this hit," not a full damage calculator; good enough to fix the
+	 *  Aqua-Jet-over-Wave-Crash class of misordering without this file growing an actual damage
+	 *  formula for a hover tooltip. */
+	function movePower(moveName) {
+		if (!window.Dex) return 0;
+		const moveData = window.Dex.moves.get(moveName);
+		return (moveData && moveData.exists && typeof moveData.basePower === 'number') ? moveData.basePower : 0;
 	}
 
 	/** Real abilities that override a Normal-type move's own type outright — confirmed against
@@ -515,20 +540,25 @@
 		return type;
 	}
 
-	/** The single most-used move in `moves` (Pikalytics' own per-species move list — `{move,
-	 *  percent, type}`, see pikalytics.js's own module doc comment) that clears
-	 *  TEAM_THREATS_MOVE_USAGE_MIN_PERCENT, actually deals damage (isDamagingMove — a Status
-	 *  move can't be "super effective," whatever type it's flavored as), and is super effective
-	 *  (via the same typeEffectivenessMultiplier every other type-chart check in this file uses)
-	 *  against `defenderTypes` once its own *real effective* type is resolved (effectiveMoveType,
-	 *  `ability` — the threat's own real/assumed ability, enrichTeamThreat) — a Pixilate
-	 *  Sylveon's Hyper Voice is checked and reported as Fairy, not the move's bare Normal —
-	 *  or null if nothing qualifies. Picks the highest-*usage* qualifying move, not the
-	 *  highest-effectiveness one: two super-effective options are both "2x", so which one a real
-	 *  build is more likely to actually be running is the more useful thing to name in a
-	 *  reason. */
-	function computeThreatMoveReason(moves, defenderTypes, ability) {
-		let best = null;
+	/** Up to TEAM_THREATS_MAX_MOVE_REASONS real, distinct super-effective moves in `moves`
+	 *  (Pikalytics' own per-species move list — `{move, percent, type}`, see pikalytics.js's own
+	 *  module doc comment) that each clear TEAM_THREATS_MOVE_USAGE_MIN_PERCENT, actually deal
+	 *  damage (isDamagingMove — a Status move can't be "super effective," whatever type it's
+	 *  flavored as), and are super effective (via the same typeEffectivenessMultiplier every
+	 *  other type-chart check in this file uses) against `defenderTypes` once each one's own
+	 *  *real effective* type is resolved (effectiveMoveType, `ability` — the threat's own
+	 *  real/assumed ability, enrichTeamThreat) — a Pixilate Sylveon's Hyper Voice is checked and
+	 *  reported as Fairy, not the move's bare Normal. Returns `[]` if nothing qualifies.
+	 *
+	 *  Ranked by real base power first, usage percent only as a tiebreak — NOT by usage alone:
+	 *  a real, reported case, Basculegion commonly runs both Aqua Jet (base power 40) and Wave
+	 *  Crash (base power 120), and Aqua Jet's own real usage can outrank Wave Crash's even
+	 *  though Wave Crash is obviously the more threatening of the two (movePower's own doc
+	 *  comment). Usage still gates which moves are candidates at all (a real, commonly-used
+	 *  move, not just anything in the movepool) — it just isn't what orders them once they
+	 *  qualify. */
+	function computeThreatMoveReasons(moves, defenderTypes, ability) {
+		const candidates = [];
 		for (const m of (moves || [])) {
 			if (!m || !m.move || !m.type) continue;
 			const percent = parseFloat(m.percent) || 0;
@@ -536,9 +566,10 @@
 			if (!isDamagingMove(m.move)) continue;
 			const type = effectiveMoveType(m.move, m.type, ability);
 			if (typeEffectivenessMultiplier(type, defenderTypes) < 2) continue;
-			if (!best || percent > best.percent) best = { move: m.move, type, percent };
+			candidates.push({ move: m.move, type, percent, power: movePower(m.move) });
 		}
-		return best;
+		candidates.sort((a, b) => (b.power !== a.power) ? b.power - a.power : b.percent - a.percent);
+		return candidates.slice(0, TEAM_THREATS_MAX_MOVE_REASONS).map(({ move, type, percent }) => ({ move, type, percent }));
 	}
 
 	/** Whether a threat that outspeeds — naturally, or only with a real, common-enough Choice
@@ -568,6 +599,11 @@
 		else if (threat.scarfSpeed && threat.scarfSpeed > defender.speed) viaScarf = true;
 		else return null;
 
+		// Ranked by real base power first, usage only as a tiebreak — same reasoning
+		// computeThreatMoveReasons' own doc comment gives (Aqua Jet's real usage can outrank
+		// Wave Crash's even though Wave Crash is the obviously more threatening of the two): the
+		// backing move named here should be the one that actually makes outspeeding matter, not
+		// just whichever qualifying option happens to be the most common.
 		let best = null;
 		for (const m of (threat.moves || [])) {
 			if (!m || !m.move || !m.type) continue;
@@ -576,7 +612,10 @@
 			if (!isDamagingMove(m.move)) continue;
 			const type = effectiveMoveType(m.move, m.type, threat.ability);
 			if (typeEffectivenessMultiplier(type, defender.types) < 1) continue;
-			if (!best || percent > best.percent) best = { move: m.move, type, percent };
+			const power = movePower(m.move);
+			if (!best || power > best.power || (power === best.power && percent > best.percent)) {
+				best = { move: m.move, type, percent, power };
+			}
 		}
 		if (!best) return null;
 		return { kind: 'speed', move: best.move, type: best.type, percent: best.percent, viaScarf };
@@ -615,18 +654,18 @@
 	 *  real, common-enough Choice Scarf); `defender` is `{types, def, spd, speed}` — the
 	 *  threatened team member's own real defensive types/stats and Speed.
 	 *
-	 *  Returns up to three typed reason objects, ordered most-concrete-first: EITHER
-	 *  `{kind: 'speed', move, type, percent, viaScarf}` for outspeeding with a real, non-resisted
-	 *  hit (computeThreatSpeedReason) — checked first, since a super-effective move that also
-	 *  outspeeds is strictly the more complete fact ("lands first AND hits hard," not just "hits
-	 *  hard") — OR, only when that's not the case, `{kind: 'move', move, type, percent}` for a
-	 *  named commonly-used super-effective move on its own (computeThreatMoveReason). Never both:
-	 *  once the speed reason is already showing a real qualifying move (with its own type icon,
-	 *  same as the plain move reason's own cell — buildTeamThreatReasonCellHTML), restating "also
-	 *  has a super-effective move" as its own separate line would just be the same underlying
-	 *  fact twice, not two different facts. Both kept structured (not pre-formatted text) so
-	 *  buildTeamThreatTooltipHTML's table can render the move's own type icon next to its name,
-	 *  not just describe it in prose.
+	 *  Returns a handful of typed reason objects, ordered most-concrete-first: `{kind: 'speed',
+	 *  move, type, percent, viaScarf}` for outspeeding with a real, non-resisted hit
+	 *  (computeThreatSpeedReason) when that applies — checked first, since a super-effective
+	 *  move that also outspeeds is strictly the more complete fact ("lands first AND hits hard,"
+	 *  not just "hits hard") — then up to TEAM_THREATS_MAX_MOVE_REASONS `{kind: 'move', move,
+	 *  type, percent}` entries for other real, distinct super-effective moves
+	 *  (computeThreatMoveReasons), excluding whichever move the speed reason already named (that
+	 *  exact move, already shown with its own type icon in the speed reason's own cell — see
+	 *  buildTeamThreatReasonCellHTML — would just be the same underlying fact restated, not a
+	 *  second one) but still naming a genuinely *different* strong move when the threat has one.
+	 *  Both kept structured (not pre-formatted text) so buildTeamThreatTooltipHTML's table can
+	 *  render each move's own type icon next to its name, not just describe it in prose.
 	 *
 	 *  Then up to two `{kind: 'stat', text}` entries (physical, then special). A stat reason only
 	 *  appears when the threat also has a real move of the matching category
@@ -637,14 +676,10 @@
 	function computeThreatReasons(threat, defender) {
 		const reasons = [];
 		const speedReason = computeThreatSpeedReason(threat, defender);
-		if (speedReason) {
-			reasons.push(speedReason);
-		} else {
-			const moveReason = computeThreatMoveReason(threat.moves, defender.types, threat.ability);
-			if (moveReason) {
-				reasons.push({ kind: 'move', move: moveReason.move, type: moveReason.type, percent: moveReason.percent });
-			}
-		}
+		if (speedReason) reasons.push(speedReason);
+		const moveReasons = computeThreatMoveReasons(threat.moves, defender.types, threat.ability)
+			.filter((r) => !speedReason || r.move !== speedReason.move);
+		for (const r of moveReasons) reasons.push({ kind: 'move', move: r.move, type: r.type, percent: r.percent });
 		if (threat.atk && defender.def && (threat.atk / defender.def) >= TEAM_THREATS_STAT_RATIO_THRESHOLD &&
 			threatHasMoveOfCategory(threat.moves, 'Physical')) {
 			reasons.push({ kind: 'stat', text: 'High Attack vs Low Defense' });
@@ -1043,7 +1078,7 @@
 			assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
 			ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, applyDefensiveAbility, resolveMemberAbility,
 			computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
-			aggregateTeamThreats, isDamagingMove, effectiveMoveType, computeThreatMoveReason, computeThreatSpeedReason,
+			aggregateTeamThreats, isDamagingMove, movePower, effectiveMoveType, computeThreatMoveReasons, computeThreatSpeedReason,
 			threatHasMoveOfCategory,
 			computeThreatReasons,
 			enrichTeamThreat, buildTeamThreatSquareHTML, buildTeamThreatsSectionHTML,

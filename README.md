@@ -93,9 +93,11 @@ A row of icon squares for the real Pokémon most likely to give your whole roste
 
 Hover a square for a table of exactly which of your team it threatens and, where the data supports it, why: your Pokémon's sprite on one side, and one or more of:
 
-- **Outspeeds** with a real, commonly-used, actually-damaging move that isn't resisted — real Speed on both sides (your Pokémon's actual EVs/nature/item, the threat's own top real spread) via the same Speed math the rest of the extension uses, factoring in a real, common-enough Choice Scarf on the threat's side too; tagged "(needs Scarf)" when the outspeed only holds with one. Shown instead of the line below, not alongside it, whenever it applies — "moves first and hits" already covers "hits," so restating the same move as a separate super-effective line would just be the same fact twice.
-- A commonly-used **super-effective move** — its real type icon, name, and usage percent. Only shown when the outspeed line above doesn't already apply.
+- **Outspeeds** with a real, commonly-used, actually-damaging move that isn't resisted — real Speed on both sides (your Pokémon's actual EVs/nature/item, the threat's own top real spread) via the same Speed math the rest of the extension uses, factoring in a real, common-enough Choice Scarf on the threat's side too; tagged "(needs Scarf)" when the outspeed only holds with one.
+- Up to two commonly-used **super-effective moves** — each its own real type icon, name, and usage percent — excluding only the exact move the outspeed line above already named (if any), so a second, genuinely different strong option still gets its own line.
 - A stat-based mismatch — "High Attack vs Low Defense" / "High Special Attack vs Low Special Defense" — only shown when the threat's own moveset actually backs the stat up, not from the raw numbers alone.
+
+Which move(s) get named is decided by real base power, not usage percent alone — a real reported case, Basculegion commonly runs both Aqua Jet (weak, but slightly more used) and Wave Crash (obviously the more threatening of the two); usage still gates which moves are even considered "commonly used" in the first place, it just isn't what orders them once they qualify.
 
 A Status move (Protect, Detect, and the like) never counts toward any of these — Pikalytics tags every move with a type, Status moves included, but a move that deals no damage can't be "super effective" or "a real hit" no matter what type it's flavored as.
 

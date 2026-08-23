@@ -21,7 +21,7 @@ const {
 	assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
 	ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, applyDefensiveAbility, resolveMemberAbility,
 	computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
-	aggregateTeamThreats, isDamagingMove, effectiveMoveType, computeThreatMoveReason, computeThreatSpeedReason,
+	aggregateTeamThreats, isDamagingMove, movePower, effectiveMoveType, computeThreatMoveReasons, computeThreatSpeedReason,
 	threatHasMoveOfCategory,
 	computeThreatReasons,
 	enrichTeamThreat, buildTeamThreatSquareHTML, buildTeamThreatsSectionHTML,
@@ -1523,20 +1523,26 @@ describe('aggregateTeamThreats', () => {
  *  extending a fixture 30+ other tests share is worth avoiding when a local one is this cheap. */
 function mockThreatsDex() {
 	const moves = {
-		'water spout': { exists: true, type: 'Water', category: 'Special' },
-		'brave bird': { exists: true, type: 'Flying', category: 'Physical' },
-		'protect': { exists: true, type: 'Normal', category: 'Status' },
+		'water spout': { exists: true, type: 'Water', category: 'Special', basePower: 150 },
+		'brave bird': { exists: true, type: 'Flying', category: 'Physical', basePower: 120 },
+		'protect': { exists: true, type: 'Normal', category: 'Status', basePower: 0 },
 		// Fictional type assignment (real Detect is Fighting-type) — deliberately given the
 		// same type as Water Spout above so a test can prove a Status move is excluded on its
 		// own real category, not incidentally excluded for lacking a qualifying type. Mirrors
 		// the real bug this guards against: Detect showing as a reason to fear a Water-weak
 		// defender purely because Pikalytics' own move data tags every move with a type,
 		// Status moves included, with nothing marking "but this one deals zero damage."
-		'detect': { exists: true, type: 'Water', category: 'Status' },
+		'detect': { exists: true, type: 'Water', category: 'Status', basePower: 0 },
+		// Real base powers, real shape — the actual reported case computeThreatMoveReasons'
+		// own doc comment names: Basculegion commonly runs both, Aqua Jet's real usage can
+		// outrank Wave Crash's, but Wave Crash (120 base power, recoil) is obviously the more
+		// threatening of the two next to Aqua Jet's mere 40.
+		'aqua jet': { exists: true, type: 'Water', category: 'Physical', basePower: 40 },
+		'wave crash': { exists: true, type: 'Water', category: 'Physical', basePower: 120 },
 		// Real moves, real shape (type/category/flags) — for effectiveMoveType's own ability/
 		// weather tests below.
-		'hyper voice': { exists: true, type: 'Normal', category: 'Special', flags: { sound: 1 } },
-		'weather ball': { exists: true, type: 'Normal', category: 'Special' },
+		'hyper voice': { exists: true, type: 'Normal', category: 'Special', flags: { sound: 1 }, basePower: 90 },
+		'weather ball': { exists: true, type: 'Normal', category: 'Special', basePower: 50 },
 	};
 	// Fictional defender types, not the real type chart — 'weak' takes super-effective (2x)
 	// damage from both Water and Flying (damageTaken code 1, per typeEffectivenessMultiplier's
@@ -1657,36 +1663,77 @@ describe('isDamagingMove', () => {
 	});
 });
 
-describe('computeThreatMoveReason', () => {
+describe('movePower', () => {
 	afterEach(() => { delete window.Dex; });
 
-	it('picks the highest-usage move that is both commonly used and super effective', () => {
+	it('reads a move\'s own real base power', () => {
+		mockThreatsDex();
+		expect(movePower('Wave Crash')).toBe(120);
+		expect(movePower('Aqua Jet')).toBe(40);
+	});
+
+	it('is 0 for a move Dex can\'t confirm a real base power for, or without window.Dex at all', () => {
+		mockThreatsDex();
+		expect(movePower('Not A Real Move')).toBe(0);
+		delete window.Dex;
+		expect(movePower('Wave Crash')).toBe(0);
+	});
+});
+
+describe('computeThreatMoveReasons', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('ranks by real base power first, not usage — Wave Crash (120) beats Aqua Jet (40) despite lower usage (the real reported Basculegion case)', () => {
 		mockThreatsDex();
 		const moves = [
-			{ move: 'Protect', percent: '90', type: 'Normal' }, // common, but not super effective (1x)
-			{ move: 'Water Spout', percent: '40', type: 'Water' }, // super effective, lower usage
-			{ move: 'Brave Bird', percent: '75', type: 'Flying' }, // super effective, highest usage
+			{ move: 'Aqua Jet', percent: '80', type: 'Water' }, // higher usage, weaker
+			{ move: 'Wave Crash', percent: '60', type: 'Water' }, // lower usage, obviously more threatening
 		];
-		const reason = computeThreatMoveReason(moves, ['weak']);
-		expect(reason).toEqual({ move: 'Brave Bird', type: 'Flying', percent: 75 });
+		expect(computeThreatMoveReasons(moves, ['weak'])).toEqual([
+			{ move: 'Wave Crash', type: 'Water', percent: 60 },
+			{ move: 'Aqua Jet', type: 'Water', percent: 80 },
+		]);
+	});
+
+	it('breaks a real power tie by usage percent', () => {
+		mockThreatsDex();
+		// Wave Crash and Brave Bird are both real 120-power moves, and 'weak' is super effective
+		// against both their types (Water/Flying) — a genuine power tie, broken by usage.
+		const moves = [
+			{ move: 'Wave Crash', percent: '40', type: 'Water' },
+			{ move: 'Brave Bird', percent: '75', type: 'Flying' },
+		];
+		expect(computeThreatMoveReasons(moves, ['weak']).map((r) => r.move)).toEqual(['Brave Bird', 'Wave Crash']);
+	});
+
+	it('caps the result at TEAM_THREATS_MAX_MOVE_REASONS (2) even with more real qualifying moves than that', () => {
+		mockThreatsDex();
+		const moves = [
+			{ move: 'Water Spout', percent: '90', type: 'Water' }, // 150 power
+			{ move: 'Wave Crash', percent: '90', type: 'Water' }, // 120 power
+			{ move: 'Aqua Jet', percent: '90', type: 'Water' }, // 40 power — should be dropped
+		];
+		const reasons = computeThreatMoveReasons(moves, ['weak']);
+		expect(reasons).toHaveLength(2);
+		expect(reasons.map((r) => r.move)).toEqual(['Water Spout', 'Wave Crash']);
 	});
 
 	it('ignores a super-effective move below the commonly-used usage threshold', () => {
 		mockThreatsDex();
 		const moves = [{ move: 'Water Spout', percent: '10', type: 'Water' }]; // below 20%
-		expect(computeThreatMoveReason(moves, ['weak'])).toBeNull();
+		expect(computeThreatMoveReasons(moves, ['weak'])).toEqual([]);
 	});
 
-	it('returns null when nothing is super effective', () => {
+	it('returns [] when nothing is super effective', () => {
 		mockThreatsDex();
 		const moves = [{ move: 'Protect', percent: '90', type: 'Normal' }];
-		expect(computeThreatMoveReason(moves, ['weak'])).toBeNull();
+		expect(computeThreatMoveReasons(moves, ['weak'])).toEqual([]);
 	});
 
 	it('never credits a Status move, even one whose own flavor type would otherwise be super effective (the real Detect-vs-Tyranitar bug)', () => {
 		mockThreatsDex();
 		const moves = [{ move: 'Detect', percent: '90', type: 'Water' }]; // Status — see mockThreatsDex's own comment
-		expect(computeThreatMoveReason(moves, ['weak'])).toBeNull();
+		expect(computeThreatMoveReasons(moves, ['weak'])).toEqual([]);
 	});
 
 	it('checks a move\'s real effective type, not its bare listed one — Pixilate Sylveon\'s Hyper Voice reads as Fairy', () => {
@@ -1696,21 +1743,21 @@ describe('computeThreatMoveReason', () => {
 		// didn't actually catch effectiveMoveType's own real case-sensitivity bug.
 		const moves = [{ move: 'Hyper Voice', percent: '90', type: 'normal' }];
 		// 'fairyweak' is only super effective against Fairy — Normal alone wouldn't qualify.
-		expect(computeThreatMoveReason(moves, ['fairyweak'], 'Pixilate')).toEqual({ move: 'Hyper Voice', type: 'Fairy', percent: 90 });
-		expect(computeThreatMoveReason(moves, ['fairyweak'])).toBeNull(); // no ability given -> stays Normal, doesn't qualify
+		expect(computeThreatMoveReasons(moves, ['fairyweak'], 'Pixilate')).toEqual([{ move: 'Hyper Voice', type: 'Fairy', percent: 90 }]);
+		expect(computeThreatMoveReasons(moves, ['fairyweak'])).toEqual([]); // no ability given -> stays Normal, doesn't qualify
 	});
 
 	it('checks Weather Ball\'s real weather-driven type — Drought Charizard\'s Weather Ball reads as Fire', () => {
 		mockThreatsDex();
 		const moves = [{ move: 'Weather Ball', percent: '90', type: 'Normal' }];
-		expect(computeThreatMoveReason(moves, ['fireweak'], 'Drought')).toEqual({ move: 'Weather Ball', type: 'Fire', percent: 90 });
-		expect(computeThreatMoveReason(moves, ['fireweak'])).toBeNull(); // no weather-setter -> stays Normal, doesn't qualify
+		expect(computeThreatMoveReasons(moves, ['fireweak'], 'Drought')).toEqual([{ move: 'Weather Ball', type: 'Fire', percent: 90 }]);
+		expect(computeThreatMoveReasons(moves, ['fireweak'])).toEqual([]); // no weather-setter -> stays Normal, doesn't qualify
 	});
 
-	it('returns null for empty/missing moves', () => {
+	it('returns [] for empty/missing moves', () => {
 		mockThreatsDex();
-		expect(computeThreatMoveReason([], ['weak'])).toBeNull();
-		expect(computeThreatMoveReason(undefined, ['weak'])).toBeNull();
+		expect(computeThreatMoveReasons([], ['weak'])).toEqual([]);
+		expect(computeThreatMoveReasons(undefined, ['weak'])).toEqual([]);
 	});
 });
 
@@ -1803,11 +1850,26 @@ describe('computeThreatSpeedReason', () => {
 		expect(computeThreatSpeedReason(threat, { types: ['neutral'], speed: null })).toBeNull();
 	});
 
-	it('picks the highest-usage qualifying move among several', () => {
+	it('picks the highest-*power* qualifying move among several, not the highest-usage one', () => {
 		mockThreatsDex();
 		const threat = {
 			moves: [
-				{ move: 'Water Spout', percent: '40', type: 'Water' },
+				{ move: 'Water Spout', percent: '40', type: 'Water' }, // 150 power, lower usage
+				{ move: 'Brave Bird', percent: '75', type: 'Flying' }, // 120 power, higher usage
+			],
+			baseSpeed: 150,
+			scarfSpeed: null,
+		};
+		const reason = computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100 });
+		expect(reason.move).toBe('Water Spout');
+	});
+
+	it('breaks a real power tie by usage percent', () => {
+		mockThreatsDex();
+		const threat = {
+			// Wave Crash and Brave Bird are both real 120-power moves.
+			moves: [
+				{ move: 'Wave Crash', percent: '40', type: 'Water' },
 				{ move: 'Brave Bird', percent: '75', type: 'Flying' },
 			],
 			baseSpeed: 150,
@@ -1845,6 +1907,20 @@ describe('computeThreatReasons', () => {
 		expect(computeThreatReasons(threat, defender)).toEqual([
 			{ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: false },
 			{ kind: 'stat', text: 'High Special Attack vs Low Special Defense' },
+		]);
+	});
+
+	it('shows a second, genuinely different move reason alongside the speed reason, excluding only the exact move the speed reason already named', () => {
+		mockThreatsDex();
+		const moves = [
+			{ move: 'Water Spout', percent: '90', type: 'Water' }, // 150 power — top pick for both speed and move reasons
+			{ move: 'Brave Bird', percent: '80', type: 'Flying' }, // 120 power — a real second option
+		];
+		const threat = { moves, baseSpeed: 150, scarfSpeed: null };
+		const defender = { types: ['weak'], speed: 100 };
+		expect(computeThreatReasons(threat, defender)).toEqual([
+			{ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: false },
+			{ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 80 },
 		]);
 	});
 
