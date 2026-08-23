@@ -1366,19 +1366,38 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 }
 /* A Mega-capable member's own header cell (content.js buildTeamDefensiveProfileHTML/
  * onPikaSidebarClick) — clickable to toggle that column between its Mega forme (the default)
- * and its real base forme. Hover treatment copied from .cf-pika-row's own (border + tinted
- * background) so this reads as the same "clickable" idiom already established elsewhere in the
- * sidebar, not a new one; a plain (non-toggleable) member header gets neither the cursor nor
- * the hover, so nothing implies it's interactive when there's nothing to toggle. */
+ * and its real base forme. Just the pointer cursor here; the actual "this one's Mega-capable"
+ * signal is the always-visible corner badge below, not a hover-only box treatment — a plain
+ * (non-toggleable) member header gets neither, so nothing implies it's interactive when there's
+ * nothing to toggle. */
 .cf-defmatrix-member-toggleable {
 	cursor: pointer;
-	border-radius: 3px;
 }
-.cf-defmatrix-member-toggleable:hover {
-	background: #F8F8F8;
+/* Anchors cf-defmatrix-toggle-badge below, same role .cf-speedcmp-sprite plays for its own
+ * corner badges elsewhere in this file. */
+.cf-defmatrix-sprite-wrap {
+	position: relative;
+	display: inline-block;
 }
-.dark .cf-defmatrix-member-toggleable:hover {
-	background: rgba(100, 100, 100, .5);
+/* Small persistent "swap" glyph pinned to the sprite's own bottom-right corner — visible at a
+ * glance for every Mega-capable member at once, unlike a hover-only or title-tooltip affordance
+ * that only reveals itself one sprite at a time as the user happens to mouse over it. Same
+ * white-fill/black-outline treatment as .cf-speedcmp-usage-badge elsewhere in this file (a real
+ * text-stroke has no reliable cross-browser support), so it reads clearly over any sprite/theme
+ * without needing its own background box. */
+.cf-defmatrix-toggle-badge {
+	position: absolute;
+	right: -3px;
+	bottom: -3px;
+	font-size: 11px;
+	line-height: 1;
+	color: #FFFFFF;
+	text-shadow:
+		-1px -1px 0 #000000,
+		1px -1px 0 #000000,
+		-1px 1px 0 #000000,
+		1px 1px 0 #000000;
+	pointer-events: none;
 }
 .cf-defmatrix-cell {
 	color: #000000;

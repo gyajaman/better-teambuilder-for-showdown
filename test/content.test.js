@@ -1147,6 +1147,18 @@ describe('computeTeamDefensiveProfile', () => {
 		]);
 	});
 
+	it('actually swaps to the real base forme (via Dex baseSpecies, not the raw set data) when toggling a directly-picked Mega', () => {
+		mockBattleDex();
+		// set.species is already 'Blastoise-Mega' here — there's no separate base-species field
+		// anywhere on this set the way there is for a base-species-plus-item build, so the base
+		// name has to come from window.Dex's own baseSpecies, not sets[i].species (which would
+		// just be 'Blastoise-Mega' again, silently toggling to the exact same sprite).
+		const tbRoom = { curSetList: [{ species: 'Blastoise-Mega', name: '' }] };
+		expect(computeTeamDefensiveProfile(tbRoom, new Set([0])).members).toEqual([
+			{ species: 'Blastoise', name: 'Blastoise', canToggle: true, displayAsMega: false },
+		]);
+	});
+
 	it('shows the real base forme instead when that slot\'s index is in baseFormeSlots', () => {
 		mockBattleDex();
 		const tbRoom = { curSetList: [{ species: 'Blastoise', item: 'Blastoisinite', ability: 'Torrent', name: '' }] };
@@ -1270,6 +1282,21 @@ describe('buildTeamDefensiveProfileHTML', () => {
 		const profile = { members: [{ species: 'Blastoise', name: 'Blastoise' }], rows: [{ type: 'Fire', multipliers: [1] }] };
 		const html = buildTeamDefensiveProfileHTML(profile);
 		expect(html).toMatch(/<td class="cf-defmatrix-cell"><\/td>/);
+	});
+
+	it('marks a Mega-capable member with a persistent corner badge, not a title tooltip', () => {
+		mockDefMatrixDex();
+		const profile = {
+			members: [
+				{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', canToggle: true, displayAsMega: true },
+				{ species: 'Sceptile', name: 'Sceptile', canToggle: false, displayAsMega: false },
+			],
+			rows: [{ type: 'Fire', multipliers: [1, 2] }],
+		};
+		const html = buildTeamDefensiveProfileHTML(profile);
+		expect(html).toContain('cf-defmatrix-toggle-badge');
+		expect(html).not.toContain('title="');
+		expect((html.match(/cf-defmatrix-toggle-badge/g) || []).length).toBe(1); // only the toggleable member gets one
 	});
 });
 

@@ -2648,7 +2648,19 @@
 		const naturalResolved = sets.map((set) => resolveSpeedSpectrumSpecies(set));
 		const members = naturalResolved.map((r, i) => {
 			const showBase = r.isMega && baseFormeSlots && baseFormeSlots.has(i);
-			const species = showBase ? sets[i].species : r.species;
+			// NOT sets[i].species — that's only the real base forme name when the Mega was built
+			// as base species + a separate held Mega Stone item. Picked directly from search, the
+			// set's own species field already IS the Mega forme name (there's no separate base
+			// name stored anywhere on the set), so that fallback would toggle between the exact
+			// same string both ways — the actual live bug this replacement fixes: clicking a
+			// directly-picked Mega's header never changed its sprite/typing/ability at all.
+			// window.Dex's own `.baseSpecies` field (present on every real Mega forme entry) is the
+			// one source that's correct either way a Mega was built.
+			let species = r.species;
+			if (showBase) {
+				const megaSpeciesData = window.Dex && window.Dex.species.get(r.species);
+				species = (megaSpeciesData && megaSpeciesData.exists && megaSpeciesData.baseSpecies) || sets[i].species;
+			}
 			return { species, name: sets[i].name || species, canToggle: r.isMega, displayAsMega: r.isMega && !showBase };
 		});
 		const memberTypes = members.map((m) => {
@@ -2883,8 +2895,12 @@
 	 *  and a clickable class — onDefMatrixClick reads that index back to toggle
 	 *  renderDefensiveProfileSection's own baseFormeSlots and re-render, flipping that one
 	 *  column between its Mega forme (the default — computeTeamDefensiveProfile's own
-	 *  `displayAsMega`) and its real base forme, sprite/typing/ability and all. An ordinary
-	 *  member gets neither — nothing to toggle, so no click affordance implying otherwise. */
+	 *  `displayAsMega`) and its real base forme, sprite/typing/ability and all. Marked with a
+	 *  small persistent corner badge on the sprite itself (cf-defmatrix-toggle-badge) rather than
+	 *  a hover-only treatment or a native `title` tooltip — a hover/tooltip-only affordance is
+	 *  invisible until the user happens to mouse over a specific sprite among six, so nothing
+	 *  actually signals *which* members are Mega-capable at a glance. An ordinary member gets no
+	 *  badge at all — nothing to toggle, so no affordance implying otherwise. */
 	function buildTeamDefensiveProfileHTML(profile) {
 		if (!profile.members.length) {
 			return pikaSectionHTML('Defensive Profile', '<p class="cf-pika-empty">No Pokémon on your team yet.</p>');
@@ -2896,10 +2912,9 @@
 			const icon = window.Dex ? window.Dex.getPokemonIcon(m.species) : '';
 			const cls = m.canToggle ? ' cf-defmatrix-member-toggleable' : '';
 			const attrs = m.canToggle ? ` data-cf-defmatrix-member-idx="${i}"` : '';
-			const title = m.canToggle ?
-				`${m.name} (click to toggle ${m.displayAsMega ? 'base forme' : 'Mega'})` : m.name;
-			return `<th class="cf-defmatrix-member${cls}"${attrs} title="${escapeHTML(title)}">` +
-				`<span class="picon" style="${escapeHTML(icon)}"></span></th>`;
+			const badge = m.canToggle ? '<span class="cf-defmatrix-toggle-badge">⇄</span>' : '';
+			return `<th class="cf-defmatrix-member${cls}"${attrs}>` +
+				`<span class="cf-defmatrix-sprite-wrap"><span class="picon" style="${escapeHTML(icon)}"></span>${badge}</span></th>`;
 		}).join('');
 		const bodyRows = profile.rows.map((row) => {
 			const typeIcon = window.Dex ? window.Dex.getTypeIcon(row.type) : '';
