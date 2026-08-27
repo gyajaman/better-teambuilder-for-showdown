@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Better Teambuilder for Showdown!",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Adds custom filters, Pikalytics stats, Speed comparisons, a Defensive Profile, and Biggest Threats to the Showdown teambuilder.",
   "homepage_url": "https://www.patreon.com/cw/yajaman",
   "icons": {

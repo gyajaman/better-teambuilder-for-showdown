@@ -1346,9 +1346,18 @@
 		};
 	}
 
-	/** Scans BattleMovedex once to build the move list for every dynamic/hybrid category.
-	 *  See move-data.js's module doc comment for exactly what field each one keys off. */
-	function buildDynamicMoveLists() {
+	/** Scans BattleMovedex to build the move list for every dynamic/hybrid category, resolving
+	 *  each move's data through `dex` rather than reading window.BattleMovedex[id] directly —
+	 *  window.BattleMovedex is always the unmodded base dex, so a straight read would miss
+	 *  format-specific overrides (e.g. the "champions" mod adding the `slicing` flag to Shadow
+	 *  Claw/Crush Claw/Dragon Claw, or `sound` to Howl/Dragon Cheer — confirmed against
+	 *  play.pokemonshowdown.com's own data/mods/champions/moves.ts, none of which carry that
+	 *  flag in the base dex). window.BattleMovedex is still used as the id list to iterate —
+	 *  mods override fields, they don't add new move ids — just not as the data source.
+	 *  See move-data.js's module doc comment for exactly what field each category keys off.
+	 *  Called lazily per-dex by getDynamicMoveLists below, not eagerly at load, since the
+	 *  right dex depends on whichever format is actually being searched. */
+	function buildDynamicMoveLists(dex) {
 		const lists = {
 			spread: [], wind: [], sound: [], sharpness: [], recoil: [], sheerforce: [], speedcontrol: [],
 			contact: [], punching: [], biting: [], ballbomb: [], pulse: [], nevermiss: [],
@@ -1379,7 +1388,7 @@
 		const speedControlSeen = new Set(lists.speedcontrol.map(e => e.id));
 
 		for (const id in window.BattleMovedex) {
-			const move = window.BattleMovedex[id];
+			const move = dex.moves.get(id);
 
 			if (move.target === 'allAdjacent' || move.target === 'allAdjacentFoes') {
 				lists.spread.push(moveEntry(id, move, overrides.spread));
@@ -1453,8 +1462,23 @@
 		return lists;
 	}
 
-	function getCategoryMoveList(catId) {
-		if (DYNAMIC_CATEGORIES.includes(catId)) return CF.dynamicMoveLists[catId] || [];
+	/** CF.dynamicMoveLists is a cache keyed by dex.modid ('gen9', 'champions', ...), not a flat
+	 *  catId -> list map — each format search can be running against a different modded dex
+	 *  (BattleTypedSearch itself sets typedSearch.dex to Dex.mod('champions') for any format
+	 *  whose id includes "champions", confirmed against play.pokemonshowdown.com's own
+	 *  battle-dex-search.js), so the move-flag scan has to be redone per mod, not just once
+	 *  against the base dex. Built lazily on first use of each mod rather than eagerly, since
+	 *  there's no "current format" yet at extension load time. `dex` defaults to window.Dex
+	 *  (the base, unmodded dex) for callers with no format context of their own. */
+	function getDynamicMoveLists(dex) {
+		const d = dex || window.Dex;
+		const modid = (d && d.modid) || 'gen9';
+		if (!CF.dynamicMoveLists[modid]) CF.dynamicMoveLists[modid] = buildDynamicMoveLists(d);
+		return CF.dynamicMoveLists[modid];
+	}
+
+	function getCategoryMoveList(catId, dex) {
+		if (DYNAMIC_CATEGORIES.includes(catId)) return getDynamicMoveLists(dex)[catId] || [];
 		const cat = window.CF_MOVE_CATEGORIES[catId];
 		return (cat && cat.moves) || [];
 	}
@@ -1701,7 +1725,7 @@
 				continue;
 			}
 			const matched = [];
-			for (const moveDef of getCategoryMoveList(catId)) {
+			for (const moveDef of getCategoryMoveList(catId, typedSearch && typedSearch.dex)) {
 				if (typedSearch.canLearn(speciesId, moveDef.id)) matched.push(moveDef);
 			}
 			result[catId] = matched;
@@ -1713,11 +1737,13 @@
 	 *  canLearn() involved here — a move row only appears at all if the native engine
 	 *  already considers it legal for the set's species, so this is a plain membership
 	 *  check against the category's move list. Wrapped in a 0-or-1-element array so the
-	 *  result has the exact same shape as computeCategoryMatches above. */
-	function computeMoveCategoryMatches(moveId, activeCats) {
+	 *  result has the exact same shape as computeCategoryMatches above. `dex` should be the
+	 *  calling engine's typedSearch.dex (see applyCustomFilters below) so a dynamic category
+	 *  is scanned against the right modded dex for whatever format is actually being searched. */
+	function computeMoveCategoryMatches(moveId, activeCats, dex) {
 		const result = {};
 		for (const catId of activeCats) {
-			const found = getCategoryMoveList(catId).find(m => m.id === moveId);
+			const found = getCategoryMoveList(catId, dex).find(m => m.id === moveId);
 			result[catId] = found ? [found] : [];
 		}
 		return result;
@@ -1855,7 +1881,7 @@
 				if (active.length) {
 					const rowMatches = (type === 'pokemon')
 						? computeCategoryMatches(typedSearch, rowId, active)
-						: computeMoveCategoryMatches(rowId, active);
+						: computeMoveCategoryMatches(rowId, active, typedSearch && typedSearch.dex);
 					allMatch = active.every(catId => {
 						const cat = window.CF_MOVE_CATEGORIES[catId];
 						const matched = !!(rowMatches[catId] && rowMatches[catId].length);
@@ -4216,16 +4242,40 @@
 			});
 		}
 
+		/** Speed Spread's floor/ceiling (computeSpeedSpectrumDomain) is hardcoded specifically for
+		 *  the four VGC Reg A/B formats window.CF_Pikalytics.slugFor knows about — meaningless, and
+		 *  for a non-Champions format outright *wrong* (TeambuilderRoom.getStat's own
+		 *  usesStatPoints branch switches to the classic 0-252 EV formula entirely for anything
+		 *  else, a different stat scale than the hardcoded reference values assume), for any
+		 *  format outside that allowlist. Every other Pikalytics-backed section on this screen
+		 *  (renderTeamThreatsSection, Similar Teams, the per-species sidebar) falls back to "No
+		 *  data for this format." off a real fetch's own null response — there's no fetch here to
+		 *  do that with, computeSpeedSpectrumEntries/Domain are both entirely synchronous, so this
+		 *  checks slugFor directly instead. Same fallback message, for the same reason. Checked
+		 *  fresh on every call (no caching of its own), so a live format change — reachable right
+		 *  from this screen's own format-select button, TeambuilderRoom.prototype.changeFormat,
+		 *  which already calls the wrapped update() — re-evaluates this correctly on the very next
+		 *  render, the same way the roster's own real Speed values already did before this fix. */
+		function renderSpeedSpectrumSection(tbRoom, spectrumEl) {
+			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
+			if (!formatId || !window.CF_Pikalytics || !window.CF_Pikalytics.slugFor(formatId)) {
+				spectrumEl.innerHTML = pikaSectionHTML('Speed Spread', '<p class="cf-pika-empty">No data for this format.</p>');
+				return;
+			}
+			spectrumEl.innerHTML = buildSpeedSpectrumHTML(computeSpeedSpectrumEntries(tbRoom), computeSpeedSpectrumDomain(tbRoom));
+		}
+
 		/** Team-overview screen (isTeamOverview: a team is open, curRoom is the teambuilder room,
 		 *  but no slot within it is being edited — the screen showing all 6 roster icons
 		 *  together). The left column is hidden entirely here (updateSplitState's
 		 *  cf-teambuilder-team-overview body class + style.css), so this function only ever
 		 *  touches #cf-pika-panel, via its own three independent sub-panels (see
-		 *  ensureTeamOverviewPanelEls): the Speed Spread section and the Defensive Profile matrix
-		 *  — both real per-member data, entirely synchronous (curSetList + tbRoom.getStat/
-		 *  window.Dex, no Pikalytics fetch, no loading state needed) — and the Biggest Threats
-		 *  section, which does need a real fetch and is handed off to renderTeamThreatsSection
-		 *  below rather than built inline here.
+		 *  ensureTeamOverviewPanelEls): the Speed Spread section (renderSpeedSpectrumSection —
+		 *  synchronous, but format-gated, see that function's own comment) and the Defensive
+		 *  Profile matrix (real per-member data, entirely synchronous — curSetList +
+		 *  tbRoom.getStat/window.Dex, no Pikalytics dependency at all, format-agnostic type-chart
+		 *  math) — and the Biggest Threats section, which does need a real fetch and is handed off
+		 *  to renderTeamThreatsSection below rather than built inline here.
 		 *
 		 *  Still resets every piece of per-slot render state (lastRenderKey/lastMon/
 		 *  lastSpeedTier.../lastSimilarTeams... — see their own doc comments above) the same way
@@ -4258,7 +4308,7 @@
 			// matrix and Biggest Threats instead share a row (#cf-teamoverview-row,
 			// ensureTeamOverviewPanelEls' own comment) — the matrix sized to its own natural
 			// content width, Threats' square grid taking whatever room that leaves.
-			spectrumEl.innerHTML = buildSpeedSpectrumHTML(computeSpeedSpectrumEntries(tbRoom), computeSpeedSpectrumDomain(tbRoom));
+			renderSpeedSpectrumSection(tbRoom, spectrumEl);
 			renderDefensiveProfileSection(tbRoom, defMatrixEl);
 			renderTeamThreatsSection(tbRoom, threatsEl);
 		}
@@ -4486,6 +4536,26 @@
 		// entry point that never calls update()/updateSetTop().
 		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'updatePokemonSprite');
 
+		// loadTeam() (confirmed against Showdown's own client-teambuilder.js source: fired from
+		// update() whenever curTeam.loaded is false, or curTeam.teamid is set but not yet loaded
+		// — i.e. any cloud-synced team the first time it's opened) does its real work in an async
+		// callback that, once the team's actual curSetList finally arrives, calls
+		// this.updateTeamView() *directly* — never through update() at all. update()'s own
+		// synchronous call into loadTeam() already returns updateTeamView() immediately before
+		// that, against whatever curSetList happened to be set at that moment (often still the
+		// previously-open team's, or empty) — the sidebar renders once against that stale
+		// snapshot and never hears about the real data landing a moment later. This is exactly
+		// why the Speed Spread panel (and the rest of the team-overview sidebar) could come up
+		// showing the wrong team's speeds right after opening a team, only correcting itself once
+		// some unrelated hooked method fired later (e.g. entering and leaving a slot editor, which
+		// does go through the hooked update()). Hooking updateTeamView() itself closes the gap at
+		// its source. update()'s own two branches that return this.updateTeamView() do mean a
+		// normal (already-loaded) navigation now runs updateSplitState() twice in a row —
+		// harmless, since every render function it calls is either a cheap unconditional rebuild
+		// or (renderTeamThreatsSection) already key-gated against its own previous render, not the
+		// keystroke-frequency case Group 2's own doc comment below was written to avoid.
+		wrapWithSplitUpdate(window.TeambuilderRoom.prototype, 'updateTeamView');
+
 		// Group 2 (see this function's own doc comment above): keeps the sidebar's clickable/
 		// disabled/equipped states in sync when the user edits a move/ability/item/nature
 		// directly through the native teambuilder fields, instead of through our own sidebar.
@@ -4538,7 +4608,10 @@
 	});
 
 	waitForGlobals(() => {
-		CF.dynamicMoveLists = buildDynamicMoveLists();
+		// Dynamic move-category lists (Sharpness, Sound, etc.) are no longer built here:
+		// getDynamicMoveLists builds and caches one per dex.modid lazily, the first time a
+		// search actually needs it, since the right dex depends on the format being searched
+		// (see getDynamicMoveLists's own doc comment).
 		// 4a: wrap each monkey-patch in try/catch so one failure doesn't prevent
 		// the rest of the extension from loading.
 		try { patchDexSearch(); } catch (e) {
