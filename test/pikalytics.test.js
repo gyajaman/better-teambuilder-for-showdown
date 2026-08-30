@@ -114,6 +114,33 @@ describe('resolveQuerySpecies', () => {
 		};
 		expect(CF_Pikalytics.resolveQuerySpecies('Ninetales-Alola')).toBe('Ninetales-Alola');
 	});
+
+	it('collapses a known-cosmetic forme (confirmed empirically to 404 on Pikalytics) to its base species', () => {
+		window.Dex = {
+			species: {
+				get: () => ({ exists: true, battleOnly: false, baseSpecies: 'Sinistcha', name: 'Sinistcha-Masterpiece' }),
+			},
+		};
+		expect(CF_Pikalytics.resolveQuerySpecies('Sinistcha-Masterpiece')).toBe('Sinistcha');
+	});
+
+	it('leaves a forme that 404s but is NOT a cosmetic duplicate alone (e.g. Qwilfish-Hisui, Tauros-Paldea-Combat — genuinely distinct Pokémon, just unused this month)', () => {
+		window.Dex = {
+			species: {
+				get: () => ({ exists: true, battleOnly: false, baseSpecies: 'Qwilfish', name: 'Qwilfish-Hisui' }),
+			},
+		};
+		expect(CF_Pikalytics.resolveQuerySpecies('Qwilfish-Hisui')).toBe('Qwilfish-Hisui');
+	});
+
+	it('leaves formes that are illegal in Pokemon Champions alone, even though they 404 on Pikalytics too (e.g. Pikachu-Original — event-exclusive, Illegal in BattleTeambuilderTable) — no point folding data for something nobody can field', () => {
+		window.Dex = {
+			species: {
+				get: () => ({ exists: true, battleOnly: false, baseSpecies: 'Pikachu', name: 'Pikachu-Original' }),
+			},
+		};
+		expect(CF_Pikalytics.resolveQuerySpecies('Pikachu-Original')).toBe('Pikachu-Original');
+	});
 });
 
 describe('getSpeciesData', () => {
@@ -195,6 +222,29 @@ describe('getSpeciesData', () => {
 		});
 		await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Blastoise-Mega');
 		expect(requestedSpecies.every((s) => s === 'Blastoise')).toBe(true);
+	});
+
+	it('resolves a known-cosmetic forme to its base species before querying (e.g. Sinistcha-Masterpiece)', async () => {
+		window.Dex = {
+			species: {
+				get: () => ({ exists: true, battleOnly: false, baseSpecies: 'Sinistcha', name: 'Sinistcha-Masterpiece' }),
+			},
+		};
+		const requestedSpecies = [];
+		installFetchMock({
+			discover: (u) => {
+				const species = decodeURIComponent(u.split('/').pop());
+				requestedSpecies.push(species);
+				return discoveryResponse(species, '2026-05', '1500');
+			},
+			species: (u) => {
+				requestedSpecies.push(decodeURIComponent(u.split('/').pop()));
+				return JSON.stringify(mon('Sinistcha'));
+			},
+		});
+		const result = await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Sinistcha-Masterpiece');
+		expect(result.name).toBe('Sinistcha');
+		expect(requestedSpecies.every((s) => s === 'Sinistcha')).toBe(true); // queried Sinistcha directly, no retry
 	});
 });
 

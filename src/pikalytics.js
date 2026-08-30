@@ -142,6 +142,42 @@
 		return FORMAT_SLUG_MAP[formatId];
 	}
 
+	/** Cosmetic formes Pikalytics folds into their base species' page instead of tracking
+	 *  separately — e.g. Sinistcha-Masterpiece has no page of its own, its usage shows up under
+	 *  plain "Sinistcha". Not a general Dex flag (Showdown's own cosmeticFormes list doesn't
+	 *  cover Sinistcha-Masterpiece, Maushold-Four, or Polteageist-Antique at all, even though
+	 *  Pikalytics folds them the same way it folds Vivillon's patterns) so this list is derived
+	 *  empirically, not guessed, in two steps:
+	 *
+	 *  1. LEGALITY: `new BattlePokemonSearch('pokemon', formatId).getBaseResults()` — the exact
+	 *     function play.pokemonshowdown.com's own species-search box calls — gives the real,
+	 *     complete list of species/formes legal in this format. This is stricter than it looks:
+	 *     Alcremie's flavor formes and all but two of Vivillon's 19 patterns never appear in
+	 *     that list at all (Pokemon Champions doesn't implement the real-world-location/spin
+	 *     mechanics that obtain most of them), and the Pikachu cap/cosplay formes, all four
+	 *     Totem formes (Araquanid/Kommo-o/Mimikyu/Salazzle-Totem), Greninja-Bond, and every
+	 *     non-Eternal Floette forme are absent too (event/NPC-only or otherwise unobtainable).
+	 *     None of those belong in this table even though some 404 on Pikalytics too (see step
+	 *     2) — a 404 for a forme nobody can legally field isn't evidence of folding, it's just
+	 *     never-used.
+	 *  2. FOLDING: of the remaining legal formes with baseStats+types identical to their base
+	 *     (i.e. actually cosmetic, not just legal-and-different like Rotom's appliance formes,
+	 *     Tauros' Paldean breeds, or regional formes), every one was checked directly against
+	 *     /ai/pokedex/battledataregmbs3/{name} (the live Pokemon Champions VGC 2026 Reg M-B S3
+	 *     Ranked Battle Data, 2026-05 cutoff) for a 404. Every entry below 404s there while its
+	 *     base has real (200) data. Meowstic-F passes step 1 (identical stats/types to Meowstic)
+	 *     but not step 2 — confirmed live, it has its own page — so it's deliberately not here.
+	 *
+	 *  Re-verify both steps (legality can change with a new regulation; Pikalytics' page set can
+	 *  change with a new season/cutoff) if this table ever looks stale. */
+	const COSMETIC_FORME_FALLBACK = new Map([
+		['Maushold-Four', 'Maushold'],
+		['Polteageist-Antique', 'Polteageist'],
+		['Sinistcha-Masterpiece', 'Sinistcha'],
+		['Vivillon-Fancy', 'Vivillon'],
+		['Vivillon-Pokeball', 'Vivillon'],
+	].map(([forme, base]) => [toID(forme), base]));
+
 	/** Mega Evolution and Primal Reversion are in-battle-only transformations — you build the
 	 *  set as the base species holding the Mega Stone, Showdown just auto-fills that item and
 	 *  labels the species with its Mega name when you pick it from the species search
@@ -152,11 +188,14 @@
 	 *  up under the plain "Blastoise" page, there's no separate "Blastoise-Mega" entry at
 	 *  all. Regional formes and Gmax are deliberately NOT collapsed here — they're
 	 *  independently viable, independently tiered Pokémon with their own usage entries
-	 *  (confirmed live: e.g. "Ninetales-Alola" has its own page, distinct from "Ninetales"). */
+	 *  (confirmed live: e.g. "Ninetales-Alola" has its own page, distinct from "Ninetales").
+	 *  COSMETIC_FORME_FALLBACK above is checked the same way, for the same reason, for the
+	 *  formes it covers. */
 	function resolveQuerySpecies(speciesName) {
 		const species = window.Dex && window.Dex.species.get(speciesName);
 		if (!species || !species.exists) return speciesName;
-		return species.battleOnly ? species.baseSpecies : species.name;
+		if (species.battleOnly) return species.baseSpecies;
+		return COSMETIC_FORME_FALLBACK.get(toID(species.name)) || species.name;
 	}
 
 	function toID(s) {
