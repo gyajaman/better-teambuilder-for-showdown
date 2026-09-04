@@ -1454,14 +1454,22 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 .dark .cf-defmatrix-cell {
 	color: #EEEEEE;
 }
-/* Five real, distinct outcomes (defensiveTierClass's own doc comment) — reusing the exact same
+/* Seven real, distinct outcomes (defensiveTierClass's own doc comment) — reusing the exact same
  * red/green/purple hues the Popular column's own offensive coverage tint already established
  * (cf-coverage-quad/-super/-immune, above) rather than inventing a new palette, just applied to
- * the opposite (defensive) direction and with two intensities per color instead of one, since
- * every one of the five is a real, common outcome here (that function's own doc comment on why
+ * the opposite (defensive) direction and with three intensities per color instead of one, since
+ * every one of the seven is a real, common outcome here (that function's own doc comment on why
  * this can't just reuse coverageTierClass's fewer tiers). Text color carries the tier — bold on
  * a colored background reads clearly at this font size — background is a light tint of the same
- * hue, not a competing color. */
+ * hue, not a competing color. mildweak/mildresist (a real ability-driven multiplier strictly
+ * between the clean type-chart tiers, e.g. Dry Skin's 1.25x or Solid Rock's blunted 3x) get the
+ * *lightest* tint of their hue — a smaller real effect than the plain weak/resist tier, not a
+ * bigger one — rather than either rounding invisibly into the neutral 1x cell or being
+ * mistaken for a full weak/resist result. */
+.cf-defmatrix-cell.cf-defmatrix-mildweak {
+	color: #C0392B;
+	background: rgba(192, 57, 43, .06);
+}
 .cf-defmatrix-cell.cf-defmatrix-weak {
 	color: #C0392B;
 	background: rgba(192, 57, 43, .12);
@@ -1469,6 +1477,10 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 .cf-defmatrix-cell.cf-defmatrix-quadweak {
 	color: #C0392B;
 	background: rgba(192, 57, 43, .28);
+}
+.cf-defmatrix-cell.cf-defmatrix-mildresist {
+	color: #2E9E44;
+	background: rgba(46, 158, 68, .06);
 }
 .cf-defmatrix-cell.cf-defmatrix-resist {
 	color: #2E9E44;
@@ -1482,10 +1494,12 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 	color: #9B59B6;
 	background: rgba(155, 89, 182, .18);
 }
+.dark .cf-defmatrix-cell.cf-defmatrix-mildweak,
 .dark .cf-defmatrix-cell.cf-defmatrix-weak,
 .dark .cf-defmatrix-cell.cf-defmatrix-quadweak {
 	color: #E0685A;
 }
+.dark .cf-defmatrix-cell.cf-defmatrix-mildresist,
 .dark .cf-defmatrix-cell.cf-defmatrix-resist,
 .dark .cf-defmatrix-cell.cf-defmatrix-quadresist {
 	color: #5CBF74;

@@ -541,9 +541,12 @@
 	 *  (Pikalytics' own per-species move list — `{move, percent, type}`, see pikalytics.js's own
 	 *  module doc comment) that each clear TEAM_THREATS_MOVE_USAGE_MIN_PERCENT, actually deal
 	 *  damage (isDamagingMove — a Status move can't be "super effective," whatever type it's
-	 *  flavored as), and are super effective (via the same typeEffectivenessMultiplier every
-	 *  other type-chart check in this file uses) against `defenderTypes` once each one's own
-	 *  *real effective* type is resolved (effectiveMoveType, `ability` — the threat's own
+	 *  flavored as), and are super effective (via typeEffectivenessMultiplier, then
+	 *  applyDefensiveAbility for the defender's own real ability, `defenderAbility` —
+	 *  computeMemberDefense/resolveMemberAbility — the same adjustment the Defensive Profile
+	 *  matrix already applies to every cell; a Water-type move is 0, not "super effective 2x,"
+	 *  against a Water Absorb holder here too now) against `defenderTypes` once each move's own
+	 *  *real effective* type is resolved (effectiveMoveType, `attackerAbility` — the threat's own
 	 *  real/assumed ability, computeThreatOffense) — a Pixilate Sylveon's Hyper Voice is checked
 	 *  and reported as Fairy, not the move's bare Normal. Returns `[]` if nothing qualifies.
 	 *
@@ -565,7 +568,7 @@
 	 *  result by one whenever that move happens to also be a top-`TEAM_THREATS_MAX_MOVE_REASONS`
 	 *  candidate: excluding post-hoc, after the slice, would silently drop a real 3rd-ranked move
 	 *  the caller has room to show instead of backfilling it. */
-	function computeThreatMoveReasons(moves, defenderTypes, ability, attackerTypes, excludeMove) {
+	function computeThreatMoveReasons(moves, defenderTypes, attackerAbility, attackerTypes, excludeMove, defenderAbility) {
 		const candidates = [];
 		for (const m of (moves || [])) {
 			if (!m || !m.move || !m.type) continue;
@@ -573,9 +576,10 @@
 			const percent = parseFloat(m.percent) || 0;
 			if (percent < TEAM_THREATS_MOVE_USAGE_MIN_PERCENT) continue;
 			if (!isDamagingMove(m.move)) continue;
-			const type = effectiveMoveType(m.move, m.type, ability);
-			if (typeEffectivenessMultiplier(type, defenderTypes) < 2) continue;
-			const power = stabAdjustedPower(movePower(m.move, ability), type, attackerTypes);
+			const type = effectiveMoveType(m.move, m.type, attackerAbility);
+			const mult = applyDefensiveAbility(typeEffectivenessMultiplier(type, defenderTypes), type, defenderAbility);
+			if (mult < 2) continue;
+			const power = stabAdjustedPower(movePower(m.move, attackerAbility), type, attackerTypes);
 			candidates.push({ move: m.move, type, percent, power });
 		}
 		candidates.sort((a, b) => (b.power !== a.power) ? b.power - a.power : b.percent - a.percent);
@@ -588,21 +592,25 @@
 	 *  for zero damage, not a real threat) move that isn't resisted against `defenderTypes`
 	 *  (>=1x: neutral or better) once its own real effective type is resolved (effectiveMoveType,
 	 *  `threat.ability` — a Charizard with Drought outspeeding and running Weather Ball is
-	 *  checked and reported as Fire, not the move's bare Normal). "Moves first and still lands a
-	 *  real hit" is its own distinct condition for counting as a real counter, separate from
-	 *  (and not requiring) computeThreatMoveReasons' own >=2x bar — even a merely-neutral hit
-	 *  that lands before the defender can act at all is a genuine threat that function alone
-	 *  would miss entirely. Picks the highest-STAB-adjusted-power qualifying move (`threat.types`
-	 *  — the threat's own real types, stabAdjustedPower), same ranking reasoning
+	 *  checked and reported as Fire, not the move's bare Normal) AND the defender's own real
+	 *  ability doesn't reduce it back below that bar (applyDefensiveAbility, `defender.ability` —
+	 *  a Water move that would otherwise "outspeed and land neutral" is 0, not 1x, against a
+	 *  Water Absorb holder, so it no longer qualifies as a real threat at all). "Moves first and
+	 *  still lands a real hit" is its own distinct condition for counting as a real counter,
+	 *  separate from (and not requiring) computeThreatMoveReasons' own >=2x bar — even a
+	 *  merely-neutral hit that lands before the defender can act at all is a genuine threat that
+	 *  function alone would miss entirely. Picks the highest-STAB-adjusted-power qualifying move
+	 *  (`threat.types` — the threat's own real types, stabAdjustedPower), same ranking reasoning
 	 *  computeThreatMoveReasons' own doc comment gives.
 	 *
 	 *  `threat` is `{moves, ability, types, baseSpeed, scarfSpeed}` — scarfSpeed is null when
 	 *  Scarf isn't common enough on this species to credibly assume (computeThreatOffense);
-	 *  `defender` is `{types, speed}` — the threatened member's own real computed Speed, its own
-	 *  held item included, the same number every other Speed comparison in this file already
-	 *  uses. Returns null when the threat doesn't outspeed either way, or has no move to back
-	 *  the claim with — a bare Speed advantage with nothing that actually connects isn't
-	 *  "countering" on its own. */
+	 *  `defender` is `{types, speed, ability}` — the threatened member's own real computed Speed
+	 *  (its own held item included, the same number every other Speed comparison in this file
+	 *  already uses) and real chosen (or Mega-resolved) ability, computeMemberDefense. Returns
+	 *  null when the threat doesn't outspeed either way, or has no move to back the claim with —
+	 *  a bare Speed advantage with nothing that actually connects isn't "countering" on its
+	 *  own. */
 	function computeThreatSpeedReason(threat, defender) {
 		if (!defender.speed) return null;
 		let viaScarf;
@@ -623,7 +631,8 @@
 			if (percent < TEAM_THREATS_MOVE_USAGE_MIN_PERCENT) continue;
 			if (!isDamagingMove(m.move)) continue;
 			const type = effectiveMoveType(m.move, m.type, threat.ability);
-			if (typeEffectivenessMultiplier(type, defender.types) < 1) continue;
+			const mult = applyDefensiveAbility(typeEffectivenessMultiplier(type, defender.types), type, defender.ability);
+			if (mult < 1) continue;
 			const power = stabAdjustedPower(movePower(m.move, threat.ability), type, threat.types);
 			if (!best || power > best.power || (power === best.power && percent > best.percent)) {
 				best = { move: m.move, type, percent, power };
@@ -669,8 +678,11 @@
 	 *  derives those from its top real spread+nature, the same "no item" Foe-column technique
 	 *  buildSpeedComparisonTooltipHTML already uses, `scarfSpeed`
 	 *  additionally accounting for a real, common-enough Choice Scarf); `defender` is `{types,
-	 *  def, spd, speed}` — the threatened team member's own real defensive types/stats and
-	 *  Speed.
+	 *  def, spd, speed, ability}` — the threatened team member's own real defensive types/stats/
+	 *  Speed and real (or Mega-resolved) ability, fed into applyDefensiveAbility inside
+	 *  computeThreatMoveReasons/computeThreatSpeedReason the same way the Defensive Profile
+	 *  matrix already applies it — a Water Absorb/Levitate/Flash Fire/etc. holder reads as
+	 *  genuinely unhit by its immune type here too, not just by typing alone.
 	 *
 	 *  Returns a handful of typed reason objects, ordered most-concrete-first: `{kind: 'speed',
 	 *  move, type, percent, viaScarf}` for outspeeding with a real, non-resisted hit
@@ -696,7 +708,7 @@
 		const speedReason = computeThreatSpeedReason(threat, defender);
 		if (speedReason) reasons.push(speedReason);
 		const moveReasons = computeThreatMoveReasons(
-			threat.moves, defender.types, threat.ability, threat.types, speedReason && speedReason.move);
+			threat.moves, defender.types, threat.ability, threat.types, speedReason && speedReason.move, defender.ability);
 		for (const r of moveReasons) reasons.push({ kind: 'move', move: r.move, type: r.type, percent: r.percent });
 		if (threat.atk && defender.def && (threat.atk / defender.def) >= TEAM_THREATS_STAT_RATIO_THRESHOLD &&
 			threatHasMoveOfCategory(threat.moves, 'Physical')) {
@@ -816,7 +828,12 @@
 	 *  own real held item folded into its Speed via applySpeedModifiers exactly the way
 	 *  computeSpeedSpectrumEntries' own roster dots already do — a member actually holding Scarf/
 	 *  Iron Ball has that reflected in whether it actually gets outsped, not just the threat's
-	 *  side of the matchup. */
+	 *  side of the matchup. `ability` is resolved the same Mega-aware way (resolveMemberAbility)
+	 *  computeTeamDefensiveProfile already resolves it for the Defensive Profile matrix — a real
+	 *  Mega Blastoise reads as Mega Launcher here too, not whatever ability its base build has
+	 *  chosen — so computeThreatMoveReasons/computeThreatSpeedReason can run it through
+	 *  applyDefensiveAbility the exact same way that matrix already does, instead of the two
+	 *  panels disagreeing about whether a given member is actually immune to something. */
 	function computeMemberDefense(tbRoom, memberSet) {
 		const { species: resolvedSpecies, isMega } = resolveSpeedSpectrumSpecies(memberSet);
 		const statSet = isMega ? Object.assign({}, memberSet, { species: resolvedSpecies }) : memberSet;
@@ -825,7 +842,8 @@
 		const speed = applySpeedModifiers(tbRoom.getStat('spe', statSet), memberSet.item, {});
 		const resolved = window.Dex && window.Dex.species.get(resolvedSpecies);
 		const types = (resolved && resolved.exists && resolved.types) || [];
-		return { types, def, spd, speed };
+		const ability = resolveMemberAbility(memberSet, resolvedSpecies, isMega);
+		return { types, def, spd, speed, ability };
 	}
 
 	/** The current roster's own species, base-species-ID'd (same normalization
@@ -912,17 +930,15 @@
 	 *  than next to applyDefensiveAbility (down near the other section builders) for the same
 	 *  module.exports-TDZ reason ALL_TYPES above is.
 	 *
-	 *  Deliberately NOT the whole universe of defensively-relevant abilities — checked and
-	 *  excluded, not overlooked: Thick Fat/Filter/Solid Rock/Prism Armor all reduce (not zero
-	 *  out) certain damage, a different mechanic (a fractional onSourceModifyAtk/SpA modifier,
-	 *  not a type-chart override) this table isn't shaped for; Purifying Salt specifically halves
-	 *  Ghost-type damage the same way, not a block; Water Bubble halves Fire damage taken but
-	 *  doesn't touch Water at all (its own immunity-shaped hook is burn-status only); Wind Rider
-	 *  blocks wind-*flagged* moves (Tailwind, Hurricane, Whirlwind…) which span several different
-	 *  types, not one — doesn't fit a type-indexed table at all, handled separately by
-	 *  applyDefensiveAbility below via Wonder Guard's own different-shaped rule; Mountaineer (a
-	 *  real Rock-type immunity, but only versus Stealth Rock and only pre-hazard) is CAP-only
-	 *  (`isNonstandard: "CAP"` in the source) and never legal in any real format. */
+	 *  A different mechanic from DEFENSIVE_ABILITY_TYPE_MULTIPLIERS below (a fractional
+	 *  onSourceModifyAtk/SpA modifier, not a type-chart override) — Dry Skin appears in both
+	 *  tables at once, since real Dry Skin has both effects simultaneously (blocks Water outright
+	 *  via one onTryHit hook, separately takes extra Fire damage via another) — not a
+	 *  contradiction. Wind Rider blocks wind-*flagged* moves (Tailwind, Hurricane, Whirlwind…)
+	 *  which span several different types, not one — doesn't fit a type-indexed table at all, and
+	 *  isn't modeled anywhere in this file. Mountaineer (a real Rock-type immunity, but only
+	 *  versus Stealth Rock and only pre-hazard) is CAP-only (`isNonstandard: "CAP"` in the
+	 *  source) and never legal in any real format. */
 	const DEFENSIVE_ABILITY_IMMUNITIES = {
 		waterabsorb: 'Water', dryskin: 'Water', stormdrain: 'Water',
 		voltabsorb: 'Electric', lightningrod: 'Electric', motordrive: 'Electric',
@@ -930,6 +946,45 @@
 		sapsipper: 'Grass',
 		levitate: 'Ground', eartheater: 'Ground',
 	};
+
+	/** Real abilities that scale (not block outright) an attacker's damage against one specific
+	 *  type — confirmed against data/abilities.ts's own onSourceModifyDamage/onSourceModifyAtk/
+	 *  onSourceModifySpA hooks. Multiplies typeEffectivenessMultiplier's own result rather than
+	 *  replacing it (see applyDefensiveAbility below) — a Water/Grass Dry Skin holder that's
+	 *  already neutral to Fire (1×) by typing takes 1.25×, not a flat 1.25 regardless of typing;
+	 *  a Fluffy holder that's already 2× weak to Fire by typing takes 4×, not a flat 2×. Keyed by
+	 *  ability ID -> {Type: multiplier}, so an ability could in principle cover more than one
+	 *  type (Thick Fat already does) without changing applyDefensiveAbility's own loop.
+	 *
+	 *  Thick Fat and Heatproof both specifically halve Fire; Thick Fat additionally halves Ice
+	 *  (its real second onSourceModifyAtk/SpA check). Water Bubble halves Fire the same way but
+	 *  doesn't touch Water at all (its own Water-related hook only ever boosts its OWN Water
+	 *  moves — an offensive effect, out of scope for this defensive table). Purifying Salt halves
+	 *  Ghost. Fluffy doubles Fire; it also separately halves contact-move damage regardless of
+	 *  type — a move-flag-based effect this type-indexed table isn't shaped for, and NOT modeled
+	 *  anywhere in this file (computeThreatMoveReasons/computeThreatSpeedReason have no
+	 *  contact-flag check on a threat's moves to hook it into) — checked and left out, not
+	 *  overlooked. */
+	const DEFENSIVE_ABILITY_TYPE_MULTIPLIERS = {
+		dryskin: { Fire: 1.25 },
+		fluffy: { Fire: 2 },
+		thickfat: { Fire: 0.5, Ice: 0.5 },
+		heatproof: { Fire: 0.5 },
+		waterbubble: { Fire: 0.5 },
+		purifyingsalt: { Ghost: 0.5 },
+	};
+
+	/** Real abilities that specifically blunt an already-super-effective hit by a flat 0.75× —
+	 *  confirmed against data/abilities.ts's own onSourceModifyDamage checks (gated on
+	 *  `typeMod > 0`, i.e. the move's real type-chart result against this defender already being
+	 *  2× or 4×; untouched otherwise). Applied in applyDefensiveAbility AFTER the type-chart/
+	 *  immunity/multiplier steps above, against the value those steps already produced — not the
+	 *  bare type-chart number — since a Fluffy+Solid-Rock-shaped stack (not real in Gen 9, no
+	 *  Pokémon has both, but the mechanism should still compose correctly) should reduce the
+	 *  post-Fluffy value, not double a pre-reduced one. Solid Rock and Filter are the exact same
+	 *  effect under two different names (a real quirk of Game Freak's own ability list, not a bug
+	 *  here); Prism Armor is the Ultra Beast-exclusive third name for the identical effect. */
+	const SUPER_EFFECTIVE_REDUCER_ABILITIES = new Set(['solidrock', 'filter', 'prismarmor']);
 
 	/** buildSpeedSpectrumHTML's own tuning constants — declared up here rather than next to that
 	 *  function (down near the other section builders) because they have to be assigned before
@@ -1129,7 +1184,8 @@
 			buildSpreadsSection, buildTeammatesSection,
 			computeSpeedSpectrumEntries, computeSpeedSpectrumDomain, resolveSpeedSpectrumSpecies,
 			assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
-			ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, applyDefensiveAbility, resolveMemberAbility,
+			ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, DEFENSIVE_ABILITY_TYPE_MULTIPLIERS,
+			SUPER_EFFECTIVE_REDUCER_ABILITIES, applyDefensiveAbility, resolveMemberAbility,
 			computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
 			buildMemberThreatRows, isDamagingMove, movePower, stabAdjustedPower, effectiveMoveType,
 			computeThreatMoveReasons, computeThreatSpeedReason,
@@ -2614,18 +2670,35 @@
 	}
 
 	/** Adjusts a raw typeEffectivenessMultiplier result for one real, defensively-relevant
-	 *  ability. Two real mechanics modeled: DEFENSIVE_ABILITY_IMMUNITIES' flat type immunities
-	 *  (own doc comment), and Wonder Guard specifically — the one ability that changes the rule
-	 *  itself rather than blocking one type: every attacking type that wouldn't already be
-	 *  super effective (rawMult < 2) deals 0 damage, not just one named type. Both checked by
-	 *  ability ID (toIDSafe) against the set's own real chosen ability, not a guess — an empty/
-	 *  unrecognized ability just returns `rawMult` unchanged. */
+	 *  ability. Four real mechanics modeled, applied in the order the real engine layers them:
+	 *   1. Wonder Guard — changes the rule itself rather than blocking one type: every attacking
+	 *      type that wouldn't already be super effective (rawMult < 2) deals 0, not just one
+	 *      named type. Returns immediately — nothing else below can apply on top of it.
+	 *   2. DEFENSIVE_ABILITY_IMMUNITIES' flat type immunities (own doc comment) — replaces the
+	 *      result outright (0) for the ability's one named type.
+	 *   3. DEFENSIVE_ABILITY_TYPE_MULTIPLIERS' fractional modifiers (own doc comment) —
+	 *      multiplies (not replaces) whatever step 2 produced, for the ability's own named
+	 *      type(s); a Dry Skin holder's Water immunity from step 2 is untouched by its own
+	 *      separate Fire entry here, since they're different types.
+	 *   4. SUPER_EFFECTIVE_REDUCER_ABILITIES (own doc comment) — Solid Rock/Filter/Prism Armor, a
+	 *      flat ×0.75 once (and only once) the value step 3 produced is already >= 2.
+	 *  Every step is checked by ability ID (toIDSafe) against the set's own real chosen ability,
+	 *  not a guess — an empty/unrecognized ability just returns `rawMult` unchanged. */
 	function applyDefensiveAbility(rawMult, attackType, ability) {
 		const abilityId = toIDSafe(ability);
 		if (abilityId === 'wonderguard') return rawMult >= 2 ? rawMult : 0;
+
+		let mult = rawMult;
 		const immuneType = DEFENSIVE_ABILITY_IMMUNITIES[abilityId];
-		if (immuneType && toIDSafe(immuneType) === toIDSafe(attackType)) return 0;
-		return rawMult;
+		if (immuneType && toIDSafe(immuneType) === toIDSafe(attackType)) mult = 0;
+
+		const typeMultipliers = DEFENSIVE_ABILITY_TYPE_MULTIPLIERS[abilityId];
+		for (const type in (typeMultipliers || {})) {
+			if (toIDSafe(type) === toIDSafe(attackType)) mult *= typeMultipliers[type];
+		}
+
+		if (mult >= 2 && SUPER_EFFECTIVE_REDUCER_ABILITIES.has(abilityId)) mult *= 0.75;
+		return mult;
 	}
 
 	/** The real ability a member's own Mega Evolution overrides its base forme's chosen ability
@@ -2733,15 +2806,27 @@
 		return { members, rows };
 	}
 
-	/** Discrete type-chart products only ever land on {0, .25, .5, 1, 2, 4} for a real dual-type
-	 *  defender (same reasoning as coverageTierClass's own doc comment) — but unlike that
-	 *  function (which only ever sees the *best* of several attacking move types, so a .25 result
-	 *  is rare enough it was never worth its own tier), every one of those six values is a real,
-	 *  common outcome here: this walks every type against every member directly, and a
-	 *  double-resist (.25x, two resisted types stacking) is an entirely ordinary, frequent result
-	 *  — worth its own distinct color from a single resist, not folded into
+	/** Discrete type-chart products land on {0, .25, .5, 1, 2, 4} for a real dual-type defender
+	 *  with no ability involved (same reasoning as coverageTierClass's own doc comment) — but
+	 *  unlike that function (which only ever sees the *best* of several attacking move types, so
+	 *  a .25 result is rare enough it was never worth its own tier), every one of those six
+	 *  values is a real, common outcome here: this walks every type against every member
+	 *  directly, and a double-resist (.25x, two resisted types stacking) is an entirely ordinary,
+	 *  frequent result — worth its own distinct color from a single resist, not folded into
 	 *  coverageTierClass's own "resist" catch-all (which would otherwise misclassify it as
 	 *  immune, since coverageTierClass's last branch assumes anything below .5 must be 0).
+	 *
+	 *  applyDefensiveAbility's own fractional modifiers (DEFENSIVE_ABILITY_TYPE_MULTIPLIERS/
+	 *  SUPER_EFFECTIVE_REDUCER_ABILITIES) can land the real result strictly *between* those six
+	 *  values now — a Dry Skin holder's Fire row is 1.25x, not 1x or 2x; a Solid Rock holder's
+	 *  already-4x row is 3x, not 4x or 2x. Both are real, distinct outcomes from the clean
+	 *  tiers around them (a mild extra weakness reads differently from a full extra type
+	 *  weakness, and a partially-blunted quad-weakness reads differently from either a real
+	 *  full quad-weakness or a real single weakness) — `cf-defmatrix-mildweak`/`-mildresist`
+	 *  give them their own (lighter-intensity, same hue) tier rather than silently rounding into
+	 *  a neighboring bucket or (worse) the plain uncolored 1x cell, which would make the extra
+	 *  effect invisible even though defensiveCellText's own fallback already prints the real
+	 *  number as text.
 	 *
 	 *  `null`/`undefined` (computeTeamDefensiveProfile's own still-open-slot placeholder) returns
 	 *  the same empty string as a genuinely neutral 1x — "nothing to compute" and "computed and
@@ -2754,8 +2839,10 @@
 		if (mult === null || mult === undefined) return '';
 		if (mult >= 4) return 'cf-defmatrix-quadweak';
 		if (mult >= 2) return 'cf-defmatrix-weak';
-		if (mult >= 1) return '';
-		if (mult >= 0.5) return 'cf-defmatrix-resist';
+		if (mult > 1) return 'cf-defmatrix-mildweak';
+		if (mult === 1) return '';
+		if (mult > 0.5) return 'cf-defmatrix-mildresist';
+		if (mult === 0.5) return 'cf-defmatrix-resist';
 		if (mult > 0) return 'cf-defmatrix-quadresist';
 		return 'cf-defmatrix-immune';
 	}

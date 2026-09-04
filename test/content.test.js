@@ -1090,10 +1090,10 @@ describe('applyDefensiveAbility', () => {
 		expect(applyDefensiveAbility(0.5, 'Ground', 'Flash Fire')).toBe(0.5); // Flash Fire only blocks Fire
 	});
 
-	it('passes the raw multiplier through unchanged with no ability, an unrelated one, or a resistance-only one (Thick Fat)', () => {
+	it('passes the raw multiplier through unchanged with no ability or an unrelated one', () => {
 		expect(applyDefensiveAbility(2, 'Water', '')).toBe(2);
 		expect(applyDefensiveAbility(2, 'Water', 'Intimidate')).toBe(2);
-		expect(applyDefensiveAbility(2, 'Fire', 'Thick Fat')).toBe(2); // real mechanic is a 0.5x modifier, not modeled here
+		expect(applyDefensiveAbility(2, 'Grass', 'Thick Fat')).toBe(2); // Thick Fat doesn't touch Grass
 	});
 
 	it('applies Wonder Guard\'s own rule instead — everything below super effective becomes 0', () => {
@@ -1102,6 +1102,35 @@ describe('applyDefensiveAbility', () => {
 		expect(applyDefensiveAbility(0, 'Ground', 'Wonder Guard')).toBe(0); // already immune -> still 0
 		expect(applyDefensiveAbility(2, 'Ice', 'Wonder Guard')).toBe(2); // super effective -> passes through real
 		expect(applyDefensiveAbility(4, 'Rock', 'Wonder Guard')).toBe(4); // quad -> passes through real
+	});
+
+	it('stacks a real fractional weakness modifier on top of the raw multiplier, not replacing it', () => {
+		expect(applyDefensiveAbility(1, 'Fire', 'Dry Skin')).toBe(1.25); // neutral by typing, extra-weak via ability
+		expect(applyDefensiveAbility(2, 'Fire', 'Dry Skin')).toBe(2.5); // already weak by typing, stacks further
+		expect(applyDefensiveAbility(1, 'Fire', 'Fluffy')).toBe(2);
+		expect(applyDefensiveAbility(2, 'Fire', 'Fluffy')).toBe(4); // real case: a Fire-weak Fluffy holder takes quad
+	});
+
+	it('a Dry Skin holder is immune to Water AND extra-weak to Fire at once — two different real effects, not a contradiction', () => {
+		expect(applyDefensiveAbility(1, 'Water', 'Dry Skin')).toBe(0);
+		expect(applyDefensiveAbility(1, 'Fire', 'Dry Skin')).toBe(1.25);
+	});
+
+	it('stacks a real fractional resistance modifier the same way', () => {
+		expect(applyDefensiveAbility(1, 'Fire', 'Thick Fat')).toBe(0.5);
+		expect(applyDefensiveAbility(1, 'Ice', 'Thick Fat')).toBe(0.5);
+		expect(applyDefensiveAbility(1, 'Fire', 'Heatproof')).toBe(0.5);
+		expect(applyDefensiveAbility(1, 'Fire', 'Water Bubble')).toBe(0.5);
+		expect(applyDefensiveAbility(2, 'Water', 'Water Bubble')).toBe(2); // Water Bubble doesn't touch Water defensively
+		expect(applyDefensiveAbility(1, 'Ghost', 'Purifying Salt')).toBe(0.5);
+	});
+
+	it('blunts an already-super-effective hit by a flat 0.75x, but leaves a neutral or resisted hit untouched', () => {
+		expect(applyDefensiveAbility(2, 'Ice', 'Solid Rock')).toBe(1.5);
+		expect(applyDefensiveAbility(4, 'Ice', 'Filter')).toBe(3);
+		expect(applyDefensiveAbility(2, 'Ice', 'Prism Armor')).toBe(1.5);
+		expect(applyDefensiveAbility(1, 'Ice', 'Solid Rock')).toBe(1); // neutral -> untouched
+		expect(applyDefensiveAbility(0.5, 'Ice', 'Solid Rock')).toBe(0.5); // resisted -> untouched
 	});
 });
 
@@ -1273,6 +1302,24 @@ describe('defensiveTierClass', () => {
 		expect(defensiveTierClass(null)).toBe('');
 		expect(defensiveTierClass(undefined)).toBe('');
 		expect(defensiveTierClass(null)).not.toBe(defensiveTierClass(0));
+	});
+
+	it('gives a real ability-driven multiplier strictly between the clean tiers its own lighter mild tier, not the neutral cell or the full tier', () => {
+		// Dry Skin's real Fire weakness on an otherwise-neutral typing: 1 * 1.25 = 1.25.
+		expect(defensiveTierClass(1.25)).toBe('cf-defmatrix-mildweak');
+		expect(defensiveTierClass(1.25)).not.toBe(defensiveTierClass(1));
+		expect(defensiveTierClass(1.25)).not.toBe(defensiveTierClass(2));
+		// Solid Rock blunting an already-4x weakness: 4 * 0.75 = 3 — still >= 2, so it stays in
+		// the ordinary "weak" tier rather than getting its own mild variant; a 3x hit is still a
+		// real, meaningfully super-effective-strength weakness, just short of the full quad tier.
+		expect(defensiveTierClass(3)).toBe('cf-defmatrix-weak');
+		// Purifying Salt on an otherwise-weak (2x) Ghost matchup: 2 * 0.5 = 1 — lands back on the
+		// clean neutral tier, not a mild one, since 1 is one of the six real discrete products.
+		expect(defensiveTierClass(1)).toBe('');
+		// A real value strictly between 0.5 and 1 — e.g. Solid Rock's own 0.75x reducer applied
+		// hypothetically below its real >=2x gate — reads as a mild resist, not the full 0.5 tier.
+		expect(defensiveTierClass(0.75)).toBe('cf-defmatrix-mildresist');
+		expect(defensiveTierClass(0.75)).not.toBe(defensiveTierClass(0.5));
 	});
 });
 
@@ -1896,6 +1943,26 @@ describe('computeThreatMoveReasons', () => {
 		expect(computeThreatMoveReasons([], ['weak'])).toEqual([]);
 		expect(computeThreatMoveReasons(undefined, ['weak'])).toEqual([]);
 	});
+
+	it('excludes a move the defender is flatly immune to via its own real ability, even though it would otherwise be super effective', () => {
+		mockThreatsDex();
+		const moves = [{ move: 'Water Spout', percent: '90', type: 'Water' }];
+		// 'weak' is super effective (2x) against Water by typing alone — but a real Water Absorb
+		// holder is genuinely immune to it regardless, the exact Biggest Threats bug this
+		// defenderAbility parameter fixes (it used to be silently dropped entirely).
+		expect(computeThreatMoveReasons(moves, ['weak'], '', [], null, 'Water Absorb')).toEqual([]);
+	});
+
+	it('credits a move that only qualifies once a real extra-weakness ability (Fluffy) is factored in', () => {
+		mockThreatsDex();
+		// Fictional 'neutral' defender types make Flamethrower merely neutral (1x) by typing
+		// alone — not enough to qualify — but a real Fluffy holder takes double Fire damage.
+		const moves = [{ move: 'Flamethrower', percent: '90', type: 'Fire' }];
+		expect(computeThreatMoveReasons(moves, ['neutral'], '', [], null, 'Fluffy')).toEqual([
+			{ move: 'Flamethrower', type: 'Fire', percent: 90 },
+		]);
+		expect(computeThreatMoveReasons(moves, ['neutral'])).toEqual([]); // no defender ability -> stays neutral, doesn't qualify
+	});
 });
 
 describe('threatHasMoveOfCategory', () => {
@@ -1973,6 +2040,14 @@ describe('computeThreatSpeedReason', () => {
 		mockThreatsDex();
 		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], baseSpeed: 150, scarfSpeed: null };
 		expect(computeThreatSpeedReason(threat, { types: ['resists'], speed: 100 })).toBeNull();
+	});
+
+	it('returns null when it outspeeds but the defender\'s own real ability blocks the only backing move outright', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], baseSpeed: 150, scarfSpeed: null };
+		// 'neutral' typing alone would qualify (1x, the >=1 bar this function uses) — but a real
+		// Water Absorb holder takes 0, so "outspeeds" alone isn't a real threat here.
+		expect(computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100, ability: 'Water Absorb' })).toBeNull();
 	});
 
 	it('returns null when the only backing move is below the commonly-used usage threshold', () => {
@@ -2126,6 +2201,16 @@ describe('computeThreatReasons', () => {
 		const threat = { moves: [], atk: null, spa: null };
 		expect(computeThreatReasons(threat, { types: ['weak'], def: 10, spd: 10 })).toEqual([]);
 	});
+
+	it('reports no reasons at all against a defender whose real ability blocks every qualifying move — the fixed Water Absorb bug', () => {
+		mockThreatsDex();
+		// 'weak' would otherwise make Water Spout both a speed reason (outspeeds, >=1x) and a
+		// move reason (>=2x) — a real Water Absorb holder should show neither, since the move
+		// deals 0 damage regardless of typing or Speed.
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], baseSpeed: 150, scarfSpeed: null, atk: 60, spa: 60 };
+		const defender = { types: ['weak'], def: 100, spd: 100, speed: 100, ability: 'Water Absorb' };
+		expect(computeThreatReasons(threat, defender)).toEqual([]);
+	});
 });
 
 describe('computeThreatOffense', () => {
@@ -2243,33 +2328,38 @@ describe('computeThreatOffense', () => {
 describe('computeMemberDefense', () => {
 	afterEach(() => { delete window.Dex; });
 
-	it('reads real def/spd/types/speed from the member\'s own set, folding its own held item into Speed', () => {
+	it('reads real def/spd/types/speed/ability from the member\'s own set, folding its own held item into Speed', () => {
 		window.Dex = {
 			items: { get: () => ({ exists: false }) },
 			species: { get: (name) => (name === 'Sceptile' ? { exists: true, types: ['Grass', 'Poison'] } : { exists: false }) },
 		};
-		const memberSet = { species: 'Sceptile', item: 'Choice Scarf', evs: {}, nature: '' };
+		const memberSet = { species: 'Sceptile', item: 'Choice Scarf', ability: 'Overgrow', evs: {}, nature: '' };
 		const getStat = (stat, set) => {
 			expect(set).toBe(memberSet);
 			return stat === 'def' ? 60 : stat === 'spd' ? 90 : 100; // spe: 100
 		};
 		const tbRoom = { getStat };
 		const defense = computeMemberDefense(tbRoom, memberSet);
-		expect(defense).toEqual({ types: ['Grass', 'Poison'], def: 60, spd: 90, speed: 150 }); // floor(100 * 1.5)
+		expect(defense).toEqual({ types: ['Grass', 'Poison'], def: 60, spd: 90, speed: 150, ability: 'Overgrow' }); // floor(100 * 1.5)
 	});
 
-	it('resolves a Mega-Stone holder to the Mega forme\'s own types/stats before reading them', () => {
+	it('resolves a Mega-Stone holder to the Mega forme\'s own types/stats/ability before reading them', () => {
 		window.Dex = {
 			items: { get: (name) => (String(name).toLowerCase() === 'blastoisinite' ? { exists: true, megaStone: { Blastoise: 'Blastoise-Mega' } } : { exists: false }) },
-			species: { get: (name) => (name === 'Blastoise-Mega' ? { exists: true, types: ['Water'] } : { exists: false }) },
+			species: { get: (name) => (name === 'Blastoise-Mega' ? { exists: true, types: ['Water'], abilities: { 0: 'Mega Launcher' } } : { exists: false }) },
 		};
-		const memberSet = { species: 'Blastoise', item: 'Blastoisinite', evs: {}, nature: '' };
+		// The base build's own chosen ability (Torrent) is irrelevant once it's Mega'd — the Mega
+		// forme's own fixed ability (resolveMemberAbility) is what should come back instead, the
+		// same override computeTeamDefensiveProfile already applies for the Defensive Profile matrix.
+		const memberSet = { species: 'Blastoise', item: 'Blastoisinite', ability: 'Torrent', evs: {}, nature: '' };
 		const getStat = (stat, set) => {
 			expect(set.species).toBe('Blastoise-Mega');
 			return 50;
 		};
 		const tbRoom = { getStat };
-		expect(computeMemberDefense(tbRoom, memberSet).types).toEqual(['Water']);
+		const defense = computeMemberDefense(tbRoom, memberSet);
+		expect(defense.types).toEqual(['Water']);
+		expect(defense.ability).toBe('Mega Launcher');
 	});
 });
 
