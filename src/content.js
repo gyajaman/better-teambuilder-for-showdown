@@ -4188,6 +4188,15 @@
 			lastRenderKey = key;
 			lastMon = null;
 			lastFetchState = 'pending';
+			// A blank slot's Similar Teams fetch (getTopTeams + per-team getTopTeamDetail, a
+			// two-stage chain) can still be in flight when the user picks a species here. Without
+			// bumping similarTeamsRenderToken, that stale fetch's guard still matches on resolve,
+			// so it can land after — and overwrite — the grid this branch is about to render.
+			lastSimilarTeamsKey = null;
+			lastSimilarTeamsAllMatches = null;
+			lastSimilarTeamsMatches = null;
+			lastSimilarTeamsFailed = false;
+			similarTeamsRenderToken++;
 
 			const token = ++renderToken;
 			sidebarEl.innerHTML = '<p class="cf-sidebar-placeholder">Loading Pikalytics data…</p>';
