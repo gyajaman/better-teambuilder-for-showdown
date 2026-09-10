@@ -290,6 +290,13 @@ window.CF_MOVE_CATEGORIES = {
 			{ id: 'cottonspore', name: 'Cotton Spore', conditional: false },
 			{ id: 'tarshot', name: 'Tar Shot', conditional: false },
 			{ id: 'toxicthread', name: 'Toxic Thread', conditional: false },
+			// Same reason as the rest of this list, a distinct shape from all of them: real
+			// Speed drop isn't even a `boosts` field on a secondary at all here (what the
+			// dynamic scan's own second branch checks) — it's a guaranteed (100% chance)
+			// `volatileStatus` whose own separate `condition.onResidual` boosts Speed -1 each
+			// turn for several turns, confirmed directly against data/moves.ts. The scan has
+			// no field to key off for that shape either, same "curate it by hand" treatment.
+			{ id: 'syrupbomb', name: 'Syrup Bomb', conditional: false },
 		],
 	},
 
