@@ -29,7 +29,7 @@ const {
 	buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
 	buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
 	buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
-	buildSpeciesPreviewTooltipHTML, patchDexSearch,
+	buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad,
 } = require('../src/content.js');
 
 /** Minimal window.Dex stand-in for the icon-rendering branches in the Pikalytics sidebar
@@ -3397,5 +3397,46 @@ describe('buildSpeciesPreviewTooltipHTML', () => {
 		['Moves', 'Ability', 'Item', 'Team coverage', 'Nature', 'Spread'].forEach((label) => {
 			expect(grid).toContain(`<strong>${label}</strong>`);
 		});
+	});
+});
+
+describe('closeSideRoomsOnLoad', () => {
+	afterEach(() => { delete window.app; });
+
+	it('leaves every restored chat side room', () => {
+		const leaveRoom = vi.fn();
+		window.app = { sideRoomList: [{ id: 'lobby', type: 'chat' }, { id: 'help', type: 'chat' }], leaveRoom };
+		closeSideRoomsOnLoad();
+		expect(leaveRoom).toHaveBeenCalledWith('lobby');
+		expect(leaveRoom).toHaveBeenCalledWith('help');
+		expect(leaveRoom).toHaveBeenCalledTimes(2);
+	});
+
+	// The actual bug this guards against: Showdown's own "Battles open on the right" preference
+	// (Dex.prefs('rightpanelbattles'), read into BattleRoom's own isSideRoom at creation —
+	// confirmed directly against the real client's oldclient/client-battle.js) makes an active
+	// battle or an open replay a real side room, landing it in sideRoomList right alongside any
+	// restored chat panels. This "startup tidy" was never meant to reach live game state.
+	it('never touches a battle room (type: "battle") restored as a side room, even alongside real chat rooms', () => {
+		const leaveRoom = vi.fn();
+		window.app = {
+			sideRoomList: [{ id: 'lobby', type: 'chat' }, { id: 'battle-gen9vgc2026regc-12345', type: 'battle' }],
+			leaveRoom,
+		};
+		closeSideRoomsOnLoad();
+		expect(leaveRoom).toHaveBeenCalledWith('lobby');
+		expect(leaveRoom).not.toHaveBeenCalledWith('battle-gen9vgc2026regc-12345');
+		expect(leaveRoom).toHaveBeenCalledTimes(1);
+	});
+
+	it('does nothing without window.app, and does not throw', () => {
+		expect(() => closeSideRoomsOnLoad()).not.toThrow();
+	});
+
+	it('closeHides the active side room when it exposes that method', () => {
+		const closeHide = vi.fn();
+		window.app = { sideRoomList: [], sideRoom: { closeHide } };
+		closeSideRoomsOnLoad();
+		expect(closeHide).toHaveBeenCalled();
 	});
 });

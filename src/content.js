@@ -1413,7 +1413,7 @@
 			buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
 			buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
 			buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
-			buildSpeciesPreviewTooltipHTML, patchDexSearch,
+			buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad,
 		};
 		return;
 	}
@@ -2622,13 +2622,27 @@
 	 *  hooked to joinRoom and doesn't run again after — this only fires once, right after
 	 *  load, not every time the teambuilder (or anything else) is opened. Gated by the
 	 *  "closeSideRoomsOnLoad" option (see settings-bridge.js/popup.html) — on by default,
-	 *  matching prior always-on behavior, but the user can turn it off. */
+	 *  matching prior always-on behavior, but the user can turn it off.
+	 *
+	 *  Skips any room with `type === 'battle'` (every real BattleRoom's own class field,
+	 *  confirmed directly against the real client's oldclient/client-battle.js) rather than
+	 *  leaving every side room unconditionally — a real, non-hypothetical case: Showdown's own
+	 *  "Battles open on the right" preference (Dex.prefs('rightpanelbattles'), read directly into
+	 *  BattleRoom's own isSideRoom at creation) makes an active battle or an open replay a genuine
+	 *  side room, and this "startup tidy" was never meant to reach live game state, only leftover
+	 *  chat panels (Lobby/Help/Tournaments). leaveRoom's own requestLeave hook does stop it from
+	 *  *silently* forfeiting a battle the user is actually playing — it pops Showdown's own
+	 *  ForfeitPopup confirmation instead of leaving outright — but popping an unprompted "Forfeit
+	 *  this battle?" dialog the instant the page loads is still real, wrong behavior for a startup
+	 *  tidy to cause, and a spectated battle or an open replay (no real side/requireForfeit to
+	 *  gate on) would close with no confirmation at all. */
 	function closeSideRoomsOnLoad() {
 		if (!window.app) return;
 		// 1. Leave any chat rooms that are open on the right side
 		if (window.app.sideRoomList) {
 			const sideRooms = window.app.sideRoomList.slice();
 			for (const room of sideRooms) {
+				if (room && room.type === 'battle') continue;
 				if (window.app.leaveRoom) {
 					window.app.leaveRoom(room.id);
 				}
