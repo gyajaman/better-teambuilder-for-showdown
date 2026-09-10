@@ -13,13 +13,18 @@ const CF_Pikalytics = window.CF_Pikalytics;
  *  no `--localstorage-file` configured, isn't actually backed by anything — every method call
  *  is a no-op. Swapping in a plain in-memory Storage stand-in keeps pikalytics.js's real
  *  readEntry/writeEntry cache logic under test instead of silently testing against a storage
- *  that never persists anything. */
+ *  that never persists anything. `length`/`key(i)` (real Storage's own enumeration surface, not
+ *  just get/set/remove/clear) round this out — pikalytics.js's own evictOldestIfOverCap/
+ *  pruneStaleAndCollectSurvivors need to walk every real cached key under a given prefix, the
+ *  same way real localStorage supports in a browser. */
 class MemoryStorage {
 	constructor() { this._data = new Map(); }
 	getItem(key) { return this._data.has(key) ? this._data.get(key) : null; }
 	setItem(key, value) { this._data.set(key, String(value)); }
 	removeItem(key) { this._data.delete(key); }
 	clear() { this._data.clear(); }
+	key(index) { return Array.from(this._data.keys())[index] ?? null; }
+	get length() { return this._data.size; }
 }
 window.localStorage = new MemoryStorage();
 
@@ -427,5 +432,86 @@ describe('getTopTeamDetail', () => {
 		expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
 		await CF_Pikalytics.getTopTeamDetail(FORMAT_ID, 'limitless-xyz', 'misty'); // different team -> fetches
 		expect(fetchMock.mock.calls.length).toBe(callsAfterFirst + 1);
+	});
+});
+
+/** Real localStorage key prefix pikalytics.js writes species cache entries under, kept in sync
+ *  with SPECIES_CACHE_PREFIX/the module doc comment's own documented "clearly namespaced key
+ *  prefixes" contract rather than reaching into the module for the private constant — this
+ *  file's own top comment already commits to testing against that documented shape (species
+ *  cache keys are `SPECIES_CACHE_PREFIX + formatId + '|' + toID(querySpecies)`, per
+ *  getSpeciesData's own source). */
+const SPECIES_CACHE_PREFIX = 'cf_pikalytics_cache_';
+
+describe('cache quota safety (localStorage eviction)', () => {
+	it('deletes a real orphaned stale-version entry the next time its own prefix is written to', async () => {
+		// A real cache entry, written the normal way, to learn the real current CACHE_VERSION
+		// without hardcoding it — this test only cares that it changes, not its exact value.
+		installFetchMock({
+			discover: (u) => discoveryResponse(decodeURIComponent(u.split('/').pop()), '2026-05', '1500'),
+			species: () => JSON.stringify(mon('Landorus-Therian')),
+		});
+		await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Landorus-Therian');
+		const realKey = SPECIES_CACHE_PREFIX + FORMAT_ID + '|landorustherian';
+		const realVersion = JSON.parse(localStorage.getItem(realKey)).version;
+
+		// A real orphaned entry from a previous CACHE_VERSION, the kind a version bump leaves
+		// behind — readEntry already treats this as a miss, but nothing has ever deleted it.
+		const staleKey = SPECIES_CACHE_PREFIX + FORMAT_ID + '|staleleftover';
+		localStorage.setItem(staleKey, JSON.stringify({ version: realVersion - 1, data: mon('Old'), fetchedAt: 1 }));
+		expect(localStorage.getItem(staleKey)).not.toBeNull(); // sanity: actually seeded
+
+		// Any other real cache-miss write under the SAME prefix should prune it as a side effect.
+		await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Rillaboom');
+		expect(localStorage.getItem(staleKey)).toBeNull();
+	});
+
+	it('leaves a real current-version entry alone even while pruning a stale one under the same prefix', async () => {
+		installFetchMock({
+			discover: (u) => discoveryResponse(decodeURIComponent(u.split('/').pop()), '2026-05', '1500'),
+			species: () => JSON.stringify(mon('Landorus-Therian')),
+		});
+		await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Landorus-Therian');
+		const realKey = SPECIES_CACHE_PREFIX + FORMAT_ID + '|landorustherian';
+		expect(localStorage.getItem(realKey)).not.toBeNull();
+		await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Rillaboom'); // another write to the same prefix
+		expect(localStorage.getItem(realKey)).not.toBeNull(); // untouched — it's current-version, not stale
+	});
+
+	it('evicts only the single oldest real entry once a prefix hits its cap, keeping every newer one', async () => {
+		installFetchMock({
+			discover: (u) => discoveryResponse(decodeURIComponent(u.split('/').pop()), '2026-05', '1500'),
+			species: () => JSON.stringify(mon('Landorus-Therian')),
+		});
+		// One real write to learn the real current CACHE_VERSION, same reasoning as above.
+		await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Landorus-Therian');
+		const version = JSON.parse(localStorage.getItem(SPECIES_CACHE_PREFIX + FORMAT_ID + '|landorustherian')).version;
+		localStorage.clear(); // start this test's own count from a clean prefix
+
+		// A generous seed count, well past any reasonable real cap — oldest-first by fetchedAt,
+		// distinct from insertion order (seeded newest-key-first on purpose, so a bug that
+		// evicted by key/insertion order instead of real fetchedAt would still be caught).
+		const SEED_COUNT = 500;
+		for (let i = SEED_COUNT - 1; i >= 0; i--) {
+			localStorage.setItem(SPECIES_CACHE_PREFIX + 'seed' + i, JSON.stringify({ version, data: mon('Seed' + i), fetchedAt: i }));
+		}
+
+		// One more real cache-miss write to a species not among the seeded keys — this is what
+		// actually triggers evictOldestIfOverCap for this prefix.
+		await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Rillaboom');
+
+		let countAfter = 0;
+		let survivedOldest = false;
+		let survivedNewest = false;
+		for (let i = 0; i < localStorage.length; i++) {
+			const key = localStorage.key(i);
+			if (!key || key.indexOf(SPECIES_CACHE_PREFIX) !== 0) continue;
+			countAfter++;
+			if (key === SPECIES_CACHE_PREFIX + 'seed0') survivedOldest = true; // fetchedAt: 0, the real oldest
+			if (key === SPECIES_CACHE_PREFIX + 'seed' + (SEED_COUNT - 1)) survivedNewest = true; // the real newest
+		}
+		expect(countAfter).toBeLessThanOrEqual(SEED_COUNT); // real eviction actually fired, not just grew
+		expect(survivedOldest).toBe(false); // the genuinely oldest real entry is gone
+		expect(survivedNewest).toBe(true); // a recently-fetched real entry is never evicted for space
 	});
 });

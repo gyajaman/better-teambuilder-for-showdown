@@ -274,6 +274,73 @@
 		return data;
 	}
 
+	/** The most entries any single cache prefix is allowed to accumulate before writeEntry starts
+	 *  evicting the oldest (by real fetchedAt, not insertion order) to make room — real, if rough,
+	 *  headroom against unbounded growth: TEAM_DETAIL_CACHE_PREFIX in particular has no natural
+	 *  ceiling of its own the way species/format lookups do (a whole season's worth of Similar
+	 *  Teams scrolling can page through far more distinct (tournament, author) team rosters than
+	 *  a browsing session ever revisits), and localStorage's real ~5MB-per-origin quota is shared
+	 *  with Showdown's own Storage.teams (this file's own module doc comment) — a QuotaExceededError
+	 *  from OUR OWN writes is already caught below and degrades quietly, but Showdown's own,
+	 *  unrelated calls into that same quota are not ours to guard, so staying well clear of the
+	 *  ceiling in the first place is the actual fix, not just catching the symptom. */
+	const MAX_ENTRIES_PER_PREFIX = 300;
+
+	/** One localStorage scan of everything under `prefix`, doing two real jobs at once rather
+	 *  than two separate passes: real orphaned dead weight (any entry whose own `version` doesn't
+	 *  match CACHE_VERSION, or that fails to parse as JSON at all — unambiguously our own
+	 *  garbage either way) is deleted outright as it's found, and every real survivor is
+	 *  collected as `{key, fetchedAt}` for evictOldestIfOverCap below to sort against. Without
+	 *  this, readEntry's own version check already treats a stale entry as a miss, but never
+	 *  actually deletes it — so every CACHE_VERSION bump this file has ever shipped (already
+	 *  several — that constant's own doc comment) would otherwise leave its old entries sitting
+	 *  in the user's real localStorage forever, pure dead weight against the same shared-origin
+	 *  quota MAX_ENTRIES_PER_PREFIX's own doc comment covers. Scans in *reverse* index order
+	 *  specifically so a mid-scan removeItem is safe to do immediately rather than needing a
+	 *  second pass — deleting index i only ever shifts indices *after* i (already visited, in
+	 *  reverse), never the ones still to come. */
+	function pruneStaleAndCollectSurvivors(prefix) {
+		const survivors = [];
+		for (let i = localStorage.length - 1; i >= 0; i--) {
+			const key = localStorage.key(i);
+			if (!key || key.indexOf(prefix) !== 0) continue;
+			let parsed = null;
+			try {
+				parsed = JSON.parse(localStorage.getItem(key));
+			} catch (e) {
+				// Falls through with parsed still null — unparseable is as stale as a real
+				// version mismatch, same "unambiguously our own garbage" reasoning.
+			}
+			if (!parsed || parsed.version !== CACHE_VERSION) {
+				localStorage.removeItem(key);
+			} else {
+				survivors.push({ key, fetchedAt: parsed.fetchedAt || 0 });
+			}
+		}
+		return survivors;
+	}
+
+	/** writeEntry's own pre-write half of MAX_ENTRIES_PER_PREFIX — called for the specific prefix
+	 *  about to receive a new entry, evicting down to one *below* the cap first (oldest real
+	 *  fetchedAt first) so the write that follows lands the prefix at exactly the cap, never
+	 *  transiently over it. Real stale-version entries under this same prefix are also cleaned up
+	 *  here as a side effect of the scan pruneStaleAndCollectSurvivors already has to do
+	 *  (that function's own doc comment) — cheap since it only touches the one prefix actually
+	 *  being written to, not every cf_pikalytics_ key on the origin, so this naturally runs on
+	 *  every real cache-miss fetch rather than needing its own separate, harder-to-place "once
+	 *  per page load" trigger. */
+	function evictOldestIfOverCap(prefix) {
+		try {
+			const survivors = pruneStaleAndCollectSurvivors(prefix);
+			if (survivors.length < MAX_ENTRIES_PER_PREFIX) return;
+			survivors.sort((a, b) => a.fetchedAt - b.fetchedAt);
+			const toRemove = survivors.length - MAX_ENTRIES_PER_PREFIX + 1;
+			for (let i = 0; i < toRemove; i++) localStorage.removeItem(survivors[i].key);
+		} catch (e) {
+			// Same degrade-quietly contract writeEntry already uses below.
+		}
+	}
+
 	function readEntry(prefix, key) {
 		try {
 			const raw = localStorage.getItem(prefix + key);
@@ -288,6 +355,7 @@
 	function writeEntry(prefix, key, entry) {
 		entry = Object.assign({ version: CACHE_VERSION }, entry);
 		try {
+			evictOldestIfOverCap(prefix);
 			localStorage.setItem(prefix + key, JSON.stringify(entry));
 		} catch (e) {
 			// Storage full/unavailable (e.g. private browsing) — degrade to no caching
