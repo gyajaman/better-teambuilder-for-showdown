@@ -437,6 +437,14 @@
 		if (cached && (Date.now() - cached.fetchedAt) < CACHE_TTL_MS) {
 			return Promise.resolve(cached);
 		}
+		// No real species to discover through at all — a genuinely empty roster on a cold cache,
+		// nothing typed into search either (content.js's own speciesHint doc comment covers when
+		// this is actually reachable). discoverMonthAndCutoff has no format-only variant, so a
+		// fetch here is guaranteed to hit /ai/pokedex/{slug}/undefined and fail — skip the
+		// network round-trip entirely and land on the exact same stale-cache-or-null result a
+		// failed fetch would have anyway (the .catch below), same "no real query to make, no
+		// network at all" pattern getSpeciesData's own allowlist check already uses.
+		if (!querySpeciesHint) return Promise.resolve(cached || null);
 		if (formatMetaInFlight.has(slug)) return formatMetaInFlight.get(slug);
 		const promise = discoverMonthAndCutoff(slug, querySpeciesHint)
 			.then(({ month, cutoff }) => writeEntry(FORMAT_META_PREFIX, slug, { month, cutoff, fetchedAt: Date.now() }))

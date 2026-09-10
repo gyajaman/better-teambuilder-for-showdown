@@ -358,6 +358,32 @@ describe('getTopUsageList', () => {
 		expect(list).toEqual([]);
 	});
 
+	// The real "cold cache, empty roster" case content.js's own speciesHint doc comment covers:
+	// a brand new team, nothing added yet and nothing typed into search either, so there's no
+	// real species anywhere to discover the format's {month, cutoff} through.
+	it('resolves to an empty array with NO discovery request at all when given no species hint on a cold cache', async () => {
+		const fetchMock = installFetchMock({
+			list: () => JSON.stringify([{ name: 'Landorus-Therian', rank: 1 }]),
+			species: () => JSON.stringify(mon('Landorus-Therian')),
+		});
+		const list = await CF_Pikalytics.getTopUsageList(FORMAT_ID, undefined, 20);
+		expect(list).toEqual([]); // no {month, cutoff} to query anything with
+		expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/ai/pokedex/'))).toBe(false);
+	});
+
+	it('still discovers and fetches normally once a real species hint is available, self-healing on the very next call', async () => {
+		installFetchMock({
+			discover: (u) => discoveryResponse(decodeURIComponent(u.split('/').pop()), '2026-05', '1500'),
+			list: () => JSON.stringify([{ name: 'Landorus-Therian', rank: 1 }]),
+			species: () => JSON.stringify(mon('Landorus-Therian')),
+		});
+		const empty = await CF_Pikalytics.getTopUsageList(FORMAT_ID, undefined, 20);
+		expect(empty).toEqual([]);
+		const list = await CF_Pikalytics.getTopUsageList(FORMAT_ID, 'Landorus-Therian', 20);
+		expect(list.length).toBe(1);
+		expect(list[0].mon.name).toBe('Landorus-Therian');
+	});
+
 	it('never has more than a handful of real species lookups in flight at once, even for a full top-20 list (a genuine burst of 20 simultaneous requests risks Cloudflare-fronted rate-limiting)', async () => {
 		vi.useFakeTimers();
 		try {
