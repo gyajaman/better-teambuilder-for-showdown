@@ -1,8 +1,8 @@
 {
-  "name": "ps-movepool-filters",
-  "version": "0.1.0",
+  "name": "better-teambuilder-for-showdown",
+  "version": "0.3.5",
   "private": true,
-  "description": "Adds movepool- and ability-derived custom search filters to the Pokémon Showdown teambuilder.",
+  "description": "Adds custom filters, Pikalytics stats, Speed comparisons, a Defensive Profile, and Biggest Threats to the Showdown teambuilder.",
   "scripts": {
     "lint": "eslint src/",
     "lint:fix": "eslint --fix src/",
