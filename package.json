@@ -1,6 +1,6 @@
 {
   "name": "better-teambuilder-for-showdown",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "description": "Adds custom filters, Pikalytics stats, Speed comparisons, a Defensive Profile, and Biggest Threats to the Showdown teambuilder.",
   "scripts": {
