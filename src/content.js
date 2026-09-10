@@ -342,6 +342,46 @@
 	 *  in flight before the user actually hits the bottom and sees a dead-end. */
 	const SIMILAR_TEAMS_SCROLL_THRESHOLD_PX = 120;
 
+	/** How many mapWithConcurrency calls (below) run at once — not a browser TCP-socket limit
+	 *  (Pikalytics serves real HTTP/2 over Cloudflare, confirmed live: HTTP/2 multiplexes many
+	 *  requests over one real connection, no old 6-socket-per-host ceiling to work around here),
+	 *  but real, Cloudflare-fronted bot/rate-limit heuristics still watch for a genuine burst of
+	 *  many simultaneous requests from one client — a full Similar Teams page (10 team-detail
+	 *  fetches) or a diverse roster's own deduplicated Biggest Threats counter list (which can
+	 *  realistically reach several dozen unique species) is exactly that shape unthrottled. Same
+	 *  conservative, unremarkable-looking number pikalytics.js's own FETCH_CONCURRENCY uses, for
+	 *  the same reason — kept as its own separate constant rather than shared across the two
+	 *  files, matching how each file here otherwise stays self-contained behind its own
+	 *  window.CF_* surface. */
+	const FETCH_CONCURRENCY = 6;
+
+	/** Maps `items` through `fn` (each call returning a Promise) with at most `limit` in flight
+	 *  at once, resolving to the results in the *same order* as `items` regardless of which
+	 *  finishes first — a worker-pool pattern (each of up to `limit` workers repeatedly claims
+	 *  the next not-yet-started index and moves on once its own fetch resolves) rather than
+	 *  chunking into fixed batches of `limit` and awaiting each batch in turn, so one slow
+	 *  request in an early batch can't stall every later item that would otherwise already be
+	 *  done. Every real caller here (fetchAndMergeTeamDetail, window.CF_Pikalytics.getSpeciesData)
+	 *  already resolves rather than rejects on a single item's own failure, so this doesn't add
+	 *  its own error handling on top — a genuine throw from `fn` is a real bug to propagate, not
+	 *  routine "this one lookup had no data." */
+	function mapWithConcurrency(items, limit, fn) {
+		if (!items.length) return Promise.resolve([]);
+		const results = new Array(items.length);
+		let nextIndex = 0;
+		function runNext() {
+			const i = nextIndex++;
+			if (i >= items.length) return Promise.resolve();
+			return Promise.resolve(fn(items[i], i)).then((result) => {
+				results[i] = result;
+				return runNext();
+			});
+		}
+		const workers = [];
+		for (let w = 0; w < Math.min(limit, items.length); w++) workers.push(runNext());
+		return Promise.all(workers).then(() => results);
+	}
+
 	/** Filters/scores window.CF_Pikalytics.getTopTeams()'s own up-to-200-team list (the
 	 *  format's real featured tournament teams, NOT filtered to any one species — see
 	 *  pikalytics.js's own module comment on Top Teams for how this differs from and improves
@@ -1413,7 +1453,7 @@
 			buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
 			buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
 			buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
-			buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad,
+			buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad, mapWithConcurrency,
 		};
 		return;
 	}
@@ -4623,7 +4663,7 @@
 					return null;
 				}
 				const firstPage = allMatches.slice(0, SIMILAR_TEAMS_PAGE_SIZE);
-				return Promise.all(firstPage.map((m) => fetchAndMergeTeamDetail(formatId, m))).then((detailedMatches) => {
+				return mapWithConcurrency(firstPage, FETCH_CONCURRENCY, (m) => fetchAndMergeTeamDetail(formatId, m)).then((detailedMatches) => {
 					if (token !== similarTeamsRenderToken) return;
 					lastSimilarTeamsMatches = detailedMatches;
 					panelEl.innerHTML = addPokemonPanelWrapHTML(buildSimilarTeamsSectionHTML(detailedMatches, curRosterSpeciesOrder(tbRoom)));
@@ -4665,7 +4705,7 @@
 			loadingEl.textContent = 'Loading more…';
 			rowsEl.appendChild(loadingEl);
 
-			Promise.all(nextPage.map((m) => fetchAndMergeTeamDetail(formatId, m))).then((detailed) => {
+			mapWithConcurrency(nextPage, FETCH_CONCURRENCY, (m) => fetchAndMergeTeamDetail(formatId, m)).then((detailed) => {
 				lastSimilarTeamsLoadingMore = false;
 				loadingEl.remove();
 				if (token !== similarTeamsRenderToken) return; // superseded by a newer render
@@ -5054,14 +5094,17 @@
 		 *  flight from before that state was reached.
 		 *
 		 *  Two fetch stages, not one: the first Promise.all gets every roster member's own
-		 *  `counters`, and only once buildMemberThreatRows has reshaped those into rows does a
-		 *  second Promise.all fetch every *unique* counter species' own data across the whole
-		 *  roster (moves/spreads/natures/items — computeThreatOffense's raw material for
-		 *  computeThreatReasons), deduplicated so a counter shared by several members' own lists
-		 *  (e.g. a format's single most common answer to Water-types) is only ever fetched once,
-		 *  not once per member it happens to counter — getSpeciesData's own cache would make a
-		 *  repeat fetch cheap anyway, but deduping the *requests* themselves avoids firing
-		 *  redundant ones in the same Promise.all at all. Every real counter for every member gets
+		 *  `counters` — a plain Promise.all is fine there, since a real roster is capped at 6
+		 *  members regardless — and only once buildMemberThreatRows has reshaped those into rows
+		 *  does a second, mapWithConcurrency-throttled stage fetch every *unique* counter
+		 *  species' own data across the whole roster (moves/spreads/natures/items —
+		 *  computeThreatOffense's raw material for computeThreatReasons), deduplicated so a
+		 *  counter shared by several members' own lists (e.g. a format's single most common
+		 *  answer to Water-types) is only ever fetched once, not once per member it happens to
+		 *  counter — getSpeciesData's own cache would make a repeat fetch cheap anyway, but
+		 *  deduping the *requests* themselves avoids firing redundant ones at all, and throttling
+		 *  the survivors avoids a genuine dozens-wide burst (mapWithConcurrency's own doc
+		 *  comment). Every real counter for every member gets
 		 *  enriched now, not just a capped top few — this section shows everything, not a curated
 		 *  shortlist (own doc comment on buildMemberThreatRows). Each enriched counter carries both
 		 *  `reasons` (computeThreatReasons — needs `defense`, since those prove a real hit against
@@ -5118,7 +5161,11 @@
 				// Returned (not fire-and-forget) so a rejection/throw in here is caught by the
 				// .catch below too, not just the outer Promise.all's own — without this, an error
 				// here would be an unhandled rejection this function never learns about at all.
-				return Promise.all(uniqueCounterNames.map((name) => window.CF_Pikalytics.getSpeciesData(formatId, name)))
+				// mapWithConcurrency, not a bare Promise.all, since a diverse 6-member roster can
+				// realistically deduplicate down to several dozen unique counter species — a real
+				// burst that size risks Cloudflare-fronted rate-limiting unthrottled (that
+				// function's own doc comment).
+				return mapWithConcurrency(uniqueCounterNames, FETCH_CONCURRENCY, (name) => window.CF_Pikalytics.getSpeciesData(formatId, name))
 					.then((monsList) => {
 						if (token !== teamThreatsRenderToken) return; // superseded by a newer render
 						const monByName = new Map(uniqueCounterNames.map((name, i) => [name, monsList[i]]));

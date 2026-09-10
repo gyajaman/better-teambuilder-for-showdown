@@ -29,7 +29,7 @@ const {
 	buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
 	buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
 	buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
-	buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad,
+	buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad, mapWithConcurrency,
 } = require('../src/content.js');
 
 /** Minimal window.Dex stand-in for the icon-rendering branches in the Pikalytics sidebar
@@ -3438,5 +3438,52 @@ describe('closeSideRoomsOnLoad', () => {
 		window.app = { sideRoomList: [], sideRoom: { closeHide } };
 		closeSideRoomsOnLoad();
 		expect(closeHide).toHaveBeenCalled();
+	});
+});
+
+describe('mapWithConcurrency', () => {
+	it('resolves to an empty array with no items, without calling fn at all', async () => {
+		const fn = vi.fn();
+		expect(await mapWithConcurrency([], 6, fn)).toEqual([]);
+		expect(fn).not.toHaveBeenCalled();
+	});
+
+	it('resolves results in the same order as the input, regardless of which finishes first', async () => {
+		const items = [30, 10, 20];
+		const results = await mapWithConcurrency(items, 6, (ms) => new Promise((resolve) =>
+			setTimeout(() => resolve(ms), ms)));
+		expect(results).toEqual([30, 10, 20]); // same order as items, not resolution order
+	});
+
+	it('never runs more than `limit` calls at once, even with far more items than that', async () => {
+		vi.useFakeTimers();
+		try {
+			let inFlight = 0;
+			let maxInFlight = 0;
+			const items = Array.from({ length: 20 }, (_, i) => i);
+			const resultPromise = mapWithConcurrency(items, 6, () => {
+				inFlight++;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				return new Promise((resolve) => setTimeout(() => {
+					inFlight--;
+					resolve(true);
+				}, 10));
+			});
+			for (let step = 0; step < 20; step++) {
+				await vi.advanceTimersByTimeAsync(10);
+			}
+			const results = await resultPromise;
+			expect(results.length).toBe(20);
+			expect(maxInFlight).toBeGreaterThan(1); // genuine concurrency actually happened...
+			expect(maxInFlight).toBeLessThanOrEqual(6); // ...but never past the real limit
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('never exceeds `limit` even when `limit` is larger than the item count', async () => {
+		const items = [1, 2, 3];
+		const results = await mapWithConcurrency(items, 6, (n) => Promise.resolve(n * 2));
+		expect(results).toEqual([2, 4, 6]);
 	});
 });

@@ -357,6 +357,50 @@ describe('getTopUsageList', () => {
 		const list = await CF_Pikalytics.getTopUsageList(UNKNOWN_FORMAT_ID, 'Landorus-Therian', 20);
 		expect(list).toEqual([]);
 	});
+
+	it('never has more than a handful of real species lookups in flight at once, even for a full top-20 list (a genuine burst of 20 simultaneous requests risks Cloudflare-fronted rate-limiting)', async () => {
+		vi.useFakeTimers();
+		try {
+			let inFlight = 0;
+			let maxInFlight = 0;
+			global.fetch = vi.fn((url) => {
+				const u = String(url);
+				if (u.includes('/ai/pokedex/')) {
+					return Promise.resolve({ ok: true, text: () => Promise.resolve(discoveryResponse('X', '2026-05', '1500')) });
+				}
+				if (u.includes('/api/l/')) {
+					const list = JSON.stringify(Array.from({ length: 20 }, (_, i) => ({ name: 'Mon' + i, rank: i + 1 })));
+					return Promise.resolve({ ok: true, text: () => Promise.resolve(list) });
+				}
+				if (u.includes('/api/p/')) {
+					// Real per-species fetches only — deliberately deferred via a real timer
+					// (not resolved synchronously) so genuine overlap between them is actually
+					// observable, not just theoretical.
+					inFlight++;
+					maxInFlight = Math.max(maxInFlight, inFlight);
+					return new Promise((resolve) => {
+						setTimeout(() => {
+							inFlight--;
+							resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(mon('X'))) });
+						}, 10);
+					});
+				}
+				return Promise.resolve({ ok: false, text: () => Promise.resolve('') });
+			});
+
+			const resultPromise = CF_Pikalytics.getTopUsageList(FORMAT_ID, 'Landorus-Therian', 20);
+			for (let step = 0; step < 20; step++) {
+				await vi.advanceTimersByTimeAsync(10);
+			}
+			const list = await resultPromise;
+
+			expect(list.length).toBe(20); // every real lookup still completed
+			expect(maxInFlight).toBeGreaterThan(1); // genuine concurrency actually happened...
+			expect(maxInFlight).toBeLessThanOrEqual(6); // ...but never unbounded
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe('getTopTeams', () => {

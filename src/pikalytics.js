@@ -368,6 +368,43 @@
 		return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 	}
 
+	/** How many `mapWithConcurrency` calls run at once — not a browser TCP-socket limit (this
+	 *  API is real HTTP/2 over Cloudflare, confirmed live: HTTP/2 multiplexes many requests over
+	 *  one real connection, no 6-socket-per-host ceiling to work around here), but real,
+	 *  Cloudflare-fronted bot/rate-limit heuristics still watch for a genuine burst of dozens of
+	 *  simultaneous requests from one client — getTopUsageList's own top-20 species lookups is
+	 *  exactly that shape unthrottled. A conservative, unremarkable-looking number, not tuned
+	 *  against any specific observed limit. */
+	const FETCH_CONCURRENCY = 6;
+
+	/** Maps `items` through `fn` (each call returning a Promise) with at most `limit` in flight
+	 *  at once, resolving to the results in the *same order* as `items` regardless of which
+	 *  finishes first — a worker-pool pattern (each of up to `limit` workers repeatedly claims
+	 *  the next not-yet-started index and moves on once its own fetch resolves) rather than
+	 *  chunking into fixed batches of `limit` and awaiting each batch in turn, so one slow
+	 *  request in an early batch can't stall every later item that would otherwise already be
+	 *  done. Never rejects the *whole* thing early on one item's own rejection — `fn` here is
+	 *  always a `.catch(() => null)`-guarded Pikalytics call already (getSpeciesData/
+	 *  fetchAndMergeTeamDetail's own contract), so a genuine throw from `fn` is a real bug to
+	 *  propagate, not routine "this one species had no data" the caller already handles via a
+	 *  null result. */
+	function mapWithConcurrency(items, limit, fn) {
+		if (!items.length) return Promise.resolve([]);
+		const results = new Array(items.length);
+		let nextIndex = 0;
+		function runNext() {
+			const i = nextIndex++;
+			if (i >= items.length) return Promise.resolve();
+			return Promise.resolve(fn(items[i], i)).then((result) => {
+				results[i] = result;
+				return runNext();
+			});
+		}
+		const workers = [];
+		for (let w = 0; w < Math.min(limit, items.length); w++) workers.push(runNext());
+		return Promise.all(workers).then(() => results);
+	}
+
 	/** Extracts {month, cutoff} from the /ai/pokedex/{slug}/{species} Markdown response — see
 	 *  the module doc comment for why this indirection exists. Both are plain-text-embedded:
 	 *  "**Data Date** | YYYY-MM" and a "## FAQ for {species} in {slug}-{cutoff}" heading.
@@ -536,9 +573,9 @@
 		return getUsageList(formatId, querySpeciesHint).then((list) => {
 			if (!list) return [];
 			const top = list.slice(0, count || 20);
-			return Promise.all(top.map((entry) =>
+			return mapWithConcurrency(top, FETCH_CONCURRENCY, (entry) =>
 				getSpeciesData(formatId, entry.name).then((mon) => ({ rank: entry.rank, name: entry.name, mon }))
-			));
+			);
 		});
 	}
 
