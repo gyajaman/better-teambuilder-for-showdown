@@ -896,24 +896,30 @@ body.cf-teambuilder-team-overview #cf-pika-panel {
 	border: 1px solid transparent;
 	border-radius: 4px;
 }
-/* Blank-slot ("Popular") state only — content.js buildSpeedTierColumnHTML adds
- * cf-pika-row-clickable (a species not yet on the team) or cf-pika-row-equipped (one already on
- * it) directly onto .cf-speedtier-row, the exact same classes every other click-to-apply row in
- * this file already uses, so clicking/highlighting Just Works without new rules here (see those
- * classes' own definitions below — cursor:pointer, or a border/background highlight with no
- * pointer-events restriction). Deliberately cf-pika-row-equipped, not cf-pika-row-disabled, for
- * an already-on-team row — see buildSpeedTierColumnHTML's own comment for why: disabled's
- * `pointer-events: none` would also block the hover preview this row still needs. This is only
+/* "Popular" state only (blank-slot or team-overview — wantsPopularColumn) — content.js
+ * buildSpeedTierColumnHTML adds cf-pika-row-clickable (a species not yet on the team and still
+ * addable), cf-pika-row-equipped (one already on it), or cf-pika-row-full (team-overview only,
+ * roster already full) directly onto .cf-speedtier-row, the exact same classes every other
+ * click-to-apply row in this file already uses, so clicking/highlighting Just Works without new
+ * rules here (see those classes' own definitions below — cursor:pointer, cursor:not-allowed, or
+ * a border/background highlight with no pointer-events restriction). Deliberately
+ * cf-pika-row-equipped/cf-pika-row-full, never cf-pika-row-disabled, for either of those two
+ * non-clickable cases — see buildSpeedTierColumnHTML's own comment for why: disabled's
+ * `pointer-events: none` would also block the hover preview these rows still need. This is only
  * the one extra touch neither of those generic classes covers — a hover highlight on the box
  * itself, since .cf-speedtier-box doesn't share `.cf-pika-row`'s own `:hover` background (that
  * rule is scoped to that exact class, deliberately not reused here — a boxed sprite reads
  * differently from a text row, same reasoning as the square-corners comment below). */
-/* Explicit rather than trusting inheritance from the row's own cursor:pointer (.cf-pika-row-
- * clickable, below) — .cf-speedtier-box/.cf-speedtier-speed are separate child elements, and a
- * plain inherited cursor is easy to lose track of once more child markup gets added later, so
- * this states the intent directly on the parts a hovering mouse actually lands on. */
+/* Explicit rather than trusting inheritance from the row's own cursor:pointer/cursor:not-allowed
+ * (.cf-pika-row-clickable/.cf-pika-row-full, below) — .cf-speedtier-box/.cf-speedtier-speed are
+ * separate child elements, and a plain inherited cursor is easy to lose track of once more child
+ * markup gets added later, so this states the intent directly on the parts a hovering mouse
+ * actually lands on. */
 .cf-speedtier-row.cf-pika-row-clickable {
 	cursor: pointer;
+}
+.cf-speedtier-row.cf-pika-row-full {
+	cursor: not-allowed;
 }
 .cf-speedtier-row.cf-pika-row-clickable:hover .cf-speedtier-box {
 	border-color: #7A9BC2;
@@ -1223,6 +1229,16 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 	opacity: .45;
 	cursor: not-allowed;
 	pointer-events: none;
+}
+/* Same greyed-out "can't click this" look as .cf-pika-row-disabled, minus the pointer-events:
+ * none — for a Popular row disabled only because the team-overview roster is already full
+ * (buildSpeedTierColumnHTML), which still has a useful hover preview
+ * (buildAddPokemonPreviewTooltipHTML) exactly like every other Popular row, click-disabled or
+ * not. .cf-pika-row-disabled's own pointer-events: none is right for buildTeammatesSection's
+ * Common Teammates rows (no per-row hover preview to protect there), just wrong here. */
+.cf-pika-row-full {
+	opacity: .45;
+	cursor: not-allowed;
 }
 /* Values copied straight from `.teambuilder-results .result a.cur` (client.css) — the exact
  * rule the native search chart already uses to mark a move/item/ability result as "this is

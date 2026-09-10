@@ -3532,13 +3532,18 @@
 	 *  single combined line with one percent would misrepresent that percent as covering both,
 	 *  when it's really only the EV spread's own ranking.
 	 *
-	 *  Also shows the Mega forme's own base stats, right under the base forme's, when a Mega
-	 *  Stone is actually the species' popular item (topSpeedItemBadge — same "is this actually
-	 *  relevant" check buildSpeedTierColumnHTML's own Speed-stat swap already uses, so this
-	 *  tooltip and that row's Speed number stay consistent about which forme is the one worth
-	 *  showing). Read from Dex.species directly, not Pikalytics — the per-species payload here is
-	 *  queried under the base species name (see pikalytics.js's own resolveQuerySpecies), so it
-	 *  never carries the Mega forme's own base stats itself.
+	 *  Also shows every Mega forme's own base stats, right under the base forme's, for each real
+	 *  Mega Stone that clears CF_SETTINGS.megaThresholdPercent — not just the single most popular
+	 *  one (topSpeedItemBadge's own job, the corner badge on the row itself): a species can have
+	 *  more than one real Mega Stone, and confirmed live on Raichu, both can comfortably clear
+	 *  the threshold rather than one dominating, the identical case buildSpeedComparisonTooltipHTML's
+	 *  own megaOptions already handles for the Speed comparison popup — this tooltip mirrors that
+	 *  same "collect every one that qualifies" logic rather than reusing topSpeedItemBadge's
+	 *  single-best result the way an earlier version of this did. Sorted by usage descending, same
+	 *  as megaOptions, so the more common one still reads first. Read from Dex.species directly,
+	 *  not Pikalytics — the per-species payload here is queried under the base species name (see
+	 *  pikalytics.js's own resolveQuerySpecies), so it never carries a Mega forme's own base
+	 *  stats itself.
 	 *
 	 *  `coverage` (optional — every existing caller/test omits it, and the cell below simply
 	 *  shows "—" without it) is buildSpeedTierColumnHTML's own bestTeamCoverageReasons result
@@ -3608,15 +3613,27 @@
 		const statsText = mon.stats ?
 			STAT_IDS.map((id) => `${STAT_LABEL_BY_ID[id]} ${mon.stats[id]}`).join(' &nbsp; ') : '';
 
-		const badge = topSpeedItemBadge(mon, speciesName);
-		let megaStatsText = '';
-		let megaFormeName = '';
-		if (badge && badge.isMega && window.Dex) {
-			const megaSpecies = window.Dex.species.get(badge.formeName);
-			if (megaSpecies && megaSpecies.exists && megaSpecies.baseStats) {
-				megaFormeName = badge.formeName;
-				megaStatsText = STAT_IDS.map((id) => `${STAT_LABEL_BY_ID[id]} ${megaSpecies.baseStats[id]}`).join(' &nbsp; ');
-			}
+		// Every real Mega Stone that clears the threshold, not just topSpeedItemBadge's single
+		// most popular one — same collection logic as buildSpeedComparisonTooltipHTML's own
+		// megaOptions (that function's own doc comment covers why one Mega Stone dominating isn't
+		// something to assume).
+		const megaSections = [];
+		if (window.Dex) {
+			(mon.items || []).forEach((it) => {
+				const itemData = window.Dex.items.get(it.item);
+				const forme = itemData && itemData.megaStone && itemData.megaStone[speciesName];
+				if (!forme) return;
+				const percent = parseFloat(it.percent) || 0;
+				if (percent < CF_SETTINGS.megaThresholdPercent) return;
+				const megaSpecies = window.Dex.species.get(forme);
+				if (!megaSpecies || !megaSpecies.exists || !megaSpecies.baseStats) return;
+				megaSections.push({
+					percent,
+					formeName: forme,
+					statsText: STAT_IDS.map((id) => `${STAT_LABEL_BY_ID[id]} ${megaSpecies.baseStats[id]}`).join(' &nbsp; '),
+				});
+			});
+			megaSections.sort((a, b) => b.percent - a.percent);
 		}
 
 		// Team coverage always occupies its own grid cell (below) even when there's nothing to
@@ -3675,7 +3692,7 @@
 		return `<div class="cf-tooltip cf-addpokemon-preview-tooltip">` +
 			`<h2>${escapeHTML(speciesName)}</h2>` +
 			(statsText ? `<p class="tooltip-section">${statsText}</p>` : '') +
-			(megaStatsText ? `<p class="tooltip-section"><strong>${escapeHTML(megaFormeName)}</strong><br>${megaStatsText}</p>` : '') +
+			megaSections.map((m) => `<p class="tooltip-section"><strong>${escapeHTML(m.formeName)}</strong><br>${m.statsText}</p>`).join('') +
 			`<div class="cf-addpokemon-preview-grid">` +
 				gridCell('Moves', moveRows || '<br>No data') +
 				gridCell('Ability', abilityRows || '<br>No data') +
@@ -3815,18 +3832,21 @@
 		 *  teammate without editing it). That difference is also the one place curTeamFull matters
 		 *  here: a blank slot only exists because the roster wasn't full to begin with, so it's
 		 *  never a reason to disable there, but the team-overview screen can genuinely be full, and
-		 *  applyTeammate would otherwise silently no-op on click — disabled (cf-pika-row-disabled)
-		 *  there instead, same as any other full-team-disabled row elsewhere in this file. Species
-		 *  already on the team get the equipped look (cf-pika-row-equipped, no data-cf-pika-action)
-		 *  in *either* state — deliberately NOT the disabled treatment buildTeammatesSection gives
-		 *  an equipped teammate (equipped AND disabled together there): cf-pika-row-disabled's
-		 *  `pointer-events: none` would block hover here too, and unlike a plain teammate
-		 *  suggestion this row's hover preview (buildAddPokemonPreviewTooltipHTML) is exactly as
-		 *  useful for a species already on the team as for any other — there's no reason to lose
-		 *  it just because clicking wouldn't do anything. There's no real ally Pokémon yet to
-		 *  usefully compare Speed against one-on-one (buildSpeedComparisonTooltipHTML already
-		 *  no-ops without one) in either state, but the *expected* Speed stat and "most popular in
-		 *  this format" are both still exactly what they say regardless. */
+		 *  applyTeammate would otherwise silently no-op on click — greyed out there instead
+		 *  (cf-pika-row-full, not cf-pika-row-clickable, so no data-cf-pika-action is attached and
+		 *  a click really does nothing), same visual treatment any other full-team-disabled row
+		 *  elsewhere in this file gets. Species already on the team get the equipped look
+		 *  (cf-pika-row-equipped, no data-cf-pika-action) in *either* state, and a full-team row
+		 *  gets cf-pika-row-full rather than buildTeammatesSection's own cf-pika-row-disabled
+		 *  (equipped AND disabled together there) for the identical reason in both cases:
+		 *  cf-pika-row-disabled's `pointer-events: none` would block hover here too, and unlike a
+		 *  plain teammate suggestion this row's hover preview (buildAddPokemonPreviewTooltipHTML)
+		 *  is exactly as useful for a species that's already on the team, or that the team is too
+		 *  full to add, as for any other — there's no reason to lose it just because clicking
+		 *  wouldn't do anything. There's no real ally Pokémon yet to usefully compare Speed
+		 *  against one-on-one (buildSpeedComparisonTooltipHTML already no-ops without one) in
+		 *  either state, but the *expected* Speed stat and "most popular in this format" are both
+		 *  still exactly what they say regardless. */
 		function speedTierColumnHTML(headerText, rowsHTML) {
 			return `<h3 class="cf-pika-header">${escapeHTML(headerText)}</h3><div class="cf-pika-rows">${rowsHTML}</div>`;
 		}
@@ -3851,7 +3871,7 @@
 					if (alreadyOnTeam) {
 						rowCls += ' cf-pika-row-equipped';
 					} else if (overview && curTeamFull(tbRoom)) {
-						rowCls += ' cf-pika-row-disabled';
+						rowCls += ' cf-pika-row-full';
 					} else {
 						rowCls += ' cf-pika-row-clickable';
 						const action = overview ? 'teammate' : 'addspecies';

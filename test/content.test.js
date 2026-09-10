@@ -3079,6 +3079,55 @@ describe('buildSpeciesPreviewTooltipHTML', () => {
 		expect(html).not.toContain('Blastoise-Mega');
 	});
 
+	it('shows every Mega forme that clears the threshold, not just the single most popular one — confirmed live on Raichu, both X and Y comfortably clear it', () => {
+		mockBattleDex();
+		window.Dex.items = {
+			get: (name) => ({
+				'charizardite x': { exists: true, megaStone: { Charizard: 'Charizard-Mega-X' } },
+				'charizardite y': { exists: true, megaStone: { Charizard: 'Charizard-Mega-Y' } },
+			}[String(name).toLowerCase()] || { exists: false }),
+		};
+		window.Dex.species = {
+			get: (name) => ({
+				'charizard-mega-x': { exists: true, baseStats: { hp: 78, atk: 130, def: 111, spa: 130, spd: 85, spe: 100 } },
+				'charizard-mega-y': { exists: true, baseStats: { hp: 78, atk: 104, def: 78, spa: 159, spd: 115, spe: 100 } },
+			}[String(name).toLowerCase()] || { exists: false }),
+		};
+		const mon = {
+			stats: { hp: 78, atk: 84, def: 78, spa: 109, spd: 85, spe: 100 },
+			items: [{ item: 'Charizardite Y', percent: '60.5' }, { item: 'Charizardite X', percent: '18.2' }],
+		};
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Charizard');
+		// More popular (60.5%) sorts first.
+		const yIdx = html.indexOf('Charizard-Mega-Y');
+		const xIdx = html.indexOf('Charizard-Mega-X');
+		expect(yIdx).toBeGreaterThan(-1);
+		expect(xIdx).toBeGreaterThan(-1);
+		expect(yIdx).toBeLessThan(xIdx);
+		expect(html).toContain('<strong>Charizard-Mega-Y</strong><br>HP 78 &nbsp; Atk 104 &nbsp; Def 78 &nbsp; SpA 159 &nbsp; SpD 115 &nbsp; Spe 100');
+		expect(html).toContain('<strong>Charizard-Mega-X</strong><br>HP 78 &nbsp; Atk 130 &nbsp; Def 111 &nbsp; SpA 130 &nbsp; SpD 85 &nbsp; Spe 100');
+	});
+
+	it('omits a Mega forme that fails the threshold even while a different one for the same species clears it', () => {
+		mockBattleDex();
+		window.Dex.items = {
+			get: (name) => ({
+				'charizardite x': { exists: true, megaStone: { Charizard: 'Charizard-Mega-X' } },
+				'charizardite y': { exists: true, megaStone: { Charizard: 'Charizard-Mega-Y' } },
+			}[String(name).toLowerCase()] || { exists: false }),
+		};
+		window.Dex.species = {
+			get: (name) => (String(name).toLowerCase() === 'charizard-mega-y' ?
+				{ exists: true, baseStats: { hp: 78, atk: 104, def: 78, spa: 159, spd: 115, spe: 100 } } : { exists: false }),
+		};
+		const mon = {
+			items: [{ item: 'Charizardite Y', percent: '60.5' }, { item: 'Charizardite X', percent: '5.0' }],
+		};
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Charizard');
+		expect(html).toContain('Charizard-Mega-Y');
+		expect(html).not.toContain('Charizard-Mega-X');
+	});
+
 	it('shows a plain "no claim" placeholder in the Team coverage cell with no coverage argument — the cell itself always occupies its grid slot', () => {
 		mockBattleDex();
 		const html = buildSpeciesPreviewTooltipHTML({}, 'Incineroar');
