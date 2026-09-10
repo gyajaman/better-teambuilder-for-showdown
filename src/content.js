@@ -2357,10 +2357,25 @@
 		/** Width is measured from the actual rendered `.cf-tooltip` (offsetWidth) rather than
 		 *  assumed, since callers aren't all the same width — the filter-match tooltip is the
 		 *  base 300px, but the speed comparison one widens itself via an extra modifier class
-		 *  (cf-speedcmp-tooltip, style.css) to fit its table. */
+		 *  (cf-speedcmp-tooltip, style.css) to fit its table.
+		 *
+		 *  Every current caller already guards against a falsy `html` before ever calling show()
+		 *  (onMouseOver's own dispatch, throughout this file), and every builder that returns a
+		 *  real string unconditionally wraps it in a real `.cf-tooltip` element — so `tooltipEl`
+		 *  below "shouldn't" ever be null in practice. Guarded anyway: this reads DOM state
+		 *  (offsetWidth/offsetHeight) between setting visibility to 'hidden' and setting it back,
+		 *  and a null tooltipEl there would throw in between those two lines — not just failing
+		 *  this one hover, but leaving the *shared, cached* wrapperEl permanently
+		 *  visibility:hidden for the rest of the page session, silently breaking every later
+		 *  tooltip too. Hides the wrapper and bails out instead — same visible result (no
+		 *  tooltip) as the caller-guard failing to catch it, just without the lasting damage. */
 		position(anchorEl) {
 			const rect = anchorEl.getBoundingClientRect();
 			const tooltipEl = this.wrapperEl.querySelector('.cf-tooltip');
+			if (!tooltipEl) {
+				this.wrapperEl.style.display = 'none';
+				return;
+			}
 
 			this.wrapperEl.style.visibility = 'hidden';
 			this.wrapperEl.style.left = '0px';
