@@ -139,7 +139,7 @@ Click the extension's icon in the toolbar to open its popup, which holds:
 - **Auto-close side rooms on load** — closes any chat/side rooms Showdown restores from your last session as soon as the page loads. On by default.
 - **Scarf/Iron Ball/Mega thresholds** — the minimum Pikalytics usage percent before the Speed comparison popup's conditional Scarf/Iron Ball/Mega columns show at all. 5%/5%/15% by default, and adjustable since these are starting guesses rather than researched numbers.
 
-Changes take effect the next time you reload the Showdown tab.
+The threshold settings take effect immediately on an already-open Showdown tab — no reload needed. Auto-close side rooms on load only runs once, right when the page loads, so a change to that one takes effect starting from your next reload.
 
 ## Usage
 

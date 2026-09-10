@@ -88,9 +88,14 @@
 	 *  sane values rather than undefined. buildSpeedComparisonTooltipHTML
 	 *  (patchTeambuilderSidebar, below) reads CF_SETTINGS.scarfThresholdPercent/
 	 *  ironballThresholdPercent/megaThresholdPercent fresh on every hover rather than capturing a
-	 *  value at page load, so a setting change takes effect on the very next hover after a page
-	 *  reload — no need to re-open the teambuilder, just reload once after saving the popup's
-	 *  settings. */
+	 *  value at page load, so a setting change takes effect on the very next hover — genuinely
+	 *  live now, no page reload needed at all: watchSettingsAttribute (near the bottom of this
+	 *  file) keeps this variable reassigned to whatever settings-bridge.js's own
+	 *  chrome.storage.onChanged listener last wrote, for as long as the tab stays open.
+	 *  Confirmed live: without that, saving a setting in the popup while a Showdown tab was
+	 *  already open had zero effect on it until a manual refresh, even though this variable's
+	 *  own live-read-on-every-hover design was already right — the actual gap was upstream,
+	 *  settings-bridge.js only ever reading chrome.storage.sync once. */
 	let CF_SETTINGS = DEFAULT_SETTINGS;
 
 	function escapeHTML(text) {
@@ -1453,7 +1458,7 @@
 			buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
 			buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
 			buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
-			buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad, mapWithConcurrency,
+			buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad, mapWithConcurrency, watchSettingsAttribute,
 		};
 		return;
 	}
@@ -5310,13 +5315,14 @@
 
 	/** settings-bridge.js (isolated world, document_start — see manifest.json) reads
 	 *  chrome.storage.sync, which this MAIN-world script has no access to, and writes it as a
-	 *  JSON attribute on <html> once it resolves — normally within a frame or two, well before
-	 *  this script reaches document_idle. Polled with the same bounded-retry shape (pollUntil,
-	 *  above) as waitForGlobals rather than a one-shot check, and independent of it: the
-	 *  side-room tidy only needs window.app, not DexSearch/BattleMovedex/etc, so it shouldn't
-	 *  be stuck waiting on unrelated bundle globals. Fails open to DEFAULT_SETTINGS (matching
-	 *  the prior always-on behavior) if the bridge script is missing/broken or storage never
-	 *  resolves. */
+	 *  JSON attribute on <html> once it first resolves — normally within a frame or two, well
+	 *  before this script reaches document_idle (and again on every later real settings change,
+	 *  watchSettingsAttribute's own job below, not this function's). Polled with the same
+	 *  bounded-retry shape (pollUntil, above) as waitForGlobals rather than a one-shot check, and
+	 *  independent of it: the side-room tidy only needs window.app, not DexSearch/
+	 *  BattleMovedex/etc, so it shouldn't be stuck waiting on unrelated bundle globals. Fails
+	 *  open to DEFAULT_SETTINGS (matching the prior always-on behavior) if the bridge script is
+	 *  missing/broken or storage never resolves. */
 	function waitForSideRoomSettings(cb) {
 		pollUntil(
 			() => {
@@ -5331,8 +5337,34 @@
 		);
 	}
 
+	/** Calls `cb(settings)` every time the data-cf-settings attribute actually changes after
+	 *  waitForSideRoomSettings' own one-time resolution above — settings-bridge.js's own
+	 *  chrome.storage.onChanged listener (that file's own doc comment) re-writes that same
+	 *  attribute on every real settings change, not just once at load, so a MutationObserver
+	 *  watching that one attribute is all this needs: no polling, and no reading chrome.storage
+	 *  directly, since this MAIN-world script still can't (the same reason
+	 *  waitForSideRoomSettings needed the DOM attribute bridge at all). Never calls `cb` for a
+	 *  parse failure (malformed/missing attribute mid-update) — the caller keeps whatever
+	 *  settings it already had, a real, working settings object always being a better fallback
+	 *  than silently discarding the user's own saved thresholds. Takes a plain callback
+	 *  (matching waitForSideRoomSettings' own shape) rather than closing over CF_SETTINGS
+	 *  directly, so this stays a small, independently testable function — the caller decides
+	 *  what to actually do with each update. */
+	function watchSettingsAttribute(cb) {
+		const observer = new MutationObserver(() => {
+			const raw = document.documentElement.getAttribute('data-cf-settings');
+			let parsed = null;
+			try { parsed = raw ? JSON.parse(raw) : null; } catch (e) {
+				// cb is simply not called — see this function's own doc comment.
+			}
+			if (parsed) cb(parsed);
+		});
+		observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-cf-settings'] });
+	}
+
 	waitForSideRoomSettings((settings) => {
 		CF_SETTINGS = settings;
+		watchSettingsAttribute((newSettings) => { CF_SETTINGS = newSettings; });
 		if (!settings.closeSideRoomsOnLoad) return;
 		try { closeSideRoomsOnLoad(); } catch (e) {
 			console.error('[Better Teambuilder] closeSideRoomsOnLoad failed:', e);

@@ -29,7 +29,7 @@ const {
 	buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
 	buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
 	buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
-	buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad, mapWithConcurrency,
+	buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad, mapWithConcurrency, watchSettingsAttribute,
 } = require('../src/content.js');
 
 /** Minimal window.Dex stand-in for the icon-rendering branches in the Pikalytics sidebar
@@ -3485,5 +3485,41 @@ describe('mapWithConcurrency', () => {
 		const items = [1, 2, 3];
 		const results = await mapWithConcurrency(items, 6, (n) => Promise.resolve(n * 2));
 		expect(results).toEqual([2, 4, 6]);
+	});
+});
+
+describe('watchSettingsAttribute', () => {
+	afterEach(() => { document.documentElement.removeAttribute('data-cf-settings'); });
+
+	// The real fix: settings-bridge.js's own chrome.storage.onChanged listener re-writes this
+	// same attribute on every real settings change now, not just once at load (that file's own
+	// doc comment) — confirmed live, saving a setting in the popup used to have zero effect on
+	// an already-open Showdown tab until a manual refresh. This is the MAIN-world half that
+	// actually reacts to those later writes.
+	it('calls cb with the parsed settings when the attribute changes', async () => {
+		const cb = vi.fn();
+		watchSettingsAttribute(cb);
+		document.documentElement.setAttribute('data-cf-settings', JSON.stringify({ scarfThresholdPercent: 10 }));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(cb).toHaveBeenCalledWith({ scarfThresholdPercent: 10 });
+	});
+
+	it('calls cb again on a later, second change — not just the first one', async () => {
+		const cb = vi.fn();
+		watchSettingsAttribute(cb);
+		document.documentElement.setAttribute('data-cf-settings', JSON.stringify({ scarfThresholdPercent: 10 }));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		document.documentElement.setAttribute('data-cf-settings', JSON.stringify({ scarfThresholdPercent: 20 }));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(cb).toHaveBeenCalledTimes(2);
+		expect(cb).toHaveBeenLastCalledWith({ scarfThresholdPercent: 20 });
+	});
+
+	it('never calls cb for a malformed attribute value, keeping whatever the caller already had', async () => {
+		const cb = vi.fn();
+		watchSettingsAttribute(cb);
+		document.documentElement.setAttribute('data-cf-settings', 'not real json{{{');
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(cb).not.toHaveBeenCalled();
 	});
 });
