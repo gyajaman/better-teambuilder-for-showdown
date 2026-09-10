@@ -8,7 +8,7 @@
  * live Showdown page and isn't exercised here.
  */
 const {
-	escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
+	escapeHTML, toIDSafe, formatPikaPercent, curSetHasMove, curSetMovesFull, baseSpeciesID,
 	curTeamHasSpecies, curTeamFull, isBlankSlot, isTeamOverview, parseEVs, natureModifierHTML, speedNatureIndicator,
 	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
@@ -92,6 +92,28 @@ describe('escapeHTML', () => {
 
 	it('stringifies non-string input', () => {
 		expect(escapeHTML(42)).toBe('42');
+	});
+});
+
+describe('formatPikaPercent', () => {
+	it('truncates a raw multi-decimal string to exactly one decimal (Reg M-C\'s Showdown-ladder source, confirmed live: "58.873")', () => {
+		expect(formatPikaPercent('58.873')).toBe('58.9');
+		expect(formatPikaPercent('0.283')).toBe('0.3');
+	});
+
+	it('pads an already-1-decimal string out to one decimal unchanged (Reg M-B\'s ranked-data source, confirmed live: "99.9")', () => {
+		expect(formatPikaPercent('99.9')).toBe('99.9');
+	});
+
+	it('adds a trailing .0 to a whole-number string or number, rather than leaving it bare', () => {
+		expect(formatPikaPercent('60')).toBe('60.0');
+		expect(formatPikaPercent(60)).toBe('60.0');
+	});
+
+	it('treats missing/unparseable input as 0.0 rather than "NaN"', () => {
+		expect(formatPikaPercent(undefined)).toBe('0.0');
+		expect(formatPikaPercent(null)).toBe('0.0');
+		expect(formatPikaPercent('undefined')).toBe('0.0'); // confirmed-live VGC teammate gap, see pikalytics.js's own doc comment
 	});
 });
 
@@ -507,6 +529,13 @@ describe('buildMovesSection', () => {
 		const mon = { moves: [{ move: 'Struggle', percent: '1.0' }] };
 		const html = buildMovesSection(mon, { curSet: { moves: [] } });
 		expect(html).toContain('cf-pika-icon-spacer');
+	});
+
+	it('truncates a multi-decimal usage percent to one decimal (confirmed-live Reg M-C data: "58.873")', () => {
+		const mon = { moves: [{ move: 'Fake Out', percent: '58.873' }] };
+		const html = buildMovesSection(mon, { curSet: { moves: [] } });
+		expect(html).toContain('58.9%');
+		expect(html).not.toContain('58.873%');
 	});
 
 	it('highlights a move already on the set as equipped and keeps it clickable even when the set is full', () => {
@@ -2428,7 +2457,7 @@ describe('buildTeamThreatReasonCellHTML', () => {
 		const html = buildTeamThreatReasonCellHTML({ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 80 });
 		expect(html).toContain('<img alt="Flying">');
 		expect(html).toContain('Brave Bird');
-		expect(html).toContain('80%');
+		expect(html).toContain('80.0%');
 	});
 
 	it('renders a plain stat reason with no icon', () => {
@@ -2443,7 +2472,7 @@ describe('buildTeamThreatReasonCellHTML', () => {
 		expect(html).toContain('Outspeeds');
 		expect(html).toContain('<img alt="Water">');
 		expect(html).toContain('Water Spout');
-		expect(html).toContain('90%');
+		expect(html).toContain('90.0%');
 		expect(html).not.toContain('needs Scarf');
 	});
 
@@ -2457,7 +2486,7 @@ describe('buildTeamThreatReasonCellHTML', () => {
 		const outspeedsIdx = html.indexOf('Outspeeds');
 		const scarfIdx = html.indexOf('needs Scarf');
 		const moveNameIdx = html.indexOf('Water Spout');
-		const percentIdx = html.indexOf('90%');
+		const percentIdx = html.indexOf('90.0%');
 		expect(outspeedsIdx).toBeLessThan(scarfIdx);
 		expect(scarfIdx).toBeLessThan(moveNameIdx);
 		expect(scarfIdx).toBeLessThan(percentIdx);

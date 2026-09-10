@@ -103,6 +103,21 @@
 		return (window.toID || ((x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, '')))(s);
 	}
 
+	/** Every Pikalytics usage percent gets truncated to exactly one decimal through here before
+	 *  it's ever rendered — Pikalytics' own precision is NOT consistent across data sources, so
+	 *  the raw `.percent` string can't just be echoed as-is. Confirmed live: the official
+	 *  ranked-battle sources (e.g. battledataregmbs3, Reg M-B's Bo1 slug) already report
+	 *  pre-rounded 1-decimal values ("99.9"), while the Showdown-ladder source Reg M-C's Bo1
+	 *  temporarily uses (see FORMAT_SLUG_MAP's own doc comment in pikalytics.js) reports raw
+	 *  3-decimal values ("58.873") for the exact same field on the exact same endpoint shape —
+	 *  echoing it directly only ever looked "truncated to 1 decimal" by coincidence, because
+	 *  every format this extension supported until Reg M-C happened to source from the rounded
+	 *  kind. `parseFloat` first since every real payload has this as a string, not a number
+	 *  (confirmed live) — `.toFixed` on a string would just concatenate instead of rounding. */
+	function formatPikaPercent(value) {
+		return (parseFloat(value) || 0).toFixed(1);
+	}
+
 	/** Shared by both the Pikalytics sidebar's build*Section functions (to decide a row's
 	 *  clickable/disabled/equipped styling) and its click-to-apply handlers (to decide whether
 	 *  a click actually does anything) — see patchTeambuilderSidebar's own doc comment for the
@@ -1171,7 +1186,7 @@
 	 *  dead zone forever once a `return` skips its declaration. */
 	if (typeof module !== 'undefined' && module.exports) {
 		module.exports = {
-			escapeHTML, toIDSafe, curSetHasMove, curSetMovesFull, baseSpeciesID,
+			escapeHTML, toIDSafe, formatPikaPercent, curSetHasMove, curSetMovesFull, baseSpeciesID,
 			curTeamHasSpecies, curTeamFull, isBlankSlot, isTeamOverview, parseEVs, natureModifierHTML, speedNatureIndicator,
 			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
@@ -2478,7 +2493,7 @@
 			const icon = iconOrSpacer(m.type ? window.Dex.getTypeIcon(m.type) : '');
 			const equipped = curSetHasMove(set, m.move);
 			const { cls, attrs } = pikaRowAttrs('move', m.move, equipped, !equipped && full);
-			return pikaRowDivHTML(cls, attrs, icon, escapeHTML(m.move), `${escapeHTML(m.percent)}%`);
+			return pikaRowDivHTML(cls, attrs, icon, escapeHTML(m.move), `${formatPikaPercent(m.percent)}%`);
 		}).join('');
 		return pikaSectionHTML('Common Moves', rows);
 	}
@@ -2494,7 +2509,7 @@
 		const rows = abilities.map((a) => {
 			const equipped = !!(set && set.ability && toIDSafe(set.ability) === toIDSafe(a.ability));
 			const { cls, attrs } = pikaRowAttrs('ability', a.ability, equipped, false);
-			return pikaRowDivHTML(cls, attrs, '', escapeHTML(a.ability), `${escapeHTML(a.percent)}%`);
+			return pikaRowDivHTML(cls, attrs, '', escapeHTML(a.ability), `${formatPikaPercent(a.percent)}%`);
 		}).join('');
 		return pikaSectionHTML('Common Abilities', rows);
 	}
@@ -2521,11 +2536,10 @@
 		if (!natures.length) return pikaSectionHTML('Common Natures', '<p class="cf-pika-empty">No nature data.</p>');
 		const set = tbRoom.curSet;
 		const rows = natures.map((n) => {
-			const pct = typeof n.percent === 'number' ? n.percent.toFixed(1) : n.percent;
 			const equipped = !!(set && set.nature && toIDSafe(set.nature) === toIDSafe(n.nature));
 			const { cls, attrs } = pikaRowAttrs('nature', n.nature, equipped, false);
 			const nameHTML = `<span class="cf-pika-nature-name">${escapeHTML(n.nature)}</span>${natureModifierHTML(n.nature)}`;
-			return pikaRowDivHTML(cls, attrs, '', nameHTML, `${escapeHTML(String(pct))}%`);
+			return pikaRowDivHTML(cls, attrs, '', nameHTML, `${formatPikaPercent(n.percent)}%`);
 		}).join('');
 		return pikaSectionHTML('Common Natures', rows);
 	}
@@ -2541,7 +2555,7 @@
 			const icon = iconOrSpacer(iconStyle ? `<span class="itemicon" style="${escapeHTML(iconStyle)}"></span>` : '');
 			const equipped = !!(set && set.item && toIDSafe(set.item) === toIDSafe(it.item));
 			const { cls, attrs } = pikaRowAttrs('item', it.item, equipped, false);
-			return pikaRowDivHTML(cls, attrs, icon, escapeHTML(it.item), `${escapeHTML(it.percent)}%`);
+			return pikaRowDivHTML(cls, attrs, icon, escapeHTML(it.item), `${formatPikaPercent(it.percent)}%`);
 		}).join('');
 		return pikaSectionHTML('Common Items', rows);
 	}
@@ -2567,7 +2581,7 @@
 			const natureCell = hasNature ? `<td class="cf-spread-nature"><span class="cf-pika-nature-name">${escapeHTML(s.nature)}</span>${natureModifierHTML(s.nature)}</td>` : '';
 			const evCells = String(s.ev).split('/').map((v) => `<td>${escapeHTML(v)}</td>`).join('');
 			return `<tr class="cf-pika-row-clickable" data-cf-pika-action="spread" data-cf-pika-nature="${escapeHTML(s.nature || '')}" data-cf-pika-ev="${escapeHTML(s.ev)}">` +
-				`${natureCell}${evCells}<td class="cf-pika-pct">${escapeHTML(s.percent)}%</td></tr>`;
+				`${natureCell}${evCells}<td class="cf-pika-pct">${formatPikaPercent(s.percent)}%</td></tr>`;
 		}).join('');
 
 		const table = `<table class="cf-spread-table"><thead><tr>${headerCells}</tr></thead>` +
@@ -2597,7 +2611,7 @@
 		const rows = team.map((t, i) => {
 			const icon = `<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(t.pokemon) : '')}"></span>`;
 			let pct;
-			if (t.percent !== undefined && t.percent !== null) pct = `${escapeHTML(String(t.percent))}%`;
+			if (t.percent !== undefined && t.percent !== null) pct = `${formatPikaPercent(t.percent)}%`;
 			else if (t.rank !== undefined && t.rank !== null) pct = `#${escapeHTML(String(t.rank))}`;
 			else pct = `#${i + 1}`;
 			const equipped = teamSpeciesIds.has(baseSpeciesID(t.pokemon));
@@ -3172,7 +3186,7 @@
 			return `<td class="cf-teamthreats-reason">${label}` +
 				`<span class="cf-teamthreats-move-type">${typeIcon}</span>` +
 				`<span class="cf-teamthreats-move-name">${escapeHTML(reason.move)}</span>` +
-				`<span class="cf-pika-pct">${escapeHTML(String(reason.percent))}%</span>` +
+				`<span class="cf-pika-pct">${formatPikaPercent(reason.percent)}%</span>` +
 				`</td>`;
 		}
 		return `<td class="cf-teamthreats-reason cf-teamthreats-reason-stat">${escapeHTML(reason.text)}</td>`;
@@ -3321,19 +3335,19 @@
 	 *  never carries the Mega forme's own base stats itself. */
 	function buildSpeciesPreviewTooltipHTML(mon, speciesName) {
 		const moveText = (mon.moves || []).slice(0, 4)
-			.map((m) => `${escapeHTML(m.move)} (${escapeHTML(m.percent)}%)`).join(', ') || 'No data';
+			.map((m) => `${escapeHTML(m.move)} (${formatPikaPercent(m.percent)}%)`).join(', ') || 'No data';
 		const abilityText = (mon.abilities || []).slice(0, 2)
-			.map((a) => `${escapeHTML(a.ability)} (${escapeHTML(a.percent)}%)`).join(', ') || 'No data';
+			.map((a) => `${escapeHTML(a.ability)} (${formatPikaPercent(a.percent)}%)`).join(', ') || 'No data';
 		const itemText = (mon.items || []).slice(0, 2)
-			.map((it) => `${escapeHTML(it.item)} (${escapeHTML(it.percent)}%)`).join(', ') || 'No data';
+			.map((it) => `${escapeHTML(it.item)} (${formatPikaPercent(it.percent)}%)`).join(', ') || 'No data';
 		const topSpread = (mon.spreads || [])[0];
 		const topNature = (mon.natures || [])[0];
 		// Falls back to the spread's own `nature` field only when there's no standalone
 		// `natures` list at all (a format-shape gap, not the VGC norm) — with no percent
 		// attached in that case, since there'd be nothing real to attach it to.
-		const natureText = topNature ? `${escapeHTML(topNature.nature)} (${escapeHTML(topNature.percent)}%)` :
+		const natureText = topNature ? `${escapeHTML(topNature.nature)} (${formatPikaPercent(topNature.percent)}%)` :
 			((topSpread && topSpread.nature) ? escapeHTML(topSpread.nature) : 'No data');
-		const spreadText = topSpread ? `${escapeHTML(topSpread.ev)} (${escapeHTML(topSpread.percent)}%)` : 'No data';
+		const spreadText = topSpread ? `${escapeHTML(topSpread.ev)} (${formatPikaPercent(topSpread.percent)}%)` : 'No data';
 		const statsText = mon.stats ?
 			STAT_IDS.map((id) => `${STAT_LABEL_BY_ID[id]} ${mon.stats[id]}`).join(' &nbsp; ') : '';
 
@@ -3635,7 +3649,20 @@
 			if (!tbRoom || !allySet || !allySet.species) return null;
 
 			const topSpread = (entry.mon.spreads || [])[0];
-			if (!topSpread) return null;
+			// A real species with real moves/items/abilities but a genuinely empty `spreads`
+			// array does happen — confirmed live on Reg M-C shortly after it launched, every
+			// top-20 species had moves/items/abilities/team data but an empty spreads AND
+			// natures array (Pikalytics hadn't populated per-spread breakdowns for the new
+			// format yet). Silently returning null here reads as "hovering does nothing," the
+			// same confusing dead-end every other Pikalytics-backed section on this screen
+			// deliberately avoids via an explicit "No data" message — so this shows one too,
+			// rather than joining the list of things that look broken but are actually just
+			// waiting on Pikalytics to catch up.
+			if (!topSpread) {
+				return `<div class="cf-tooltip cf-speedcmp-tooltip">` +
+					`<h2>${escapeHTML(speciesName)}</h2>` +
+					`<p>No spread data yet for ${escapeHTML(speciesName)} in this format.</p></div>`;
+			}
 			const topNature = (entry.mon.natures || [])[0];
 			const foeNature = (topNature && topNature.nature) || '';
 			const foeSet = {
