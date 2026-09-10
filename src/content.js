@@ -500,6 +500,77 @@
 	 *  unmodified type when nothing in WEATHER_SETTING_ABILITIES matches). */
 	const WEATHER_BALL_TYPE = { Sun: 'Fire', Rain: 'Water', Sandstorm: 'Rock', Snow: 'Ice' };
 
+	/** Real moves whose listed `basePower` in Showdown's own dex is a placeholder 0 — their real
+	 *  power is computed at battle time from live state (a `basePowerCallback`, not a plain
+	 *  number), confirmed directly against data/moves.ts. Reading `moveData.basePower` for any
+	 *  of these (the naive approach an earlier version of this file used) silently evaluated
+	 *  them as dealing 0 damage — a real reported case, Grass Knot against a genuinely heavy
+	 *  target like Dondozo or Kyogre was deprioritized or dropped entirely from the "why this
+	 *  threatens you" reasons despite being a real, often-devastating attack there. variableMovePower
+	 *  below implements each move's own real formula (the exact same ones data/moves.ts uses)
+	 *  instead of trusting the placeholder. */
+	const VARIABLE_POWER_MOVE_IDS = new Set(['grassknot', 'lowkick', 'heavyslam', 'heatcrash', 'gyroball', 'electroball']);
+	/** Each real formula transcribed directly from Showdown's own data/moves.ts
+	 *  basePowerCallback, not approximated:
+	 *
+	 *  - Grass Knot/Low Kick: banded on the *defender's* own real weight alone (weightkg — the
+	 *    real engine's own `getWeight()` returns hectograms, weightkg * 10, so these thresholds
+	 *    are that same breakpoint table in kg instead: >=200/100/50/25/10, else the bottom band).
+	 *  - Heavy Slam/Heat Crash: banded on the *attacker* weight ÷ *defender* weight ratio (the
+	 *    real formula compares pokemonWeight against defenderWeight * 5/4/3/2, algebraically the
+	 *    same ratio thresholds used here).
+	 *  - Gyro Ball: `floor(25 * defenderSpeed / attackerSpeed) + 1`, capped at 150 — a slower
+	 *    attacker relative to the defender hits harder, not softer.
+	 *  - Electro Ball: `floor(attackerSpeed / defenderSpeed)` indexes a fixed [40,60,80,120,150]
+	 *    table (capped at index 4) — note this floors the *ratio itself* first, exactly like the
+	 *    real engine, not the friendlier-looking (but real-behavior-diverging) ">= 4 ? 150"-style
+	 *    banding Heavy Slam/Heat Crash use — a ratio of 3.99 floors to 3 (120), not 150.
+	 *
+	 *  Real per-Pokémon weight can shift mid-battle (Autotomize, Float Stone) and real Speed
+	 *  already accounts for stage changes the engine tracks live — neither exists here (no real
+	 *  battle to read state from), so this uses each side's plain base weight/computed Speed, the
+	 *  same "best real, unconditional fact available" approximation the rest of this file's
+	 *  threat math already leans on elsewhere (WEATHER_SETTING_ABILITIES' own doc comment, for
+	 *  one). Returns null — not a guessed number — when the weight/Speed this specific move's own
+	 *  formula needs wasn't available (a species lookup failure, an untracked defender Speed),
+	 *  so movePower can fall back to its own "can't verify it, don't credit it" 0 instead of
+	 *  fabricating a result from missing data. */
+	function variableMovePower(moveId, attackerWeightKg, defenderWeightKg, attackerSpeed, defenderSpeed) {
+		switch (moveId) {
+			case 'grassknot':
+			case 'lowkick': {
+				if (typeof defenderWeightKg !== 'number') return null;
+				if (defenderWeightKg >= 200) return 120;
+				if (defenderWeightKg >= 100) return 100;
+				if (defenderWeightKg >= 50) return 80;
+				if (defenderWeightKg >= 25) return 60;
+				if (defenderWeightKg >= 10) return 40;
+				return 20;
+			}
+			case 'heavyslam':
+			case 'heatcrash': {
+				if (typeof attackerWeightKg !== 'number' || !defenderWeightKg) return null;
+				const ratio = attackerWeightKg / defenderWeightKg;
+				if (ratio >= 5) return 120;
+				if (ratio >= 4) return 100;
+				if (ratio >= 3) return 80;
+				if (ratio >= 2) return 60;
+				return 40;
+			}
+			case 'gyroball': {
+				if (!attackerSpeed || typeof defenderSpeed !== 'number') return null;
+				return Math.min(150, Math.floor(25 * defenderSpeed / attackerSpeed) + 1);
+			}
+			case 'electroball': {
+				if (typeof attackerSpeed !== 'number' || !defenderSpeed) return null;
+				const ratio = Math.floor(attackerSpeed / defenderSpeed);
+				return [40, 60, 80, 120, 150][Math.min(Math.max(ratio, 0), 4)];
+			}
+			default:
+				return null;
+		}
+	}
+
 	/** A move's own real base power (window.Dex, not Pikalytics — usage% has nothing to do with
 	 *  how hard a move actually hits) — 0 for anything window.Dex can't confirm a real numeric
 	 *  base power for, the same "can't verify it, don't credit it" fallback isDamagingMove's own
@@ -513,7 +584,10 @@
 	 *  the defender's own real bulk, secondary effects, or accuracy — a real, deliberately rough
 	 *  proxy for "how hard does this hit," not a full damage calculator; good enough to fix the
 	 *  Aqua-Jet-over-Wave-Crash class of misordering without this file growing an actual damage
-	 *  formula for a hover tooltip.
+	 *  formula for a hover tooltip. The one exception is VARIABLE_POWER_MOVE_IDS (above) — those
+	 *  moves' own *listed* basePower is a real placeholder 0, not a rough number, so no amount of
+	 *  "rough proxy" reasoning justifies using it as-is; variableMovePower's own real formulas
+	 *  are used instead whenever `weights`/`speeds` supplies what each one needs.
 	 *
 	 *  `ability` (optional) accounts for the one real move whose own *base power*, not just its
 	 *  type (effectiveMoveType handles that half), changes with a weather-setting ability:
@@ -522,12 +596,26 @@
 	 *  mechanic effectiveMoveType's own WEATHER_BALL_TYPE (above) already models the *type* half
 	 *  of. Without this, a Drought Mega Charizard Y's Weather Ball ranked as a bare 50-power
 	 *  Normal move instead of the real 100-power Fire attack it actually is, so a genuinely
-	 *  weaker move could wrongly outrank it as the reported reason. */
-	function movePower(moveName, ability) {
+	 *  weaker move could wrongly outrank it as the reported reason.
+	 *
+	 *  `weights`/`speeds` (both optional, `{attacker, defender}` shaped) feed variableMovePower
+	 *  for the six real moves whose own listed basePower is 0 — omitted entirely by every caller
+	 *  that doesn't have that context (computeThreatPriorityMoves doesn't rank by power at all,
+	 *  so never passes these), which is indistinguishable from variableMovePower not being able
+	 *  to resolve a real number, so this still safely falls back to the plain basePower (0 for
+	 *  these six, same "can't verify it" contract as everything else here) either way. */
+	function movePower(moveName, ability, weights, speeds) {
 		if (!window.Dex) return 0;
 		const moveData = window.Dex.moves.get(moveName);
 		if (!moveData || !moveData.exists || typeof moveData.basePower !== 'number') return 0;
-		if (toIDSafe(moveName) === 'weatherball' && WEATHER_SETTING_ABILITIES[toIDSafe(ability)]) {
+		const moveId = toIDSafe(moveName);
+		if (VARIABLE_POWER_MOVE_IDS.has(moveId)) {
+			const resolved = variableMovePower(moveId,
+				weights && weights.attacker, weights && weights.defender,
+				speeds && speeds.attacker, speeds && speeds.defender);
+			if (resolved !== null) return resolved;
+		}
+		if (moveId === 'weatherball' && WEATHER_SETTING_ABILITIES[toIDSafe(ability)]) {
 			return moveData.basePower * 2;
 		}
 		return moveData.basePower;
@@ -611,8 +699,13 @@
 	 *  showing up as a move reason (see that function's own doc comment) without shrinking the
 	 *  result by one whenever that move happens to also be a top-`TEAM_THREATS_MAX_MOVE_REASONS`
 	 *  candidate: excluding post-hoc, after the slice, would silently drop a real 3rd-ranked move
-	 *  the caller has room to show instead of backfilling it. */
-	function computeThreatMoveReasons(moves, defenderTypes, attackerAbility, attackerTypes, excludeMove, defenderAbility) {
+	 *  the caller has room to show instead of backfilling it.
+	 *
+	 *  `weights`/`speeds` (both optional, `{attacker, defender}` shaped) are threaded straight
+	 *  into movePower — see that function's own doc comment for why: six real moves in this
+	 *  candidate pool (Grass Knot, for one) have no fixed real base power to rank by without
+	 *  them. */
+	function computeThreatMoveReasons(moves, defenderTypes, attackerAbility, attackerTypes, excludeMove, defenderAbility, weights, speeds) {
 		const candidates = [];
 		for (const m of (moves || [])) {
 			if (!m || !m.move || !m.type) continue;
@@ -623,7 +716,7 @@
 			const type = effectiveMoveType(m.move, m.type, attackerAbility);
 			const mult = applyDefensiveAbility(typeEffectivenessMultiplier(type, defenderTypes), type, defenderAbility);
 			if (mult < 2) continue;
-			const power = stabAdjustedPower(movePower(m.move, attackerAbility), type, attackerTypes);
+			const power = stabAdjustedPower(movePower(m.move, attackerAbility, weights, speeds), type, attackerTypes);
 			candidates.push({ move: m.move, type, percent, power });
 		}
 		candidates.sort((a, b) => (b.power !== a.power) ? b.power - a.power : b.percent - a.percent);
@@ -668,6 +761,13 @@
 		// move on raw power alone despite the STAB move hitting harder in practice): the backing
 		// move named here should be the one that actually makes outspeeding matter, not just
 		// whichever qualifying option happens to be the most common or the highest *raw* number.
+		//
+		// movePower's own weights/speeds context uses the *actual* Speed behind this specific
+		// outspeed (viaScarf's own scarfSpeed when that's what cleared it, baseSpeed otherwise)
+		// rather than always the natural one — a Scarf-boosted attacker's own Gyro Ball is really
+		// weaker than its unboosted self, not the same number either way.
+		const weights = { attacker: threat.weight, defender: defender.weight };
+		const speeds = { attacker: viaScarf ? threat.scarfSpeed : threat.baseSpeed, defender: defender.speed };
 		let best = null;
 		for (const m of (threat.moves || [])) {
 			if (!m || !m.move || !m.type) continue;
@@ -677,7 +777,7 @@
 			const type = effectiveMoveType(m.move, m.type, threat.ability);
 			const mult = applyDefensiveAbility(typeEffectivenessMultiplier(type, defender.types), type, defender.ability);
 			if (mult < 1) continue;
-			const power = stabAdjustedPower(movePower(m.move, threat.ability), type, threat.types);
+			const power = stabAdjustedPower(movePower(m.move, threat.ability, weights, speeds), type, threat.types);
 			if (!best || power > best.power || (power === best.power && percent > best.percent)) {
 				best = { move: m.move, type, percent, power };
 			}
@@ -758,7 +858,7 @@
 
 	/** The actual "why" behind one threat/team-member matchup, for the Biggest Threats hover
 	 *  tooltip (buildTeamThreatTooltipHTML). `threat` is `{moves, ability, types, atk, spa,
-	 *  baseSpeed, scarfSpeed}` — the threatening species' own Pikalytics move list, real
+	 *  baseSpeed, scarfSpeed, weight}` — the threatening species' own Pikalytics move list, real
 	 *  most-common ability, and real own types (computeThreatOffense: `ability` its own top real
 	 *  Pikalytics ability — or, when it's commonly built as a Mega, that Mega forme's own real
 	 *  fixed ability instead — fed to effectiveMoveType inside computeThreatMoveReasons/
@@ -769,15 +869,18 @@
 	 *  species types (again the Mega forme's own, when that's the common build), fed to
 	 *  stabAdjustedPower inside those same two functions so a move that matches one of the
 	 *  threat's own types is ranked with its real STAB bonus factored in, not just its bare base
-	 *  power) plus its real computed offensive stats and Speed (computeThreatOffense below
-	 *  derives those from its top real spread+nature, the same "no item" Foe-column technique
-	 *  buildSpeedComparisonTooltipHTML already uses, `scarfSpeed`
-	 *  additionally accounting for a real, common-enough Choice Scarf); `defender` is `{types,
-	 *  def, spd, speed, ability}` — the threatened team member's own real defensive types/stats/
-	 *  Speed and real (or Mega-resolved) ability, fed into applyDefensiveAbility inside
-	 *  computeThreatMoveReasons/computeThreatSpeedReason the same way the Defensive Profile
-	 *  matrix already applies it — a Water Absorb/Levitate/Flash Fire/etc. holder reads as
-	 *  genuinely unhit by its immune type here too, not just by typing alone.
+	 *  power; `weight` its own real weightkg, same Mega-aware resolution) plus its real computed
+	 *  offensive stats and Speed (computeThreatOffense below derives those from its top real
+	 *  spread+nature, the same "no item" Foe-column technique buildSpeedComparisonTooltipHTML
+	 *  already uses, `scarfSpeed` additionally accounting for a real, common-enough Choice Scarf);
+	 *  `defender` is `{types, def, spd, speed, ability, weight}` — the threatened team member's own
+	 *  real defensive types/stats/Speed/weight and real (or Mega-resolved) ability, fed into
+	 *  applyDefensiveAbility inside computeThreatMoveReasons/computeThreatSpeedReason the same way
+	 *  the Defensive Profile matrix already applies it — a Water Absorb/Levitate/Flash Fire/etc.
+	 *  holder reads as genuinely unhit by its immune type here too, not just by typing alone.
+	 *  `weight`/Speed on both sides feed movePower's own variableMovePower for Grass Knot/Low
+	 *  Kick/Heavy Slam/Heat Crash/Gyro Ball/Electro Ball — real moves with no fixed real power to
+	 *  rank by otherwise (movePower's own doc comment).
 	 *
 	 *  Returns a handful of typed reason objects, ordered most-concrete-first: `{kind: 'speed',
 	 *  move, type, percent, viaScarf}` for outspeeding with a real, non-resisted hit
@@ -803,7 +906,8 @@
 		const speedReason = computeThreatSpeedReason(threat, defender);
 		if (speedReason) reasons.push(speedReason);
 		const moveReasons = computeThreatMoveReasons(
-			threat.moves, defender.types, threat.ability, threat.types, speedReason && speedReason.move, defender.ability);
+			threat.moves, defender.types, threat.ability, threat.types, speedReason && speedReason.move, defender.ability,
+			{ attacker: threat.weight, defender: defender.weight }, { attacker: threat.baseSpeed, defender: defender.speed });
 		for (const r of moveReasons) reasons.push({ kind: 'move', move: r.move, type: r.type, percent: r.percent });
 		if (threat.atk && defender.def && (threat.atk / defender.def) >= TEAM_THREATS_STAT_RATIO_THRESHOLD &&
 			threatHasMoveOfCategory(threat.moves, 'Physical')) {
@@ -910,7 +1014,12 @@
 
 			if (!usesMega && scarfItem) scarfSpeed = applySpeedModifiers(baseSpeed, 'Choice Scarf', {});
 		}
-		return { moves, ability, types, atk, spa, baseSpeed, scarfSpeed };
+		// The same real species' own weightkg (Mega forme's own, when that's the common build,
+		// same as types/ability above) that movePower needs for Grass Knot/Low Kick/Heavy Slam/
+		// Heat Crash's own real weight-based power formulas — see movePower's own doc comment.
+		const weight = (effectiveSpeciesData && effectiveSpeciesData.exists && typeof effectiveSpeciesData.weightkg === 'number') ?
+			effectiveSpeciesData.weightkg : null;
+		return { moves, ability, types, atk, spa, baseSpeed, scarfSpeed, weight };
 	}
 
 	/** One roster member's own real defensive profile against a threat — the "defender side" half
@@ -938,7 +1047,10 @@
 		const resolved = window.Dex && window.Dex.species.get(resolvedSpecies);
 		const types = (resolved && resolved.exists && resolved.types) || [];
 		const ability = resolveMemberAbility(memberSet, resolvedSpecies, isMega);
-		return { types, def, spd, speed, ability };
+		// Same real weightkg computeThreatOffense's own `weight` carries for the threat side —
+		// movePower's own doc comment covers why both sides are needed.
+		const weight = (resolved && resolved.exists && typeof resolved.weightkg === 'number') ? resolved.weightkg : null;
+		return { types, def, spd, speed, ability, weight };
 	}
 
 	/** The current roster's own species, base-species-ID'd (same normalization
@@ -1293,7 +1405,7 @@
 			ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, DEFENSIVE_ABILITY_TYPE_MULTIPLIERS,
 			SUPER_EFFECTIVE_REDUCER_ABILITIES, applyDefensiveAbility, resolveMemberAbility,
 			computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
-			buildMemberThreatRows, isDamagingMove, movePower, stabAdjustedPower, effectiveMoveType,
+			buildMemberThreatRows, isDamagingMove, movePower, variableMovePower, stabAdjustedPower, effectiveMoveType,
 			computeThreatMoveReasons, computeThreatSpeedReason, computeThreatPriorityMoves,
 			threatHasMoveOfCategory,
 			computeThreatReasons,

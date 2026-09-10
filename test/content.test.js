@@ -21,7 +21,7 @@ const {
 	assignSpeedSpectrumLanes, buildSpeedSpectrumHTML,
 	ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, applyDefensiveAbility, resolveMemberAbility,
 	computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
-	buildMemberThreatRows, isDamagingMove, movePower, effectiveMoveType, stabAdjustedPower, computeThreatMoveReasons, computeThreatSpeedReason,
+	buildMemberThreatRows, isDamagingMove, movePower, variableMovePower, effectiveMoveType, stabAdjustedPower, computeThreatMoveReasons, computeThreatSpeedReason,
 	computeThreatPriorityMoves,
 	threatHasMoveOfCategory,
 	computeThreatReasons,
@@ -1965,6 +1965,97 @@ describe('movePower', () => {
 		expect(movePower('Weather Ball', 'Torrent')).toBe(50); // a real ability, just not a weather-setter
 		expect(movePower('Wave Crash', 'Drought')).toBe(120); // unrelated move, unaffected
 	});
+
+	// Real moves whose listed basePower is a placeholder 0 in Showdown's own dex (their real
+	// power comes from a live basePowerCallback) — confirmed directly against data/moves.ts, not
+	// assumed. Exercised here through the real movePower/window.Dex path, not just
+	// variableMovePower's own pure-function tests below, so a regression in movePower's own
+	// VARIABLE_POWER_MOVE_IDS wiring would actually fail a test.
+	it('uses the real weight-based formula for Grass Knot/Low Kick, not the dex\'s own placeholder 0 power', () => {
+		window.Dex = { moves: { get: (name) => ({
+			'grass knot': { exists: true, basePower: 0 },
+			'low kick': { exists: true, basePower: 0 },
+		}[String(name).toLowerCase()] || { exists: false }) } };
+		expect(movePower('Grass Knot', '', { defender: 220 })).toBe(120); // real Dondozo weight
+		expect(movePower('Low Kick', '', { defender: 220 })).toBe(120);
+	});
+
+	it('falls back to the dex\'s own placeholder 0 when the weight/Speed a variable-power move needs isn\'t supplied', () => {
+		window.Dex = { moves: { get: () => ({ exists: true, basePower: 0 }) } };
+		expect(movePower('Grass Knot')).toBe(0); // no weights arg at all
+		expect(movePower('Gyro Ball', '', undefined, {})).toBe(0); // speeds given, but empty
+	});
+});
+
+describe('variableMovePower', () => {
+	// Every threshold transcribed directly from data/moves.ts's own basePowerCallback for each
+	// move (movePower's own doc comment) — verified against the real source, not approximated.
+	it('bands Grass Knot/Low Kick on the defender\'s own real weight alone, ignoring the attacker\'s', () => {
+		expect(variableMovePower('grassknot', 1, 200, null, null)).toBe(120); // exactly at the top band
+		expect(variableMovePower('grassknot', 999, 199.9, null, null)).toBe(100); // just under 200kg
+		expect(variableMovePower('lowkick', 1, 100, null, null)).toBe(100);
+		expect(variableMovePower('lowkick', 1, 99.9, null, null)).toBe(80);
+		expect(variableMovePower('grassknot', 1, 50, null, null)).toBe(80);
+		expect(variableMovePower('grassknot', 1, 49.9, null, null)).toBe(60);
+		expect(variableMovePower('grassknot', 1, 25, null, null)).toBe(60);
+		expect(variableMovePower('grassknot', 1, 24.9, null, null)).toBe(40);
+		expect(variableMovePower('grassknot', 1, 10, null, null)).toBe(40);
+		expect(variableMovePower('grassknot', 1, 9.9, null, null)).toBe(20); // the bottom band
+	});
+
+	it('returns null for Grass Knot/Low Kick without a real defender weight to band on', () => {
+		expect(variableMovePower('grassknot', 100, null, null, null)).toBeNull();
+		expect(variableMovePower('lowkick', 100, undefined, null, null)).toBeNull();
+	});
+
+	it('bands Heavy Slam/Heat Crash on the attacker-over-defender weight ratio', () => {
+		expect(variableMovePower('heavyslam', 500, 100, null, null)).toBe(120); // exactly 5x
+		expect(variableMovePower('heavyslam', 499, 100, null, null)).toBe(100); // just under 5x
+		expect(variableMovePower('heatcrash', 400, 100, null, null)).toBe(100); // exactly 4x
+		expect(variableMovePower('heatcrash', 300, 100, null, null)).toBe(80); // exactly 3x
+		expect(variableMovePower('heavyslam', 200, 100, null, null)).toBe(60); // exactly 2x
+		expect(variableMovePower('heavyslam', 199, 100, null, null)).toBe(40); // under 2x
+		expect(variableMovePower('heavyslam', 1, 100, null, null)).toBe(40); // far under 1x
+	});
+
+	it('returns null for Heavy Slam/Heat Crash without both real weights', () => {
+		expect(variableMovePower('heavyslam', null, 100, null, null)).toBeNull();
+		expect(variableMovePower('heatcrash', 100, null, null, null)).toBeNull();
+		expect(variableMovePower('heatcrash', 100, 0, null, null)).toBeNull(); // a real weight is never 0
+	});
+
+	it('computes Gyro Ball as floor(25 * defenderSpeed / attackerSpeed) + 1, capped at 150', () => {
+		// A slower attacker relative to the defender hits harder, not softer — Ferrothorn (base
+		// Speed 20-ish real builds) against a real fast target is the whole point of the move.
+		expect(variableMovePower('gyroball', 50, null, 100, 50)).toBe(13); // floor(25*50/100)+1 = 13
+		expect(variableMovePower('gyroball', null, null, 20, 200)).toBe(150); // floor(25*200/20)+1=251, capped
+		expect(variableMovePower('gyroball', null, null, 100, 100)).toBe(26); // equal Speed: floor(25)+1
+	});
+
+	it('returns null for Gyro Ball without both real Speeds', () => {
+		expect(variableMovePower('gyroball', null, null, null, 100)).toBeNull();
+		expect(variableMovePower('gyroball', null, null, 100, null)).toBeNull();
+	});
+
+	it('computes Electro Ball by flooring the attacker/defender Speed ratio first, then indexing the real power table', () => {
+		// The real engine floors the ratio itself before banding — a 3.99x ratio floors to 3 and
+		// gets 120, not the 150 a naive ">= 4" comparison on the un-floored ratio would give.
+		expect(variableMovePower('electroball', null, null, 399, 100)).toBe(120); // floor(3.99) = 3
+		expect(variableMovePower('electroball', null, null, 400, 100)).toBe(150); // floor(4) = 4
+		expect(variableMovePower('electroball', null, null, 300, 100)).toBe(120); // floor(3) = 3
+		expect(variableMovePower('electroball', null, null, 200, 100)).toBe(80); // floor(2) = 2
+		expect(variableMovePower('electroball', null, null, 100, 100)).toBe(60); // floor(1) = 1
+		expect(variableMovePower('electroball', null, null, 50, 100)).toBe(40); // floor(0.5) = 0
+	});
+
+	it('returns null for Electro Ball without a real defender Speed', () => {
+		expect(variableMovePower('electroball', null, null, 100, null)).toBeNull();
+		expect(variableMovePower('electroball', null, null, 100, 0)).toBeNull(); // a real Speed stat is never 0
+	});
+
+	it('returns null for any move outside the real variable-power set', () => {
+		expect(variableMovePower('flamethrower', 100, 100, 100, 100)).toBeNull();
+	});
 });
 
 describe('stabAdjustedPower', () => {
@@ -2009,6 +2100,31 @@ describe('computeThreatMoveReasons', () => {
 			{ move: 'Flamethrower', type: 'Fire', percent: 90 },
 			{ move: 'Solar Beam', type: 'Grass', percent: 90 },
 		]);
+	});
+
+	it('ranks Grass Knot by its real weight-based power against a heavy defender, not the dex\'s own placeholder 0 (confirmed live against Dondozo/Kyogre-weight targets)', () => {
+		window.Dex = {
+			moves: { get: (name) => ({
+				'grass knot': { exists: true, type: 'Grass', category: 'Special', basePower: 0 },
+				'ice punch': { exists: true, type: 'Ice', category: 'Physical', basePower: 75 },
+			}[String(name).toLowerCase()] || { exists: false }) },
+			types: { get: (name) => ({
+				heavytarget: { exists: true, damageTaken: { Grass: 1, Ice: 1 } }, // both super effective
+			}[String(name).toLowerCase()] || { exists: false }) },
+		};
+		const moves = [
+			{ move: 'Ice Punch', percent: '70', type: 'Ice' },
+			{ move: 'Grass Knot', percent: '60', type: 'Grass' },
+		];
+		// Without real weight context, Grass Knot's 0 placeholder would rank last (or be dropped
+		// once more real-power candidates exist than TEAM_THREATS_MAX_MOVE_REASONS) despite being
+		// the far more threatening move against a genuinely heavy target.
+		const withoutWeight = computeThreatMoveReasons(moves, ['heavytarget']);
+		expect(withoutWeight[0].move).toBe('Ice Punch'); // 75 > Grass Knot's placeholder 0
+		const withWeight = computeThreatMoveReasons(
+			moves, ['heavytarget'], '', [], null, '', { attacker: null, defender: 220 }); // real Dondozo weight
+		expect(withWeight[0].move).toBe('Grass Knot'); // real 120 (>=200kg band) beats Ice Punch's 75
+		expect(withWeight[1].move).toBe('Ice Punch');
 	});
 
 	it('breaks a real power tie by usage percent', () => {
@@ -2566,10 +2682,10 @@ describe('computeThreatOffense', () => {
 describe('computeMemberDefense', () => {
 	afterEach(() => { delete window.Dex; });
 
-	it('reads real def/spd/types/speed/ability from the member\'s own set, folding its own held item into Speed', () => {
+	it('reads real def/spd/types/speed/ability/weight from the member\'s own set, folding its own held item into Speed', () => {
 		window.Dex = {
 			items: { get: () => ({ exists: false }) },
-			species: { get: (name) => (name === 'Sceptile' ? { exists: true, types: ['Grass', 'Poison'] } : { exists: false }) },
+			species: { get: (name) => (name === 'Sceptile' ? { exists: true, types: ['Grass', 'Poison'], weightkg: 52.5 } : { exists: false }) },
 		};
 		const memberSet = { species: 'Sceptile', item: 'Choice Scarf', ability: 'Overgrow', evs: {}, nature: '' };
 		const getStat = (stat, set) => {
@@ -2578,7 +2694,17 @@ describe('computeMemberDefense', () => {
 		};
 		const tbRoom = { getStat };
 		const defense = computeMemberDefense(tbRoom, memberSet);
-		expect(defense).toEqual({ types: ['Grass', 'Poison'], def: 60, spd: 90, speed: 150, ability: 'Overgrow' }); // floor(100 * 1.5)
+		expect(defense).toEqual({ types: ['Grass', 'Poison'], def: 60, spd: 90, speed: 150, ability: 'Overgrow', weight: 52.5 }); // floor(100 * 1.5)
+	});
+
+	it('falls back to a null weight when the species lookup carries no real weightkg', () => {
+		window.Dex = {
+			items: { get: () => ({ exists: false }) },
+			species: { get: () => ({ exists: true, types: ['Normal'] }) },
+		};
+		const memberSet = { species: 'Missingno', item: '', ability: '', evs: {}, nature: '' };
+		const tbRoom = { getStat: () => 100 };
+		expect(computeMemberDefense(tbRoom, memberSet).weight).toBeNull();
 	});
 
 	it('resolves a Mega-Stone holder to the Mega forme\'s own types/stats/ability before reading them', () => {
