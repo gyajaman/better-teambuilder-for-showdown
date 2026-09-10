@@ -2898,13 +2898,25 @@
 	 *  ways to build a Mega on this file's own account (topSpeedItemBadge's own comment): built
 	 *  manually (base species, Mega Stone set as a separate item — window.Dex.items.get(item)
 	 *  .megaStone, keyed by the *base* species name, matches) or picked directly from the
-	 *  species-search "-Mega" entry (set.species already says so, confirmed via species.battleOnly
-	 *  — the megaStone lookup alone can't catch this case, since that map is keyed by the base
-	 *  species name, not the Mega forme's own). Returns `{species, isMega}` rather than just the
-	 *  name — callers need to know *whether* a substitution happened, not just its result (see
-	 *  computeSpeedSpectrumDomain's own Mega-vs-Scarf comparison, and computeTeamDefensiveProfile's
-	 *  own canToggle, which needs isMega true for a directly-picked Mega just as much as for one
-	 *  built via a separate Mega Stone item). */
+	 *  species-search "-Mega" entry (set.species already says so, confirmed via
+	 *  species.requiredItem — the megaStone lookup alone can't catch this case, since that map is
+	 *  keyed by the base species name, not the Mega forme's own).
+	 *
+	 *  `requiredItem`, not the broader `battleOnly`, gates that second branch — confirmed
+	 *  directly against data/pokedex.ts: `battleOnly` alone is also true for real, unrelated
+	 *  in-battle-only formes with no held item behind them at all (Aegislash-Blade, Palafin-Hero,
+	 *  Darmanitan-Zen, Wishiwashi-School — each `requiredAbility` instead, triggered by Stance
+	 *  Change/Zero to Hero/Zen Mode/Schooling, never directly pickable from species search on
+	 *  their own). A bare `battleOnly` check would mislabel any of those as isMega if its exact
+	 *  forme name ever ended up as a real set's own species (a pasted/imported set naming the
+	 *  in-battle state directly, not a search pick) — a real Mega/Primal/Crowned-Sword forme
+	 *  always carries `requiredItem` (the item Showdown auto-fills once you pick that entry) on
+	 *  top of `battleOnly`, so gating on that instead only narrows which battleOnly formes
+	 *  qualify, it can never wrongly add one that didn't already. Returns `{species, isMega}`
+	 *  rather than just the name — callers need to know *whether* a substitution happened, not
+	 *  just its result (see computeSpeedSpectrumDomain's own Mega-vs-Scarf comparison, and
+	 *  computeTeamDefensiveProfile's own canToggle, which needs isMega true for a directly-picked
+	 *  Mega just as much as for one built via a separate Mega Stone item). */
 	function resolveSpeedSpectrumSpecies(set) {
 		if (window.Dex && set.item) {
 			const itemData = window.Dex.items.get(set.item);
@@ -2913,7 +2925,7 @@
 		}
 		if (window.Dex) {
 			const species = window.Dex.species.get(set.species);
-			if (species && species.exists && species.battleOnly) return { species: set.species, isMega: true };
+			if (species && species.exists && species.battleOnly && species.requiredItem) return { species: set.species, isMega: true };
 		}
 		return { species: set.species, isMega: false };
 	}

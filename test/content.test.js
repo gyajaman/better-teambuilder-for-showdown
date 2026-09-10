@@ -66,7 +66,7 @@ function mockBattleDex() {
 	};
 	const species = {
 		'blastoise-mega': {
-			exists: true, name: 'Blastoise-Mega', battleOnly: true, baseSpecies: 'Blastoise',
+			exists: true, name: 'Blastoise-Mega', battleOnly: true, requiredItem: 'Blastoisinite', baseSpecies: 'Blastoise',
 			baseStats: { hp: 79, atk: 103, def: 120, spa: 135, spd: 115, spe: 78 },
 		},
 	};
@@ -896,7 +896,7 @@ describe('resolveSpeedSpectrumSpecies', () => {
 		expect(resolveSpeedSpectrumSpecies({ species: 'Blastoise', item: 'Blastoisinite' })).toEqual({ species: 'Blastoise-Mega', isMega: true });
 	});
 
-	it('still reports isMega when species is already the Mega forme itself (megaStone is keyed by the base species, but battleOnly catches it)', () => {
+	it('still reports isMega when species is already the Mega forme itself (megaStone is keyed by the base species, but battleOnly+requiredItem catches it)', () => {
 		mockBattleDex();
 		expect(resolveSpeedSpectrumSpecies({ species: 'Blastoise-Mega', item: 'Blastoisinite' })).toEqual({ species: 'Blastoise-Mega', isMega: true });
 	});
@@ -904,6 +904,20 @@ describe('resolveSpeedSpectrumSpecies', () => {
 	it('reports isMega for a Mega picked directly from species search, with no Mega Stone item at all', () => {
 		mockBattleDex();
 		expect(resolveSpeedSpectrumSpecies({ species: 'Blastoise-Mega' })).toEqual({ species: 'Blastoise-Mega', isMega: true });
+	});
+
+	it('does NOT report isMega for a real battle-only forme with no requiredItem behind it (Aegislash-Blade/Palafin-Hero/Darmanitan-Zen/Wishiwashi-School — ability-triggered, never a real Mega)', () => {
+		window.Dex = {
+			items: { get: () => ({ exists: false }) },
+			species: {
+				get: (name) => (name === 'Aegislash-Blade' ?
+					// Real shape confirmed against data/pokedex.ts: battleOnly, but requiredAbility
+					// (Stance Change) instead of requiredItem — no held item drives this forme at all.
+					{ exists: true, name: 'Aegislash-Blade', battleOnly: 'Aegislash', requiredAbility: 'Stance Change', baseSpecies: 'Aegislash' } :
+					{ exists: false }),
+			},
+		};
+		expect(resolveSpeedSpectrumSpecies({ species: 'Aegislash-Blade', item: '' })).toEqual({ species: 'Aegislash-Blade', isMega: false });
 	});
 });
 
