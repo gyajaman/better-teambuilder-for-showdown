@@ -1,6 +1,6 @@
 # Better Teambuilder for Showdown!
 
-A Chrome/Firefox extension that adds custom search filters, a Speed stat comparator, a live [Pikalytics](https://pikalytics.com) usage-stats sidebar, a Speed Tiers panel with a head-to-head Speed comparison popup, and — on a blank "Add Pokémon" slot — a usage-ranked Popular column plus a Similar Teams panel of real matching tournament rosters, to the [Pokémon Showdown](https://play.pokemonshowdown.com) teambuilder. Filters are computed from a species' full movepool or ability access, not just a single static field like Showdown's built-in filters.
+A Chrome/Firefox extension that adds custom search filters, a Speed stat comparator, a live [Pikalytics](https://pikalytics.com) usage-stats sidebar, a Speed Tiers panel with a head-to-head Speed comparison popup, a usage-ranked Popular column (shown on a blank "Add Pokémon" slot and on the team overview screen), and — on a blank slot — a Similar Teams panel of real matching tournament rosters, to the [Pokémon Showdown](https://play.pokemonshowdown.com) teambuilder. Filters are computed from a species' full movepool or ability access, not just a single static field like Showdown's built-in filters.
 
 If this is useful to you, consider [supporting it on Patreon](https://www.patreon.com/cw/yajaman).
 
@@ -73,11 +73,13 @@ Hovering a Pokémon in the Speed Tiers column opens a popup comparing its expect
 
 ## Team overview screen
 
-When no slot is open for editing — the screen showing all six roster icons together — the narrow Speed Tiers column gives way to three panels in the freed-up space: Speed Spread (full width), then Defensive Profile and Biggest Threats side by side underneath it.
+When no slot is open for editing — the screen showing all six roster icons together — the narrow Speed Tiers column relabels itself **Popular** here too, same as it does on a blank "Add Pokémon" slot (see [Popular column](#popular-column) below), except a click here adds the species as a brand new teammate rather than filling a still-open slot, and rows are disabled instead of clickable once the roster is already full. The main sidebar fills with three more panels: Speed Spread (full width), then Defensive Profile and Biggest Threats side by side underneath it.
 
 ### Speed Spread
 
 Every real roster member's actual Speed (Mega forme and held Choice Scarf/Iron Ball included) plotted on a single low-to-high spectrum against the format's own real fastest and slowest legal Pokémon, not a padded range around your own roster's Speeds. A Pokémon built to actually match the format's ceiling or floor lines up exactly with the threshold marker.
+
+Hovering a roster icon on the diagram shows a popup with that Pokémon's real nature, full EV spread, held item, ability, and moves.
 
 ### Defensive Profile
 
@@ -97,6 +99,7 @@ Hover a single counter's sprite for a table of exactly why it threatens *that* m
 
 - **Outspeeds** with a real, commonly-used, actually-damaging move that isn't resisted — real Speed on both sides (your Pokémon's actual EVs/nature/item, the counter's own top real spread) via the same Speed math the rest of the extension uses, factoring in a real, common-enough Choice Scarf on the counter's side too; tagged "(needs Scarf)" when the outspeed only holds with one.
 - Up to two commonly-used **super-effective moves** — each its own real type icon, name, and usage percent — excluding only the exact move the outspeed line above already named (if any), so a second, genuinely different strong option still gets its own line.
+- Up to two commonly-used, STAB-boosted **priority moves** (marked with a "+N" priority badge) — a real way to hit first regardless of Speed — excluding any move already named by the lines above.
 - A stat-based mismatch — "High Attack vs Low Defense" / "High Special Attack vs Low Special Defense" — only shown when the counter's own moveset actually backs the stat up, not from the raw numbers alone.
 
 A counter commonly built around holding a real Mega Stone (clearing the same Mega threshold the Add Pokémon screen's own Speed comparison uses) is checked as its *Mega forme* throughout — its real boosted stats, real types, and real fixed ability, not the base forme's, since a Mega Charizard Y is a meaningfully different (and usually far more dangerous) Pokémon than a plain Charizard. A Mega Stone and a Choice Scarf can't be held at once, so the outspeed check above never assumes both together.
@@ -115,11 +118,11 @@ The same column and sidebar repurpose themselves when the slot currently open fo
 
 ### Popular column
 
-The Speed Tiers column relabels itself **Popular** and becomes clickable: click any row to fill the blank slot with that species outright (`TeambuilderRoom.prototype.setPokemon`), the same as picking it from Showdown's own species search.
+The Speed Tiers column relabels itself **Popular** and becomes clickable: click any row to fill the blank slot with that species outright (`TeambuilderRoom.prototype.setPokemon`), the same as picking it from Showdown's own species search. On the team overview screen (above) a click instead adds the species as a new teammate, and a row is disabled rather than clickable once your roster is already full — otherwise the two behave identically.
 
-- Each row's border is colored by how hard your team's existing damaging move types already hit that species — solid green (4×), light green (2×), untinted (neutral or nothing to compare against yet), orange (resisted, ½×), burnt orange-red (double-resisted, ¼× — a real, distinct outcome, not lumped in with true immunity), dark red (immune, 0×) — so a glance down the column shows which popular Pokémon your team already threatens and which it doesn't, without reading any numbers.
+- Each row's border is colored by how hard your team's existing damaging move types already hit that species — solid green (4×), light green (2×), untinted (neutral or nothing to compare against yet), orange (resisted, ½×), burnt orange-red (double-resisted, ¼× — a real, distinct outcome, not lumped in with true immunity), dark red (immune, 0×) — so a glance down the column shows which popular Pokémon your team already threatens and which it doesn't, without reading any numbers. Hovering a row's preview tooltip (below) names exactly which of your team's Pokémon and moves earned that color, under **Team coverage**.
 - A species commonly built with a Speed-relevant item gets a small corner badge — Choice Scarf, or its most popular Mega Stone — whichever one actually clears its own usage threshold *and* has the higher real usage percent (not "Scarf always wins"); a Mega row also swaps its displayed Speed to the Mega forme's own base stat.
-- Hovering a row (without clicking) shows a preview tooltip: base stats, top moves, ability, item, nature, and spread, each with real usage percentages — the same shape of data as the six-section per-species sidebar, just for a Pokémon you haven't added yet.
+- Hovering a row (without clicking) shows a preview tooltip: base stats, top moves, ability, item, team coverage, nature, and spread, each with real usage percentages — the same shape of data as the six-section per-species sidebar, just for a Pokémon you haven't added yet.
 
 ### Similar Teams panel
 

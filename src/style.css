@@ -199,11 +199,82 @@ a[data-entry^="custom|"] .movedesccol {
 	box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
 }
 /* "Popular" row hover preview (content.js buildSpeciesPreviewTooltipHTML) — a touch wider than
- * the base 300px so its Moves/Ability/Item lines (several comma-separated entries each) have a
- * bit more room before wrapping, without going as wide as the table-shaped speedcmp/similar-team
- * tooltips below. */
+ * the base 300px so its 2-column Moves/Ability/Item/Team-coverage/Nature/Spread grid
+ * (.cf-addpokemon-preview-grid below) has real room per column, without going as wide as the
+ * table-shaped speedcmp/similar-team tooltips below. */
 #cf-tooltipwrapper .cf-tooltip.cf-addpokemon-preview-tooltip {
 	width: 380px;
+}
+/* 2-column grid for buildSpeciesPreviewTooltipHTML's Moves/Ability/Item/Team-coverage/Nature/
+ * Spread cells — mirrors the real per-species sidebar's own .cf-pika-grid arrangement (Moves/
+ * Abilities, Items/Teammates, Natures/Spreads; Team coverage stands in for Teammates here, see
+ * that function's own comment on why) instead of stacking all six as their own full-width
+ * .tooltip-section row, which read as one long flat list rather than the compact, organized
+ * layout used everywhere else in this extension. Lighter than .cf-pika-grid itself — no fixed
+ * height or internal scroll, since a tooltip has to size to its own content, not fill a panel —
+ * just the same spatial idea. */
+#cf-tooltipwrapper .cf-tooltip .cf-addpokemon-preview-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 0 14px;
+}
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-gridcell {
+	border-top: 1px solid #888888;
+	padding: 3px 4px 4px;
+	font-size: 9pt;
+	color: black;
+}
+.dark #cf-tooltipwrapper .cf-tooltip .cf-tooltip-gridcell {
+	border-top-color: #5A5D60;
+	color: #E0E0E0;
+}
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-gridcell strong {
+	display: block;
+}
+/* One icon + text entry within a grid cell (a move, an item, a "here's what covers this"
+ * contributor) — real gap between the icon and its text is the whole point: an earlier version
+ * concatenated them with no space at all. */
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-row {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 2px 0;
+}
+/* Without this, the icon and .cf-pika-name are both flex items with the default flex-shrink: 1
+ * — harmless on a row whose content already fits, but a longer move/item name in a neighboring
+ * row can force *that* row's flex items to actually shrink to fit the grid cell's fixed width,
+ * and the icon shrinks right along with the text unless it's pinned. The result is icons at
+ * slightly different widths from row to row, so the move names after them don't start at the
+ * same x position — exactly the misalignment .cf-pika-row .picon/.itemicon/img.pixelated below
+ * already pins against for the real per-species sidebar's own rows; same fix, same reason,
+ * needed here too since .cf-tooltip-row is its own separate flex container. */
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-row .picon,
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-row .itemicon,
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-row img.pixelated {
+	flex: 0 0 auto;
+}
+/* Team coverage cell (content.js buildSpeciesPreviewTooltipHTML): one .cf-tooltip-row per
+ * contributing species (a real sprite), stacking one .cf-tooltip-moveline per tied move
+ * underneath it rather than joining "icon name" text with <br> inside one shared plain <span> —
+ * that plain-text version had no flex context of its own to align a move's type icon against
+ * its own name, so the two only ever lined up by accident of whatever vertical-align a bare
+ * <img> happens to default to. A real flex row per move (align-items: center, exactly
+ * .cf-tooltip-row's own mechanism) centers the two directly against each other instead of
+ * guessing at a text-relative alignment value. */
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-movelines {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-moveline {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+}
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-moveline .picon,
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-moveline .itemicon,
+#cf-tooltipwrapper .cf-tooltip .cf-tooltip-moveline img.pixelated {
+	flex: 0 0 auto;
 }
 #cf-tooltipwrapper .cf-tooltip h2 {
 	padding: 2px 4px;
@@ -301,6 +372,18 @@ a[data-entry^="custom|"] .movedesccol {
  * every tier below it, following the same +80px-per-tier progression. */
 #cf-tooltipwrapper .cf-tooltip.cf-speedcmp-tooltip-widest3 {
 	width: 660px;
+}
+/* Speed Spread hover popup (content.js buildSpeedSpectrumTooltipHTML) — one Pokémon's own
+ * .cf-similarteam-tooltip-col (a centered sprite plus a couple of short text lines), nowhere
+ * near enough content to fill the base 300px every other tooltip defaults to. A single fixed
+ * width guessed too wide once already (every real line here is short, so any one fixed number
+ * either clips a rare long line or leaves visible slack on every short one) — sized to its own
+ * content instead: max-content shrinks the box down to whatever its widest line actually needs,
+ * with max-width only as a hard ceiling so a genuinely long line (a nature name plus the full
+ * "32/0/0/0/32/0" spread, or a longer move name) wraps instead of stretching the box out. */
+#cf-tooltipwrapper .cf-tooltip.cf-speedspectrum-tooltip {
+	width: max-content;
+	max-width: 130px;
 }
 .cf-speedcmp-table {
 	width: 100%;
@@ -402,16 +485,22 @@ a[data-entry^="custom|"] .movedesccol {
 		-1px 1px 0 #000000,
 		1px 1px 0 #000000;
 }
-/* EV count + Speed nature indicator, bracketed next to each Pokémon's name in the tooltip's own
- * h2 (content.js buildSpeedComparisonTooltipHTML) rather than under its sprite in the table
- * header — muted relative to the name itself so the name stays the visually dominant part of
- * the title. */
-.cf-speedcmp-tooltip h2 .cf-speedcmp-evinfo {
+/* EV count + Speed nature indicator, bracketed next to a Pokémon's name in a tooltip's own h2
+ * (content.js buildSpeedComparisonTooltipHTML's ally header is the only current caller — the
+ * Speed Spread hover popup, buildSpeedSpectrumTooltipHTML, ended up not using an h2 at all)
+ * rather than under its sprite — muted relative to the name itself so the name stays the
+ * visually dominant part of the title. Scoped to any .cf-tooltip's h2, not one specific tooltip
+ * type — .cf-speedcmp-evinfo is only ever added by JS exactly where this "muted parenthetical
+ * next to a name" treatment is wanted, so there's no need to re-list every tooltip class that
+ * uses it here (a plain h2's own bold/black default is what a tooltip missing this scoping would
+ * otherwise fall back to, confirmed live — that's not a font nobody sets, it's this rule not
+ * reaching it). */
+#cf-tooltipwrapper .cf-tooltip h2 .cf-speedcmp-evinfo {
 	font-size: 8pt;
 	font-weight: normal;
 	color: #666666;
 }
-.dark .cf-speedcmp-tooltip h2 .cf-speedcmp-evinfo {
+.dark #cf-tooltipwrapper .cf-tooltip h2 .cf-speedcmp-evinfo {
 	color: #AAAAAA;
 }
 
@@ -547,40 +636,59 @@ body.cf-teambuilder-split #cf-teambuilder-sidebar {
 	padding: 12px 6px 12px 21px;
 	box-sizing: border-box;
 }
-/* Team-overview screen (content.js updateSplitState/renderTeamOverviewPanel) — nothing is
- * assigned to this column there, so it's hidden outright rather than left showing an empty
- * placeholder next to the Speed Spread panel. #cf-pika-panel's own `flex: 1 1 auto` (above)
- * already expands to take the freed width on its own once this is gone, same as any flex
- * layout losing a sibling — no extra width rule needed on either element for this. */
-body.cf-teambuilder-team-overview #cf-speedtier-col {
-	display: none;
-}
+/* Team-overview screen (content.js updateSplitState/renderTeamOverviewPanel): this column now
+ * shows here too, repurposed as the "Popular" list (wantsPopularColumn/buildSpeedTierColumnHTML's
+ * own doc comments) — it used to be hidden outright on this screen (nothing was ever rendered
+ * into it), but #cf-pika-panel's own `flex: 1 1 auto` (above) already shrinks to hand this column
+ * its fixed 96px+padding on its own, same as any flex layout gaining a sibling, so no extra width
+ * rule is needed here for that. What that shrink actually costs #cf-pika-panel's own content is
+ * the intended trade, not a side effect to work around: #cf-defmatrix-wrap's grid column is
+ * `auto` (#cf-teamoverview-row below) — sized to its own intrinsic content, so it's untouched —
+ * while #cf-teamthreats-section's `minmax(0, 1fr)` and #cf-speedspectrum-wrap's own capped
+ * max-width both absorb the loss, narrowing the two sections that can actually afford to.
+ * Content.js's own applyTeammate is what a click here actually calls (not
+ * applySpeciesToBlankSlot, the blank-slot action) — gated on curTeamFull the way a blank slot
+ * never needs to be, since a blank slot only exists because the roster wasn't full to begin
+ * with. */
 /* Team-overview screen again (content.js renderTeamOverviewPanel/ensureTeamOverviewPanelEls):
- * #cf-speedspectrum-wrap (Speed Spread) and #cf-teamthreats-section (Biggest Threats) stack as
- * two plain block children of #cf-pika-panel, each sized to its own content — neither is the
- * fixed-height, internally-scrolling `.cf-pika-grid` cell the six-section per-species sidebar
- * uses (.cf-pika-grid's own comment), so there's no per-section scroll to fall back on if the
- * two stacked together are taller than the panel. #cf-pika-panel's `overflow: hidden` (above)
- * is right for that grid case — every cell already scrolls itself, so anything past the edge
- * really is meant to clip — but wrong here, where it would silently cut off the bottom of
- * Biggest Threats on a short window with a tall roster/lane count instead. Scoped to this
- * screen only, not a blanket change to #cf-pika-panel. */
+ * #cf-speedspectrum-wrap (Speed Spread) and #cf-teamoverview-row (Defensive Profile + Biggest
+ * Threats) stack as this panel's own two flex children, rather than two plain blocks — a real
+ * flex column is what lets #cf-teamoverview-row's own height be handed down from *this* level
+ * (fill whatever's left after Speed Spread) instead of only ever being as tall as its own
+ * content, which is what #cf-teamoverview-row's own comment needs to actually reach as far down
+ * as #cf-speedtier-col (the "Popular" column, its sibling one level up) does. `overflow-y: auto`
+ * is still the right fallback here, not `hidden` — Speed Spread's own diagram is pinned to its
+ * natural height (flex-shrink: 0 below) and #cf-teamoverview-row already scrolls Biggest Threats
+ * internally rather than growing past its own bound, but a short enough window can still leave
+ * genuinely more total content than the panel's own height, and this is what lets the *whole*
+ * panel scroll rather than silently clip in that case. Scoped to this screen only, not a blanket
+ * change to #cf-pika-panel — the six-section per-species sidebar's own `.cf-pika-grid` child needs
+ * neither this flex context nor that fallback scroll (every one of its cells already scrolls
+ * itself, so anything past the grid's own edge really is meant to clip, which is what
+ * #cf-pika-panel's base `overflow: hidden`, above, already does for that screen). */
 body.cf-teambuilder-team-overview #cf-pika-panel {
+	display: flex;
+	flex-direction: column;
 	overflow-y: auto;
 }
 /* Speed Spread and Defensive Profile go through pikaSectionHTML the same as the six-section
  * per-species sidebar's own sections do, which means each one's real content sits inside a
  * `.cf-pika-rows` div — and .cf-pika-rows' own overflow-y: auto (its own rule, above) exists
  * specifically for THAT grid's fixed-height cells, each independently scrolling within its own
- * bounded row track. Neither of these two is in that grid — they're plain stacked/side-by-side
- * blocks with no height of their own to bound a per-section scroll against — so left unscoped,
- * that rule could turn either into its own separate inner scrollbar instead of reading as one
- * continuous piece of content that scrolls together via #cf-pika-panel's own overflow-y (right
- * above). Overridden back to visible here, scoped to just these two wrappers rather than
- * touching the shared `.cf-pika-rows` rule itself, which still needs to behave the normal
- * (scrolling) way inside the six-section grid. Biggest Threats (#cf-teamthreats-section) is
- * deliberately NOT included here — see that section's own `.cf-pika-rows` override, below,
- * for why it gets a real bounded height and scrolls on its own instead. */
+ * bounded row track. Neither of these two wants that own-scrollbar treatment even though both
+ * now do get a real, externally-given height (#cf-speedspectrum-wrap's own flex: 0 0 auto pins it
+ * to its natural size regardless; #cf-defmatrix-wrap's comes from #cf-teamoverview-row's own
+ * height, own comment below) — a diagram has nothing to scroll to begin with, and the matrix
+ * always wants to show its full table, any extra height below it left as a plain gap rather than
+ * its own inner scroll area — so left unscoped, the base rule could turn either into its own
+ * separate inner scrollbar instead of reading as one continuous piece of content that scrolls
+ * together via #cf-pika-panel's own overflow-y (right above), or in the matrix's case clip its
+ * own table into a bounded box it was never meant to have. Overridden back to visible here,
+ * scoped to just these two wrappers rather than touching the shared `.cf-pika-rows` rule itself,
+ * which still needs to behave the normal (scrolling) way inside the six-section grid. Biggest
+ * Threats (#cf-teamthreats-section) is deliberately NOT included here — see that section's own
+ * `.cf-pika-rows` override, below, for why it gets a real bounded height and scrolls on its own
+ * instead. */
 #cf-speedspectrum-wrap .cf-pika-rows,
 #cf-defmatrix-wrap .cf-pika-rows {
 	overflow: visible;
@@ -588,24 +696,30 @@ body.cf-teambuilder-team-overview #cf-pika-panel {
 /* Defensive Profile and Biggest Threats side by side (content.js ensureTeamOverviewPanelEls),
  * not stacked full-width blocks — the matrix only ever needs its own narrow, natural content
  * width (a handful of sprite columns), so giving it a whole row to itself the way an earlier
- * version did left most of that row empty. CSS Grid, not flexbox, specifically so Biggest
- * Threats can be capped to *match the matrix's own natural height* and scroll internally past
- * that — see #cf-teamthreats-section's own comment below for the mechanism (a flexbox row's
- * `align-items: stretch` can't do this: an item's own hypothetical cross size still contributes
- * to the shared line height even when it would otherwise be told to shrink, so a tall Biggest
- * Threats would just make the whole row taller and drag the matrix down with it, empty space and
- * all, rather than being clipped to the matrix's real size). `grid-template-columns: auto
- * minmax(0, 1fr)` gives the matrix its own natural content width (auto) and Biggest Threats
- * whatever's left (the `minmax(0, ...)`, not a bare `1fr`, is what lets that second column
- * actually shrink below its own content's intrinsic width instead of refusing to — the identical
- * "grid blowout" issue min-width: 0 already solves for flex items elsewhere in this file).
- * `align-items: stretch` (grid's own default, spelled out for clarity) is what makes both
- * columns share one height in the first place. max-width caps the row at the same
- * --cf-sidebar-content-max-width every sidebar-content section here uses so it doesn't stretch
- * to whatever #cf-teambuilder-sidebar's own uncapped width happens to be on a wide monitor. A
- * little breathing room from the section above it — .cf-pika-header's own top margin (5px)
- * reads as barely separated from a preceding block this size, not `.cf-pika-rows` padding
- * either, this is spacing between two whole sections rather than inside one.
+ * version did left most of that row empty. `grid-template-columns: auto minmax(0, 1fr)` gives
+ * the matrix its own natural content width (auto) and Biggest Threats whatever's left (the
+ * `minmax(0, ...)`, not a bare `1fr`, is what lets that second column actually shrink below its
+ * own content's intrinsic width instead of refusing to — the identical "grid blowout" issue
+ * min-width: 0 already solves for flex items elsewhere in this file).
+ *
+ * `flex: 1 1 auto; min-height: 0` (this row is a flex item of #cf-pika-panel's own team-
+ * overview-only flex column, above) is what makes this row's *height* come from there — filling
+ * whatever's left after Speed Spread's own pinned height, the same as #cf-speedtier-col (the
+ * "Popular" column, this row's sibling one level up) fills the full sidebar on its own side —
+ * rather than only ever being as tall as the matrix's own small, roster-size-independent content
+ * the way an earlier version had it (own comment on #cf-defmatrix-wrap below). `align-items:
+ * stretch` (grid's own default, spelled out for clarity) is then what hands that same height down
+ * to *both* columns, not just the row's own outer box — #cf-defmatrix-wrap's own comment covers
+ * what "stretched taller than its own content" actually looks like there, and
+ * #cf-teamthreats-section's covers the mechanism that lets Biggest Threats fill that same height
+ * with real content and scroll internally past it, rather than merely stretching an empty box.
+ *
+ * max-width caps the row at the same --cf-sidebar-content-max-width every sidebar-content
+ * section here uses so it doesn't stretch to whatever #cf-teambuilder-sidebar's own uncapped
+ * width happens to be on a wide monitor. A little breathing room from the section above it —
+ * .cf-pika-header's own top margin (5px) reads as barely separated from a preceding block this
+ * size, not `.cf-pika-rows` padding either, this is spacing between two whole sections rather
+ * than inside one.
  *
  * `margin: 0 4px`, not `margin-top` too — the same 4px left/right #cf-speedspectrum-wrap (above)
  * already carries, so both share an identical box model (same max-width, same side margins) and
@@ -618,41 +732,62 @@ body.cf-teambuilder-team-overview #cf-pika-panel {
 	display: grid;
 	grid-template-columns: auto minmax(0, 1fr);
 	align-items: stretch;
+	flex: 1 1 auto;
+	min-height: 0;
 	gap: 16px;
 	margin: 0 4px;
 	max-width: var(--cf-sidebar-content-max-width);
 }
-/* #cf-defmatrix-wrap itself needs no sizing rules of its own — sized to its own natural content
+/* #cf-defmatrix-wrap's own *width* still needs no sizing rule — sized to its own natural content
  * width by the `auto` column it sits in (#cf-teamoverview-row, above) automatically, the same
  * width behavior `flex: 0 0 auto` gave it under the row's own earlier flex layout. Its *height*
- * is what ultimately drives the whole row's height (see #cf-teamthreats-section's own comment on
- * why it doesn't compete for that), then `align-items: stretch` fills this column down to match
- * — an empty-looking gap below the table on a roster where Biggest Threats' own content would
- * otherwise be shorter, which is the deliberate trade of "match the matrix" over "match
- * whichever is naturally taller." */
+ * now comes from that row instead of driving it (#cf-teamoverview-row's own `flex: 1 1 auto` is
+ * what hands the row a real height, filling as far down as #cf-speedtier-col/"Popular" does), and
+ * `display: flex; flex-direction: column` here is what actually carries that height down into
+ * the matrix rather than leaving it stranded on this wrapper's own, otherwise invisible box — a
+ * plain block child (the `.cf-pika-section` pikaSectionHTML wraps every section's content in)
+ * does not fill its parent's height on its own, the same reason #cf-teamthreats-section's own
+ * comment below needs the identical `display: flex` on itself. Once that height actually reaches
+ * `.cf-pika-rows` (`flex: 1 1 auto`, base rule), .cf-defmatrix-table's own `height: 100%` (below)
+ * is what turns it into taller rows rather than a gap under an unchanged-size table — an HTML
+ * table with a specified height taller than its rows' own natural sum distributes the extra
+ * height across every row (header included) rather than leaving it unclaimed, the same real
+ * mechanism a plain `<table height="...">` has always had, not anything this file has to
+ * reimplement. */
+#cf-defmatrix-wrap {
+	display: flex;
+	flex-direction: column;
+}
 /* content.js buildTeamThreatsSectionHTML: one row per roster member (buildTeamThreatMemberRowHTML)
  * rather than the name/percent rows every other Pikalytics-derived section uses — a deliberately
  * quieter "here's who to watch for" glance, all the real detail living in the hover tooltip
  * (cf-teamthreats-tooltip below) rather than on the row itself.
  *
- * `min-height: 0` is the whole mechanism behind "match the Defensive Profile matrix's own height,
- * then scroll" — per the CSS Sizing spec, a grid/flex item's *automatic* minimum size (used both
- * to decide how far it's allowed to shrink AND, critically, how much it contributes to the
- * shared row/track's own auto-computed size) is normally its content's own intrinsic size, which
- * would make a tall Biggest Threats inflate #cf-teamoverview-row's height right along with it —
- * explicitly overriding that to 0 here removes Threats from that computation entirely, so the
- * row's height ends up driven by #cf-defmatrix-wrap alone. `display: flex; flex-direction:
- * column` turns this into a real flex container of its own (rather than relying on some parent
- * to stretch a plain block child, which plain blocks don't do) so its one child — the
- * `.cf-pika-section` pikaSectionHTML always wraps section content in — actually fills whatever
- * height the grid above hands this element (flex's own default align-items: stretch), which
- * `.cf-pika-rows` (that section's own scrolling row list, base .cf-pika-rows rule above:
- * `flex: 1 1 auto; min-height: 0; overflow-y: auto;`) then fills in turn and scrolls within —
- * no separate override needed for this section specifically, the base rule already does exactly
- * the right thing once there's a real bounded height to work with. `min-width: 0` is the
- * horizontal twin of the same "let a flex/grid item actually shrink" story, required for this
- * column to shrink to the grid's own minmax(0, 1fr) track instead of refusing to go below its
- * content's own intrinsic width. */
+ * `min-height: 0` is the whole mechanism behind "fill as much of #cf-teamoverview-row's own
+ * height as Biggest Threats' real content can use, then scroll the rest rather than overflow" —
+ * per the CSS Sizing spec, a grid/flex item's *automatic* minimum size (used both to decide how
+ * far it's allowed to shrink AND, critically, how much it contributes to the shared row/track's
+ * own auto-computed size) is normally its content's own intrinsic size, which would make a tall
+ * Biggest Threats inflate #cf-teamoverview-row's height right past whatever #cf-pika-panel's own
+ * flex column (style.css, above) actually handed that row — explicitly overriding that to 0 here
+ * removes Threats from that computation entirely, so the row's height stays exactly what the
+ * panel gave it (matching #cf-speedtier-col/"Popular" one level up) regardless of how much real
+ * data this section has. `display: flex; flex-direction: column` turns this into a real flex
+ * container of its own (rather than relying on some parent to stretch a plain block child, which
+ * plain blocks don't do) so its one child — the `.cf-pika-section` pikaSectionHTML always wraps
+ * section content in — can actually grow to fill whatever height the grid above hands this
+ * element. That growing is `.cf-pika-section`'s own `flex: 1 1 auto` (its own base rule, own
+ * comment there) doing the work, not align-items: stretch — stretch only ever affects a flex
+ * column's *cross* axis (width), never its main axis (height), the opposite of how CSS Grid's own
+ * align-items: stretch (the row above) behaves; a bare block-layout intuition of "stretch fills
+ * both" doesn't carry over here. Once `.cf-pika-section` has that real height, `.cf-pika-rows`
+ * (that section's own scrolling row list, base .cf-pika-rows rule above: `flex: 1 1 auto;
+ * min-height: 0; overflow-y: auto;`) fills it in turn and scrolls internally within — no separate
+ * override needed for this section specifically, the base rule already does exactly the right
+ * thing once there's a real bounded height to work with. `min-width: 0` is the horizontal twin of
+ * the same "let a flex/grid item actually shrink" story, required for this column to shrink to
+ * the grid's own minmax(0, 1fr) track instead of refusing to go below its content's own intrinsic
+ * width. */
 #cf-teamthreats-section {
 	min-width: 0;
 	min-height: 0;
@@ -1004,9 +1139,22 @@ body.cf-teambuilder-team-overview #cf-pika-panel {
 	height: 100%;
 	max-width: var(--cf-sidebar-content-max-width);
 }
+/* `flex: 1 1 auto` is a no-op everywhere .cf-pika-section is a *grid* item (the six-section
+ * .cf-pika-grid, addPokemonPanelWrapHTML's single-cell version of it, or a plain block child of
+ * #cf-pika-panel on the per-species screen — grid layout and block layout both ignore a flex
+ * item's own flex-grow/shrink/basis, since it isn't one there) — it only matters, and is required,
+ * where .cf-pika-section is nested one level inside a *flex* parent instead (#cf-defmatrix-wrap/
+ * #cf-teamthreats-section, both own comments): a flex column's default align-items: stretch only
+ * stretches a child's cross-axis size (width, for a column), never its main-axis size (height) —
+ * unlike CSS Grid's own align-items: stretch, which does default to filling the block axis — so
+ * without an explicit flex-grow here, this single child would just sit at its own natural height
+ * inside a taller wrapper, leaving the extra space unclaimed instead of reaching it. #cf-speedtier-
+ * col (which carries this class directly, not as a wrapped child) is unaffected either way — its
+ * own more specific `flex: 0 0 auto` rule wins on the one element both target. */
 .cf-pika-section {
 	display: flex;
 	flex-direction: column;
+	flex: 1 1 auto;
 	min-height: 0;
 }
 .cf-pika-header {
@@ -1376,8 +1524,20 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
  * label column only needs an icon plus a little padding), which is exactly the compact width
  * this table actually needs; forcing `width: 100%` would stretch every column apart to fill
  * whatever's available instead, wasting the row's own remaining space that
- * #cf-teamthreats-section's `flex: 1 1 auto` is what's meant to claim. */
+ * #cf-teamthreats-section's `flex: 1 1 auto` is what's meant to claim.
+ *
+ * `height: 100%` is the *vertical* opposite of that same restraint, not a contradiction of it —
+ * width has real column content to protect from being stretched apart; height has none (every
+ * cell's own text/icon is a fixed, small thing with nothing to gain from more room around it
+ * beyond staying centered — the default UA `vertical-align: middle` on th/td already handles
+ * that), so there's nothing lost by letting the table's own rows (header included) grow to fill
+ * whatever height #cf-defmatrix-wrap's own flex column (above) hands `.cf-pika-rows` down to
+ * here. Resolves against a real, definite height by the time it reaches this table — three
+ * levels of `flex: 1 1 auto`/default align-items: stretch up the chain (`.cf-pika-rows` →
+ * `.cf-pika-section` → #cf-defmatrix-wrap) — not an unconstrained 100% that would otherwise just
+ * collapse to the table's own natural size. */
 .cf-defmatrix-table {
+	height: 100%;
 	border-collapse: collapse;
 	font-family: Verdana, sans-serif;
 	font-size: 8pt;
@@ -1574,8 +1734,17 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
  * load-bearing — every threshold marker's own height is already folded into .cf-speedspectrum's
  * own inline `height` (containerHeight, buildSpeedSpectrumHTML), so nothing here is relying on
  * the margin for clearance. 8px matches the standard section-to-section gap used elsewhere (was
- * #cf-teamthreats-section's own margin-top before the row restructuring). */
+ * #cf-teamthreats-section's own margin-top before the row restructuring).
+ *
+ * `flex: 0 0 auto` (#cf-pika-panel's own team-overview-only flex-column context, above) pins
+ * this to its own natural height regardless of how much — or little — vertical space
+ * #cf-teamoverview-row below ends up wanting: without it, a flex item's default flex-shrink: 1
+ * would let the diagram get squeezed shorter than the height its own inline `height`
+ * (containerHeight, buildSpeedSpectrumHTML) actually lays its threshold markers/roster icons out
+ * for, clipping or overlapping them instead of leaving the diagram itself untouched and letting
+ * the row below do all the growing. */
 #cf-speedspectrum-wrap {
+	flex: 0 0 auto;
 	margin: 0 4px 8px 4px;
 	max-width: var(--cf-sidebar-content-max-width);
 }

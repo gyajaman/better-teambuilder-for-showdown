@@ -9,10 +9,10 @@
  */
 const {
 	escapeHTML, toIDSafe, formatPikaPercent, curSetHasMove, curSetMovesFull, baseSpeciesID,
-	curTeamHasSpecies, curTeamFull, isBlankSlot, isTeamOverview, parseEVs, natureModifierHTML, speedNatureIndicator,
+	curTeamHasSpecies, curTeamFull, isBlankSlot, isTeamOverview, wantsPopularColumn, parseEVs, formatEVSpread, natureModifierHTML, speedNatureIndicator,
 	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
-	teamDamagingMoveTypes, typeEffectivenessMultiplier, bestTeamCoverageMultiplier, coverageTierClass,
+	teamCoverageMoves, typeEffectivenessMultiplier, bestTeamCoverageReasons, coverageTierClass,
 	topSpeedItemBadge, aggregateTopTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
 	pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
 	buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
@@ -22,11 +22,12 @@ const {
 	ALL_TYPES, DEFENSIVE_ABILITY_IMMUNITIES, applyDefensiveAbility, resolveMemberAbility,
 	computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
 	buildMemberThreatRows, isDamagingMove, movePower, effectiveMoveType, stabAdjustedPower, computeThreatMoveReasons, computeThreatSpeedReason,
+	computeThreatPriorityMoves,
 	threatHasMoveOfCategory,
 	computeThreatReasons,
 	computeThreatOffense, computeMemberDefense,
 	buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
-	buildTeamThreatReasonCellHTML, buildTeamThreatTooltipHTML,
+	buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
 	buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
 	buildSpeciesPreviewTooltipHTML, patchDexSearch,
 } = require('../src/content.js');
@@ -43,7 +44,7 @@ function mockDex() {
 	};
 }
 
-/** Minimal window.Dex.moves/types/items stand-in for teamDamagingMoveTypes/
+/** Minimal window.Dex.moves/types/items stand-in for teamCoverageMoves/
  *  typeEffectivenessMultiplier/topSpeedItemBadge below — a tiny hand-picked slice of the real
  *  move/type/item tables (not the full Dex) is enough to exercise the multiplier math and
  *  badge selection without pulling in the real data files. */
@@ -72,6 +73,7 @@ function mockBattleDex() {
 	window.Dex = {
 		getPokemonIcon: (species) => `background:url(${species})`,
 		getItemIcon: (item) => `background:url(${item})`,
+		getTypeIcon: (type) => `<img class="type-icon" alt="${type}">`,
 		moves: { get: (name) => moves[toIDSafe(name)] || { exists: false } },
 		types: { get: (name) => types[String(name).toLowerCase()] || { exists: false } },
 		items: { get: (name) => items[String(name).toLowerCase()] || { exists: false } },
@@ -221,6 +223,21 @@ describe('parseEVs', () => {
 	it('treats a missing/non-numeric slot as 0 rather than throwing', () => {
 		expect(parseEVs('4///28//')).toEqual({ hp: 4, atk: 0, def: 0, spa: 28, spd: 0, spe: 0 });
 		expect(parseEVs('')).toEqual({ hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 });
+	});
+});
+
+describe('formatEVSpread', () => {
+	it('is the exact inverse of parseEVs — same HP/Atk/Def/SpA/SpD/Spe order', () => {
+		expect(formatEVSpread(parseEVs('4/0/0/28/0/0'))).toBe('4/0/0/28/0/0');
+	});
+
+	it('defaults a missing/undefined per-stat EV to 0 rather than "undefined"', () => {
+		expect(formatEVSpread({ spe: 236 })).toBe('0/0/0/0/0/236');
+	});
+
+	it('renders all-zero for a set with no evs object at all', () => {
+		expect(formatEVSpread(undefined)).toBe('0/0/0/0/0/0');
+		expect(formatEVSpread(null)).toBe('0/0/0/0/0/0');
 	});
 });
 
@@ -802,8 +819,43 @@ describe('computeSpeedSpectrumEntries', () => {
 		const set = { species: 'Blastoise', item: 'Blastoisinite', name: '' };
 		const getStat = vi.fn((stat, s) => (s.species === 'Blastoise-Mega' ? 78 : -1));
 		const tbRoom = { curSetList: [set], getStat };
-		expect(computeSpeedSpectrumEntries(tbRoom)).toEqual([{ species: 'Blastoise-Mega', name: 'Blastoise-Mega', speed: 78, hasScarf: false, hasIronBall: false }]);
+		expect(computeSpeedSpectrumEntries(tbRoom)).toEqual([{
+			species: 'Blastoise-Mega', name: 'Blastoise-Mega', speed: 78,
+			evSpread: '0/0/0/0/0/0', nature: '', hasScarf: false, hasIronBall: false,
+			item: 'Blastoisinite', ability: '', moves: [],
+		}]);
 		delete window.Dex;
+	});
+
+	it('carries the real full EV spread and nature for the hover tooltip, defaulting to all-0/none when unset', () => {
+		const withEvs = { species: 'Incineroar', evs: { hp: 4, spe: 236, atk: 4 }, nature: 'Jolly' };
+		const withoutEvs = { species: 'Ducklett' };
+		const tbRoom = { curSetList: [withEvs, withoutEvs], getStat: () => 100 };
+		const [entryWithEvs, entryWithoutEvs] = computeSpeedSpectrumEntries(tbRoom);
+		expect(entryWithEvs.evSpread).toBe('4/4/0/0/0/236');
+		expect(entryWithEvs.nature).toBe('Jolly');
+		expect(entryWithoutEvs.evSpread).toBe('0/0/0/0/0/0');
+		expect(entryWithoutEvs.nature).toBe('');
+	});
+
+	it('carries the real item/ability/moves for the hover tooltip, filtering out blank move slots', () => {
+		const set = {
+			species: 'Incineroar', item: 'Sitrus Berry', ability: 'Intimidate',
+			moves: ['Fake Out', 'Flare Blitz', '', ''],
+		};
+		const tbRoom = { curSetList: [set], getStat: () => 100 };
+		const entry = computeSpeedSpectrumEntries(tbRoom)[0];
+		expect(entry.item).toBe('Sitrus Berry');
+		expect(entry.ability).toBe('Intimidate');
+		expect(entry.moves).toEqual(['Fake Out', 'Flare Blitz']);
+	});
+
+	it('defaults item/ability to empty string and moves to an empty array when unset', () => {
+		const tbRoom = { curSetList: [{ species: 'Ducklett' }], getStat: () => 100 };
+		const entry = computeSpeedSpectrumEntries(tbRoom)[0];
+		expect(entry.item).toBe('');
+		expect(entry.ability).toBe('');
+		expect(entry.moves).toEqual([]);
 	});
 
 	it('applies a real held Choice Scarf to the plotted speed — this is what makes the dot actually move when one is equipped', () => {
@@ -966,15 +1018,19 @@ describe('buildSpeedSpectrumHTML', () => {
 		expect(html).toContain('top:0px');
 	});
 
-	it('shows the real species/nickname and exact Speed number in the hover title', () => {
+	it('does not render a hover title on a roster icon', () => {
 		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: 'Big Cat', speed: 87 }], fakeDomain(50, 150));
-		expect(html).toContain('title="Big Cat: 87 Speed"');
+		expect(html).not.toContain('title=');
 	});
 
-	it('escapes a nickname used in the hover title', () => {
-		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: '<script>', speed: 87 }], fakeDomain(50, 150));
-		expect(html).not.toContain('title="<script>: 87 Speed"');
-		expect(html).toContain('&lt;script&gt;');
+	it('does not render a hover title on a floor/ceiling threshold marker', () => {
+		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: 'Incineroar', speed: 87 }], fakeDomain(50, 150));
+		expect(html).not.toContain('title=');
+	});
+
+	it('marks a roster icon with data-cf-species, for the custom hover tooltip to look it up by', () => {
+		const html = buildSpeedSpectrumHTML([{ species: 'Incineroar', name: 'Big Cat', speed: 87 }], fakeDomain(50, 150));
+		expect(html).toContain('data-cf-species="Incineroar"');
 	});
 
 	it('opens a second lane (top:46px) for a Pokémon too close in Speed to overlap otherwise', () => {
@@ -1465,10 +1521,29 @@ describe('isTeamOverview', () => {
 	});
 });
 
-describe('teamDamagingMoveTypes', () => {
+describe('wantsPopularColumn', () => {
+	it('is true for a blank slot', () => {
+		expect(wantsPopularColumn({ curTeam: { name: 'Untitled 1' }, curSet: { species: '', name: '' } })).toBe(true);
+	});
+
+	it('is true on the team-overview screen', () => {
+		expect(wantsPopularColumn({ curTeam: { name: 'Untitled 1' }, curSet: null })).toBe(true);
+	});
+
+	it('is false once a slot has a real species — the plain "Speed" comparison view instead', () => {
+		expect(wantsPopularColumn({ curTeam: { name: 'Untitled 1' }, curSet: { species: 'Incineroar' } })).toBe(false);
+	});
+
+	it('is false on the outer "all your teams" list screen', () => {
+		expect(wantsPopularColumn({ curTeam: null, curSet: null })).toBe(false);
+		expect(wantsPopularColumn(null)).toBe(false);
+	});
+});
+
+describe('teamCoverageMoves', () => {
 	afterEach(() => { delete window.Dex; });
 
-	it('collects only damaging moves\' types, skipping Status moves and blank/missing sets', () => {
+	it('collects only damaging moves as {species, move, type} triples, skipping Status moves and blank/missing sets', () => {
 		mockBattleDex();
 		const tbRoom = {
 			curSetList: [
@@ -1477,11 +1552,15 @@ describe('teamDamagingMoveTypes', () => {
 				{ species: 'Garchomp', moves: ['Earthquake'] },
 			],
 		};
-		expect(teamDamagingMoveTypes(tbRoom)).toEqual(['Fire', 'Normal', 'Ground']);
+		expect(teamCoverageMoves(tbRoom)).toEqual([
+			{ species: 'Incineroar', move: 'Flare Blitz', type: 'Fire' },
+			{ species: 'Incineroar', move: 'Fake Out', type: 'Normal' },
+			{ species: 'Garchomp', move: 'Earthquake', type: 'Ground' },
+		]);
 	});
 
 	it('returns an empty list without window.Dex', () => {
-		expect(teamDamagingMoveTypes({ curSetList: [{ species: 'Incineroar', moves: ['Flare Blitz'] }] })).toEqual([]);
+		expect(teamCoverageMoves({ curSetList: [{ species: 'Incineroar', moves: ['Flare Blitz'] }] })).toEqual([]);
 	});
 });
 
@@ -1506,18 +1585,37 @@ describe('typeEffectivenessMultiplier', () => {
 	});
 });
 
-describe('bestTeamCoverageMultiplier', () => {
+describe('bestTeamCoverageReasons', () => {
 	afterEach(() => { delete window.Dex; });
 
-	it('returns the best (highest) multiplier across every move type, not an average', () => {
+	it('returns the best (highest) multiplier across every move, not an average', () => {
 		mockBattleDex();
 		// Fire (0.5x vs water) and a hypothetical Electric (2x vs water) -> best is 2.
-		expect(bestTeamCoverageMultiplier(['Fire', 'Electric'], ['water'])).toBe(2);
+		const moves = [
+			{ species: 'Incineroar', move: 'Flare Blitz', type: 'Fire' },
+			{ species: 'Zapdos', move: 'Thunderbolt', type: 'Electric' },
+		];
+		expect(bestTeamCoverageReasons(moves, ['water']).mult).toBe(2);
 	});
 
-	it('returns null (not 0, not "neutral") with no moves or no defender types to compute from', () => {
-		expect(bestTeamCoverageMultiplier([], ['water'])).toBe(null);
-		expect(bestTeamCoverageMultiplier(['Fire'], [])).toBe(null);
+	it('names every move that reached the shared best multiplier, ties included', () => {
+		mockBattleDex();
+		const moves = [
+			{ species: 'Zapdos', move: 'Thunderbolt', type: 'Electric' }, // 2x vs water
+			{ species: 'Incineroar', move: 'Flare Blitz', type: 'Fire' }, // 0.5x vs water
+			{ species: 'Kingambit', move: 'Thunder Fang', type: 'Electric' }, // also 2x vs water — a real tie
+		];
+		const { mult, reasons } = bestTeamCoverageReasons(moves, ['water']);
+		expect(mult).toBe(2);
+		expect(reasons).toEqual([
+			{ species: 'Zapdos', move: 'Thunderbolt', type: 'Electric' },
+			{ species: 'Kingambit', move: 'Thunder Fang', type: 'Electric' },
+		]);
+	});
+
+	it('returns null (not {mult: null, ...}) with no moves or no defender types to compute from', () => {
+		expect(bestTeamCoverageReasons([], ['water'])).toBe(null);
+		expect(bestTeamCoverageReasons([{ species: 'Incineroar', move: 'Flare Blitz', type: 'Fire' }], [])).toBe(null);
 	});
 });
 
@@ -1693,9 +1791,14 @@ function mockThreatsDex() {
 		// Real base powers, real shape — the actual reported case computeThreatMoveReasons'
 		// own doc comment names: Basculegion commonly runs both, Aqua Jet's real usage can
 		// outrank Wave Crash's, but Wave Crash (120 base power, recoil) is obviously the more
-		// threatening of the two next to Aqua Jet's mere 40.
-		'aqua jet': { exists: true, type: 'Water', category: 'Physical', basePower: 40 },
+		// threatening of the two next to Aqua Jet's mere 40. Aqua Jet's real priority (+1) is
+		// also what computeThreatPriorityMoves' own tests exercise below — Wave Crash's real
+		// priority (0) deliberately left unset, same as an ordinary move.
+		'aqua jet': { exists: true, type: 'Water', category: 'Physical', basePower: 40, priority: 1 },
 		'wave crash': { exists: true, type: 'Water', category: 'Physical', basePower: 120 },
+		// Real priority (+3/+1) — for a case distinct from Aqua Jet's own type/stage.
+		'fake out': { exists: true, type: 'Normal', category: 'Physical', basePower: 40, priority: 3 },
+		'quick attack': { exists: true, type: 'Normal', category: 'Physical', basePower: 40, priority: 1 },
 		// Real moves, real shape (type/category/flags) — for effectiveMoveType's own ability/
 		// weather tests below.
 		'hyper voice': { exists: true, type: 'Normal', category: 'Special', flags: { sound: 1 }, basePower: 90 },
@@ -2136,6 +2239,112 @@ describe('computeThreatSpeedReason', () => {
 	});
 });
 
+describe('computeThreatPriorityMoves', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('credits a real, commonly-used priority move that gets STAB', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat)).toEqual([
+			{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 },
+		]);
+	});
+
+	it('excludes a priority move that does not get STAB — no defender check at all, just not a real STAB attack', () => {
+		mockThreatsDex();
+		// Aqua Jet is Water, but this attacker isn't Water-type -> no STAB -> doesn't qualify,
+		// regardless of what the defender is (not even passed in, unlike every other reason here).
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Normal'] };
+		expect(computeThreatPriorityMoves(threat)).toEqual([]);
+	});
+
+	it('checks STAB against the move\'s real effective type via threat.ability, same as every other reason', () => {
+		mockThreatsDex();
+		// Pixilate turns Quick Attack (a real +1 priority move, bare Normal) into Fairy — not
+		// naturally STAB for a Fairy-typed attacker's bare-Normal move, but real STAB once the
+		// ability is actually applied, same as every other reason in this file resolves it.
+		const threat = { moves: [{ move: 'Quick Attack', percent: '90', type: 'Normal' }], ability: 'Pixilate', types: ['Fairy'] };
+		expect(computeThreatPriorityMoves(threat)).toEqual([
+			{ move: 'Quick Attack', type: 'Fairy', percent: 90, priority: 1 },
+		]);
+	});
+
+	it('returns [] without window.Dex — priority and category aren\'t in Pikalytics\' own move data', () => {
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat)).toEqual([]);
+	});
+
+	it('returns [] for a real 0-priority move even with real STAB', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Wave Crash', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat)).toEqual([]);
+	});
+
+	it('never credits a Status move even if it happened to have priority — connects for zero damage', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Detect', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat)).toEqual([]);
+	});
+
+	it('returns [] when the only priority+STAB move is below the commonly-used usage threshold', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '10', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat)).toEqual([]);
+	});
+
+	it('sorts by real usage percent, most common first', () => {
+		mockThreatsDex();
+		const threat = {
+			moves: [
+				{ move: 'Quick Attack', percent: '40', type: 'Normal' },
+				{ move: 'Fake Out', percent: '90', type: 'Normal' },
+			],
+			types: ['Normal'],
+		};
+		expect(computeThreatPriorityMoves(threat).map((m) => m.move)).toEqual(['Fake Out', 'Quick Attack']);
+	});
+
+	it('caps at TEAM_THREATS_MAX_MOVE_REASONS, same cap computeThreatMoveReasons uses', () => {
+		mockThreatsDex();
+		const threat = {
+			moves: [
+				{ move: 'Fake Out', percent: '90', type: 'Normal' },
+				{ move: 'Quick Attack', percent: '80', type: 'Normal' },
+				{ move: 'Aqua Jet', percent: '70', type: 'Water' },
+			],
+			types: ['Normal', 'Water'],
+		};
+		const moves = computeThreatPriorityMoves(threat);
+		expect(moves).toHaveLength(2);
+		expect(moves.map((m) => m.move)).toEqual(['Fake Out', 'Quick Attack']);
+	});
+
+	it('drops a STAB priority move already named by a passed-in reason, so a move that is both STAB and super effective is not shown twice', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		const reasons = [{ kind: 'move', move: 'Aqua Jet', type: 'Water', percent: 90 }];
+		expect(computeThreatPriorityMoves(threat, reasons)).toEqual([]);
+	});
+
+	it('still credits a different STAB priority move even when reasons names an unrelated move', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		const reasons = [{ kind: 'move', move: 'Ice Beam', type: 'Ice', percent: 80 }];
+		expect(computeThreatPriorityMoves(threat, reasons)).toEqual([
+			{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 },
+		]);
+	});
+
+	it('ignores stat-kind reasons for dedup purposes — they have no `.move` to collide with', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		const reasons = [{ kind: 'stat', text: 'High Attack vs Low Defense' }];
+		expect(computeThreatPriorityMoves(threat, reasons)).toEqual([
+			{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 },
+		]);
+	});
+});
+
 describe('computeThreatReasons', () => {
 	afterEach(() => { delete window.Dex; });
 
@@ -2493,6 +2702,25 @@ describe('buildTeamThreatReasonCellHTML', () => {
 	});
 });
 
+describe('buildThreatPriorityRowHTML', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('renders a "+N" stage badge, the real type icon, move name, and usage percent', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const html = buildThreatPriorityRowHTML({ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 });
+		expect(html).toContain('+1');
+		expect(html).toContain('<img alt="Water">');
+		expect(html).toContain('Aqua Jet');
+		expect(html).toContain('90.0%');
+	});
+
+	it('shows a higher priority stage correctly (Fake Out, +3)', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const html = buildThreatPriorityRowHTML({ move: 'Fake Out', type: 'Normal', percent: 40, priority: 3 });
+		expect(html).toContain('+3');
+	});
+});
+
 describe('buildTeamThreatTooltipHTML', () => {
 	afterEach(() => { delete window.Dex; });
 
@@ -2517,6 +2745,64 @@ describe('buildTeamThreatTooltipHTML', () => {
 		const html = buildTeamThreatTooltipHTML({ pokemon: 'Garchomp', rank: 5, reasons: [] });
 		expect(html).toContain('Garchomp');
 		expect(html).toContain('No specific reason found.');
+	});
+
+	it('renders priority moves as rows after the move/speed reasons, in the same table (not interleaved, not a separate table)', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const counter = {
+			pokemon: 'Basculegion',
+			rank: 1,
+			reasons: [{ kind: 'move', move: 'Wave Crash', type: 'Water', percent: 80 }],
+			priorityMoves: [{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 }],
+		};
+		const html = buildTeamThreatTooltipHTML(counter);
+		// Exactly one table — the priority row lands in the same <table> as the reason row,
+		// after it, rather than in a second table or under its own section label.
+		expect(html.match(/<table/g)).toHaveLength(1);
+		expect(html).not.toContain('Priority');
+		const waveCrashIdx = html.indexOf('Wave Crash');
+		const aquaJetIdx = html.indexOf('Aqua Jet');
+		expect(waveCrashIdx).toBeGreaterThan(-1);
+		expect(aquaJetIdx).toBeGreaterThan(waveCrashIdx);
+	});
+
+	it('orders priority rows before stat reasons, even though stat reasons are listed first in `reasons`', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const counter = {
+			pokemon: 'Basculegion',
+			rank: 1,
+			reasons: [{ kind: 'stat', text: 'High Attack vs Low Defense' }],
+			priorityMoves: [{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 }],
+		};
+		const html = buildTeamThreatTooltipHTML(counter);
+		const aquaJetIdx = html.indexOf('Aqua Jet');
+		const statIdx = html.indexOf('High Attack vs Low Defense');
+		expect(aquaJetIdx).toBeGreaterThan(-1);
+		expect(aquaJetIdx).toBeLessThan(statIdx);
+	});
+
+	it('omits priority rows entirely when there are no qualifying priority moves', () => {
+		const counter = { pokemon: 'Garchomp', rank: 1, reasons: [], priorityMoves: [] };
+		const html = buildTeamThreatTooltipHTML(counter);
+		expect(html).toContain('No specific reason found.');
+	});
+
+	it('omits priority rows when priorityMoves is missing entirely (older/plain counter shape)', () => {
+		const html = buildTeamThreatTooltipHTML({ pokemon: 'Garchomp', rank: 1, reasons: [] });
+		expect(html).toContain('No specific reason found.');
+	});
+
+	it('shows priority rows instead of "No specific reason found." when there are no reasons but there are priority moves', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const counter = {
+			pokemon: 'Basculegion',
+			rank: 1,
+			reasons: [],
+			priorityMoves: [{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 }],
+		};
+		const html = buildTeamThreatTooltipHTML(counter);
+		expect(html).not.toContain('No specific reason found.');
+		expect(html).toContain('Aqua Jet');
 	});
 });
 
@@ -2730,15 +3016,15 @@ describe('buildSpeciesPreviewTooltipHTML', () => {
 		};
 		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
 		expect(html).toContain('Incineroar');
-		expect(html).toContain('Fake Out (99.9%)');
-		expect(html).toContain('Intimidate (99.8%)');
-		expect(html).toContain('Sitrus Berry (59.8%)');
+		expect(html).toContain('<span class="cf-pika-name">Fake Out</span><span class="cf-pika-pct">99.9%</span>');
+		expect(html).toContain('<span class="cf-pika-name">Intimidate</span><span class="cf-pika-pct">99.8%</span>');
+		expect(html).toContain('<span class="cf-pika-name">Sitrus Berry</span><span class="cf-pika-pct">59.8%</span>');
 		expect(html).toContain('Spe 60');
 		expect(html).not.toContain('48.1');
 		expect(html).not.toContain('Sinistcha');
 	});
 
-	it('shows Nature and Spread as two separate lines, each with its own percent, not merged into one', () => {
+	it('shows Nature and Spread as two separate rows, each with its own right-aligned percent, not merged into one', () => {
 		// VGC's own top nature (40.1%) and top EV spread (6.2%) are two independently-ranked
 		// facts, not necessarily the same real build — see this function's own doc comment.
 		const mon = {
@@ -2746,15 +3032,15 @@ describe('buildSpeciesPreviewTooltipHTML', () => {
 			spreads: [{ ev: '32/0/14/0/20/0', percent: '6.2', nature: '' }],
 		};
 		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
-		expect(html).toContain('<strong>Nature</strong><br>Careful (40.1%)');
-		expect(html).toContain('<strong>Spread</strong><br>32/0/14/0/20/0 (6.2%)');
+		expect(html).toContain('<strong>Nature</strong><div class="cf-tooltip-row"><span class="cf-pika-name">Careful</span><span class="cf-pika-pct">40.1%</span></div>');
+		expect(html).toContain('<strong>Spread</strong><div class="cf-tooltip-row"><span class="cf-pika-name">32/0/14/0/20/0</span><span class="cf-pika-pct">6.2%</span></div>');
 		expect(html).not.toContain('Careful 32/0/14/0/20/0');
 	});
 
 	it('falls back to the spread\'s own nature field, with no percent, when there\'s no standalone natures list', () => {
 		const mon = { spreads: [{ ev: '32/0/14/0/20/0', percent: '6.2', nature: 'Careful' }] };
 		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
-		expect(html).toContain('<strong>Nature</strong><br>Careful</p>');
+		expect(html).toContain('<strong>Nature</strong><div class="cf-tooltip-row"><span class="cf-pika-name">Careful</span></div>');
 	});
 
 	it('falls back to "No data" per section rather than omitting it', () => {
@@ -2791,5 +3077,136 @@ describe('buildSpeciesPreviewTooltipHTML', () => {
 		};
 		const html = buildSpeciesPreviewTooltipHTML(mon, 'Blastoise');
 		expect(html).not.toContain('Blastoise-Mega');
+	});
+
+	it('shows a plain "no claim" placeholder in the Team coverage cell with no coverage argument — the cell itself always occupies its grid slot', () => {
+		mockBattleDex();
+		const html = buildSpeciesPreviewTooltipHTML({}, 'Incineroar');
+		expect(html).toContain('<strong>Team coverage</strong><br>—');
+	});
+
+	it('shows the same "no claim" placeholder when coverage is null (nothing to compute yet)', () => {
+		mockBattleDex();
+		const html = buildSpeciesPreviewTooltipHTML({}, 'Incineroar', null);
+		expect(html).toContain('<strong>Team coverage</strong><br>—');
+	});
+
+	it('shows the same "no claim" placeholder when genuinely neutral (1x) — same meaning as no border color', () => {
+		mockBattleDex();
+		const html = buildSpeciesPreviewTooltipHTML({}, 'Incineroar', { mult: 1, reasons: [] });
+		expect(html).toContain('<strong>Team coverage</strong><br>—');
+	});
+
+	it('names every real move that reached the shared best multiplier as its own icon row (contributor sprite + move type icon + move name), ties included', () => {
+		mockBattleDex();
+		const coverage = {
+			mult: 2,
+			reasons: [
+				{ species: 'Rillaboom', move: 'Grass Knot', type: 'Grass' },
+				{ species: 'Incineroar', move: 'Flare Blitz', type: 'Fire' },
+			],
+		};
+		const html = buildSpeciesPreviewTooltipHTML({}, 'Basculegion', coverage);
+		expect(html).toContain('<strong>Team coverage (2×)</strong>');
+		expect(html).toContain(
+			'<div class="cf-tooltip-row"><span class="picon" style="background:url(Rillaboom)"></span>' +
+			'<div class="cf-tooltip-movelines"><div class="cf-tooltip-moveline">' +
+			'<img class="type-icon" alt="Grass"><span>Grass Knot</span></div></div></div>'
+		);
+		expect(html).toContain(
+			'<div class="cf-tooltip-row"><span class="picon" style="background:url(Incineroar)"></span>' +
+			'<div class="cf-tooltip-movelines"><div class="cf-tooltip-moveline">' +
+			'<img class="type-icon" alt="Fire"><span>Flare Blitz</span></div></div></div>'
+		);
+	});
+
+	it('shows one species\' sprite once, not once per move, when it contributes more than one tied-for-best move', () => {
+		mockBattleDex();
+		const coverage = {
+			mult: 2,
+			reasons: [
+				{ species: 'Incineroar', move: 'Flare Blitz', type: 'Fire' },
+				{ species: 'Incineroar', move: 'Darkest Lariat', type: 'Dark' },
+			],
+		};
+		const html = buildSpeciesPreviewTooltipHTML({}, 'Basculegion', coverage);
+		expect((html.match(/background:url\(Incineroar\)/g) || []).length).toBe(1);
+		expect(html).toContain(
+			'<div class="cf-tooltip-row"><span class="picon" style="background:url(Incineroar)"></span>' +
+			'<div class="cf-tooltip-movelines">' +
+			'<div class="cf-tooltip-moveline"><img class="type-icon" alt="Fire"><span>Flare Blitz</span></div>' +
+			'<div class="cf-tooltip-moveline"><img class="type-icon" alt="Dark"><span>Darkest Lariat</span></div>' +
+			'</div></div>'
+		);
+	});
+
+	it('writes fractional multipliers as fraction glyphs (¼×/½×), matching the Defensive Profile matrix\'s own convention', () => {
+		const half = { mult: 0.5, reasons: [{ species: 'Incineroar', move: 'Flare Blitz', type: 'Fire' }] };
+		const quarter = { mult: 0.25, reasons: [{ species: 'Incineroar', move: 'Flare Blitz', type: 'Fire' }] };
+		expect(buildSpeciesPreviewTooltipHTML({}, 'X', half)).toContain('Team coverage (½×)');
+		expect(buildSpeciesPreviewTooltipHTML({}, 'X', quarter)).toContain('Team coverage (¼×)');
+	});
+
+	it('shows an explicit immune line rather than naming absent contributors', () => {
+		const html = buildSpeciesPreviewTooltipHTML({}, 'Incineroar', { mult: 0, reasons: [] });
+		expect(html).toContain('<strong>Team coverage</strong><br>Nothing on your team hits this for damage.');
+	});
+
+	it('reserves the same icon-column width on a move/item with no real icon, so its name still lines up with rows that do have one', () => {
+		// Pikalytics' "Other" bucket has no real move type, so no type icon — same
+		// iconOrSpacer fallback buildMovesSection/buildItemsSection already use, so a
+		// row without an icon doesn't start its name earlier than a row that has one.
+		const mon = { moves: [{ move: 'Other', percent: '3.1' }], items: [{ item: 'Other', percent: '2.0' }] };
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
+		expect(html).toContain('<div class="cf-tooltip-row"><span class="cf-pika-icon-spacer"></span><span class="cf-pika-name">Other</span>');
+	});
+
+	it('shows a real type icon on each move, right-aligns its percent with no brackets, matching buildMovesSection\'s own rows', () => {
+		mockBattleDex();
+		const mon = { moves: [{ move: 'Flare Blitz', percent: '92.6', type: 'Fire' }] };
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
+		expect(html).toContain(
+			'<div class="cf-tooltip-row"><img class="type-icon" alt="Fire">' +
+			'<span class="cf-pika-name">Flare Blitz</span><span class="cf-pika-pct">92.6%</span></div>'
+		);
+		expect(html).not.toContain('(92.6%)');
+	});
+
+	it('shows a real item icon on each item, right-aligns its percent with no brackets, matching buildItemsSection\'s own rows', () => {
+		mockBattleDex();
+		const mon = { items: [{ item: 'Sitrus Berry', percent: '59.8' }] };
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
+		expect(html).toContain(
+			'<div class="cf-tooltip-row"><span class="itemicon" style="background:url(Sitrus Berry)"></span>' +
+			'<span class="cf-pika-name">Sitrus Berry</span><span class="cf-pika-pct">59.8%</span></div>'
+		);
+		expect(html).not.toContain('(59.8%)');
+	});
+
+	it('shows each ability on its own row, right-aligned, no brackets — not one comma-joined line', () => {
+		const mon = { abilities: [{ ability: 'Intimidate', percent: '99.8' }, { ability: 'Blaze', percent: '0.2' }] };
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
+		expect(html).toContain('<div class="cf-tooltip-row"><span class="cf-pika-name">Intimidate</span><span class="cf-pika-pct">99.8%</span></div>');
+		expect(html).toContain('<div class="cf-tooltip-row"><span class="cf-pika-name">Blaze</span><span class="cf-pika-pct">0.2%</span></div>');
+		expect(html).not.toContain('Intimidate (99.8%)');
+		expect(html).not.toContain('Intimidate, Blaze');
+	});
+
+	it('does not show a species sprite anywhere — the name in the h2 is the only identity marker', () => {
+		mockBattleDex();
+		const mon = { items: [{ item: 'Choice Scarf', percent: '44.7' }] };
+		const html = buildSpeciesPreviewTooltipHTML(mon, 'Incineroar');
+		expect(html).not.toContain('cf-speedcmp-sprite');
+	});
+
+	it('lays out Moves/Ability/Item/Team coverage/Nature/Spread as six cells in one 2-column grid', () => {
+		const html = buildSpeciesPreviewTooltipHTML({}, 'Incineroar');
+		const gridStart = html.indexOf('<div class="cf-addpokemon-preview-grid">');
+		expect(gridStart).toBeGreaterThan(-1);
+		const grid = html.slice(gridStart);
+		expect((grid.match(/cf-tooltip-gridcell/g) || []).length).toBe(6);
+		['Moves', 'Ability', 'Item', 'Team coverage', 'Nature', 'Spread'].forEach((label) => {
+			expect(grid).toContain(`<strong>${label}</strong>`);
+		});
 	});
 });

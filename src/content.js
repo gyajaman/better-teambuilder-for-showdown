@@ -179,22 +179,41 @@
 		return !!(tbRoom && tbRoom.curTeam && !tbRoom.curSet);
 	}
 
+	/** True for either state that wants the Speed-tier column repurposed as "Popular" (top-20-
+	 *  by-usage, coverage-colored, click-to-add) instead of showing the plain "Speed" comparison
+	 *  view: a currently-open blank slot (isBlankSlot) or the team-overview screen (isTeamOverview)
+	 *  itself. The two share every bit of *content* here — same fetch, same coverage coloring, same
+	 *  hover preview (buildAddPokemonPreviewTooltipHTML) — so buildSpeedTierColumnHTML/
+	 *  renderSpeedTierColumn key off this one shared predicate rather than duplicating that logic;
+	 *  they still re-check isTeamOverview specifically wherever the two *do* differ — what a click
+	 *  actually does (applySpeciesToBlankSlot fills the one still-open slot; applyTeammate on the
+	 *  overview screen adds a brand new one, so it's the only one of the two curTeamFull can ever
+	 *  meaningfully disable — a blank slot only exists because the roster isn't full yet). */
+	function wantsPopularColumn(tbRoom) {
+		return isBlankSlot(tbRoom) || isTeamOverview(tbRoom);
+	}
+
 	/** Every damaging move currently on every already-added team member (Status moves carry a
-	 *  `type` too but deal no damage, so they'd falsely inflate coverage) — the raw input to
-	 *  bestTeamCoverageMultiplier below. Reads straight from Dex.moves, not Pikalytics: this is
+	 *  `type` too but deal no damage, so they'd falsely inflate coverage), kept as
+	 *  {species, move, type} triples rather than a flat type list — bestTeamCoverageReasons below
+	 *  needs to know WHICH set's move reached the best multiplier, not just that some move of
+	 *  that type exists on the team somewhere, so the coverage hover tooltip can actually name it
+	 *  rather than just coloring a border. Reads straight from Dex.moves, not Pikalytics: this is
 	 *  about the *real* moves already on your own sets, not a usage statistic. */
-	function teamDamagingMoveTypes(tbRoom) {
-		const types = [];
-		if (!window.Dex) return types;
+	function teamCoverageMoves(tbRoom) {
+		const moves = [];
+		if (!window.Dex) return moves;
 		(tbRoom.curSetList || []).forEach((set) => {
 			if (!set || !set.species || !set.moves) return;
 			set.moves.forEach((moveName) => {
 				if (!moveName) return;
 				const move = window.Dex.moves.get(moveName);
-				if (move && move.exists && move.type && move.category !== 'Status') types.push(move.type);
+				if (move && move.exists && move.type && move.category !== 'Status') {
+					moves.push({ species: set.species, move: moveName, type: move.type });
+				}
 			});
 		});
-		return types;
+		return moves;
 	}
 
 	/** Standard type-chart multiplier for one attacking type against a (possibly dual-type)
@@ -224,23 +243,33 @@
 	/** The best (highest) multiplier any already-added team member's real moves can land on a
 	 *  given defender — not an average or a "how many moves work," just whether the team has
 	 *  *a* way to hit hard, since a single strong option is what actually matters when picking a
-	 *  6th teammate to round out coverage. Returns null (no color, not "neutral") when there's
-	 *  nothing to compute from yet — an empty team, or every added member still moveless. */
-	function bestTeamCoverageMultiplier(moveTypes, defenderTypes) {
-		if (!moveTypes || !moveTypes.length || !defenderTypes || !defenderTypes.length) return null;
+	 *  6th teammate to round out coverage — PLUS every move that actually reaches that best
+	 *  multiplier, ties included: two real, independent options both covering the same Pokémon
+	 *  is itself worth knowing, not something to silently collapse to whichever happened to be
+	 *  found first. `.mult` is coverageTierClass's own input (so the border color and the hover
+	 *  tooltip naming these reasons can never disagree about what they're both describing) and
+	 *  `.reasons` is that tied set, each a {species, move, type} triple straight from
+	 *  teamCoverageMoves. Returns null (not {mult: null, reasons: []}) when there's nothing to
+	 *  compute from yet — an empty team, or every added member still moveless — same "no color,
+	 *  no claim" contract the old bestTeamCoverageMultiplier had. */
+	function bestTeamCoverageReasons(moves, defenderTypes) {
+		if (!moves || !moves.length || !defenderTypes || !defenderTypes.length) return null;
 		let best = 0;
-		moveTypes.forEach((t) => {
-			const mult = typeEffectivenessMultiplier(t, defenderTypes);
+		const byMult = new Map();
+		moves.forEach((m) => {
+			const mult = typeEffectivenessMultiplier(m.type, defenderTypes);
 			if (mult > best) best = mult;
+			if (!byMult.has(mult)) byMult.set(mult, []);
+			byMult.get(mult).push(m);
 		});
-		return best;
+		return { mult: best, reasons: byMult.get(best) || [] };
 	}
 
 	/** Discrete type-chart products only ever land on {0, .25, .5, 1, 2, 4} (each of a dual-type
 	 *  defender's two per-type multipliers is one of {0, .5, 1, 2}), so plain threshold buckets
 	 *  are exact here, not an approximation. Empty string (no extra class, i.e. the box's default
 	 *  neutral styling) for both "genuinely neutral" (1x) and "nothing to compute" (null) — see
-	 *  bestTeamCoverageMultiplier's own doc comment for why the latter isn't its own color.
+	 *  bestTeamCoverageReasons' own doc comment for why the latter isn't its own color.
 	 *
 	 *  .25 (a real, if less common, result — two resisted types stacking on a dual-type defender)
 	 *  gets its own `cf-coverage-quadresist` tier, distinct from true 0x immunity — they used to
@@ -655,6 +684,57 @@
 		}
 		if (!best) return null;
 		return { kind: 'speed', move: best.move, type: best.type, percent: best.percent, viaScarf };
+	}
+
+	/** Real, commonly-used (>=TEAM_THREATS_MOVE_USAGE_MIN_PERCENT), STAB-boosted positive-priority
+	 *  moves on a threat — its own list, kept deliberately separate from computeThreatReasons'
+	 *  array rather than one more entry interleaved among the speed/move/stat reasons there (see
+	 *  buildTeamThreatTooltipHTML's own doc comment for why "Priority" renders as its own
+	 *  section instead).
+	 *
+	 *  A priority move is only worth flagging at all for one of two real reasons: it's STAB (this
+	 *  function's own job) or it's independently super effective against the defender — but that
+	 *  second case is already caught by computeThreatMoveReasons' own >=2x bar regardless of
+	 *  whether the move happens to have priority, so re-checking it here would just duplicate an
+	 *  already-shown reason under a second heading. This function deliberately checks the STAB
+	 *  half only. Unlike computeThreatSpeedReason/computeThreatMoveReasons above, there's no
+	 *  defender-side check at all (no typeEffectivenessMultiplier, no applyDefensiveAbility, no
+	 *  "does this actually connect") — a priority move mattering here is purely a fact about the
+	 *  attacker's own real, commonly-run kit (a real STAB attack that moves first regardless of
+	 *  Speed), not a claim about how hard it specifically hits *this* team member the way the
+	 *  reasons above have to prove.
+	 *
+	 *  `reasons` is this same counter's own computeThreatReasons() output (or `[]`/omitted) — a
+	 *  move that's STAB *and* already named by a speed/move reason there (both carry `.move`) is
+	 *  dropped from this list rather than counted twice: the "supereffective ones already appear
+	 *  elsewhere" rule above only holds if a move that actually did show up there is excluded
+	 *  here, not just moves that theoretically could have.
+	 *
+	 *  window.Dex is required for both a move's own real priority value and its real category
+	 *  (Pikalytics' own move data carries neither) — returns `[]`, not a false positive, without
+	 *  it, same "unverifiable claim is worse than a skipped one" reasoning isDamagingMove/
+	 *  threatHasMoveOfCategory already use. Sorted by real usage percent (most common first,
+	 *  nothing to rank by power for — STAB is binary, not a magnitude) and capped at
+	 *  TEAM_THREATS_MAX_MOVE_REASONS, the same cap computeThreatMoveReasons uses, for the same
+	 *  "don't let an unusual movepool flood the section" reason. */
+	function computeThreatPriorityMoves(threat, reasons) {
+		if (!window.Dex) return [];
+		const shownMoves = new Set((reasons || []).filter((r) => r.move).map((r) => r.move));
+		const candidates = [];
+		for (const m of (threat.moves || [])) {
+			if (!m || !m.move || !m.type) continue;
+			if (shownMoves.has(m.move)) continue;
+			const percent = parseFloat(m.percent) || 0;
+			if (percent < TEAM_THREATS_MOVE_USAGE_MIN_PERCENT) continue;
+			if (!isDamagingMove(m.move)) continue;
+			const moveData = window.Dex.moves.get(m.move);
+			if (!moveData || !moveData.exists || !(moveData.priority > 0)) continue;
+			const type = effectiveMoveType(m.move, m.type, threat.ability);
+			if (!threat.types || !threat.types.includes(type)) continue; // STAB only
+			candidates.push({ move: m.move, type, percent, priority: moveData.priority });
+		}
+		candidates.sort((a, b) => b.percent - a.percent);
+		return candidates.slice(0, TEAM_THREATS_MAX_MOVE_REASONS);
 	}
 
 	/** Whether `moves` includes at least one real, commonly-used (TEAM_THREATS_MOVE_USAGE_MIN_
@@ -1082,6 +1162,17 @@
 		return evs;
 	}
 
+	/** The inverse of parseEVs above — a real set's own `evs` object (hp/atk/def/spa/spd/spe,
+	 *  any of which can be missing/undefined on a set that hasn't touched that stat) back into
+	 *  the same "32/0/0/0/32/0" slash-separated, STAT_IDS-order shorthand Pikalytics' own
+	 *  `spreads[].ev` field already arrives in — buildSpreadsSection/buildSpeciesPreviewTooltipHTML
+	 *  just display that one directly with no formatting step, so this produces the equivalent
+	 *  for a real set's own EVs instead of a usage stat. Missing/undefined per-stat EVs default
+	 *  to 0, same as a real set that hasn't invested in that stat at all. */
+	function formatEVSpread(evs) {
+		return STAT_IDS.map((id) => (evs && evs[id]) || 0).join('/');
+	}
+
 	/** The classic community "(+Atk/-SpA)" annotation, via Showdown's own
 	 *  window.BattleNatures — the same nature/stat-modifier table the client's own stat UI
 	 *  reads (see battle-dex-data.ts), not a hand-maintained copy of it. Empty string for a
@@ -1187,10 +1278,10 @@
 	if (typeof module !== 'undefined' && module.exports) {
 		module.exports = {
 			escapeHTML, toIDSafe, formatPikaPercent, curSetHasMove, curSetMovesFull, baseSpeciesID,
-			curTeamHasSpecies, curTeamFull, isBlankSlot, isTeamOverview, parseEVs, natureModifierHTML, speedNatureIndicator,
+			curTeamHasSpecies, curTeamFull, isBlankSlot, isTeamOverview, wantsPopularColumn, parseEVs, formatEVSpread, natureModifierHTML, speedNatureIndicator,
 			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
-			teamDamagingMoveTypes, typeEffectivenessMultiplier, bestTeamCoverageMultiplier, coverageTierClass,
+			teamCoverageMoves, typeEffectivenessMultiplier, bestTeamCoverageReasons, coverageTierClass,
 			topSpeedItemBadge, aggregateTopTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
 			STAT_LABEL_BY_ID, STAT_IDS, STAT_LABELS,
 			CATEGORY_ORDER, DYNAMIC_CATEGORIES,
@@ -1203,12 +1294,12 @@
 			SUPER_EFFECTIVE_REDUCER_ABILITIES, applyDefensiveAbility, resolveMemberAbility,
 			computeTeamDefensiveProfile, defensiveTierClass, defensiveCellText, buildTeamDefensiveProfileHTML,
 			buildMemberThreatRows, isDamagingMove, movePower, stabAdjustedPower, effectiveMoveType,
-			computeThreatMoveReasons, computeThreatSpeedReason,
+			computeThreatMoveReasons, computeThreatSpeedReason, computeThreatPriorityMoves,
 			threatHasMoveOfCategory,
 			computeThreatReasons,
 			computeThreatOffense, computeMemberDefense,
 			buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
-			buildTeamThreatReasonCellHTML, buildTeamThreatTooltipHTML,
+			buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
 			buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
 			buildSpeciesPreviewTooltipHTML, patchDexSearch,
 		};
@@ -1320,11 +1411,39 @@
 	 *  format this extension supports (pikalytics.js's FORMAT_SLUG_MAP allowlist) is already a
 	 *  Champions VGC format — level 50 always, not conditionally. Without this, a teammate added
 	 *  through the sidebar had no `level` key at all (defaulting to 100 elsewhere), producing an
-	 *  invalid set for every format this extension actually runs in. */
+	 *  invalid set for every format this extension actually runs in.
+	 *
+	 *  On the team-overview screen (isTeamOverview: the Popular column there, own doc comment)
+	 *  `tbRoom.update()` — a real, full re-render — is called INSTEAD OF updateSetTop(), not
+	 *  alongside it. Both confirmed live, the hard way: updateSetTop() alone left the screen
+	 *  genuinely stuck (the new member landed in curSetList and persisted correctly, but nothing
+	 *  on screen — not Showdown's own native roster list, not this file's own Speed Spread/
+	 *  Defensive Profile/Biggest Threats/Popular column — reflected it until something unrelated
+	 *  forced a real update() to run), since updateSetTop()'s own native job is refreshing
+	 *  whichever slot is currently open and there isn't one on this screen to refresh into. But
+	 *  calling *both*, in either order, reliably threw inside Showdown's own native
+	 *  updateSetTop() -> renderSet() ("Cannot read properties of null (reading 'species')") on
+	 *  every add after the first, aborting the rest of this function (including save()) —
+	 *  confirmed live as the "adds fine, then stops refreshing" symptom actually reported: not a
+	 *  cosmetic staleness, a real uncaught exception. updateSetTop() apparently doesn't tolerate
+	 *  being called this way more than once with no real curSet behind it, so it's skipped
+	 *  entirely here rather than "fixed" by guessing at whatever internal state it wants —
+	 *  update() alone was confirmed live (several adds in a row, no errors) to cover everything
+	 *  updateSetTop() would have. On a real open slot (Common Teammates, the per-species screen)
+	 *  updateSetTop() keeps doing its own real job exactly as before — this function still avoids
+	 *  update()'s own heavier-handed re-render there, same as it always has. `tbRoom.update()` is
+	 *  already wrapped (wrapWithSplitUpdate, patchTeambuilderSidebar) to trigger this file's own
+	 *  updateSplitState() too, exactly the same way updateSetTop() already is, so this file's own
+	 *  panels end up correctly in sync as a side effect of the real fix rather than needing their
+	 *  own separate nudge. */
 	function applyTeammate(tbRoom, speciesName) {
 		if (curTeamFull(tbRoom) || curTeamHasSpecies(tbRoom, speciesName)) return;
 		tbRoom.curSetList.push({ name: '', species: speciesName, item: '', nature: '', evs: {}, ivs: {}, level: 50, moves: [] });
-		tbRoom.updateSetTop();
+		if (isTeamOverview(tbRoom)) {
+			tbRoom.update();
+		} else {
+			tbRoom.updateSetTop();
+		}
 		tbRoom.save();
 	}
 
@@ -1369,14 +1488,24 @@
 
 	/** Handles both real click-to-apply rows (data-cf-pika-action, the switch below) and the
 	 *  Defensive Profile toggle (data-cf-defmatrix-member-idx) — checked first and returned from
-	 *  early, deliberately ahead of the `!tbRoom.curSet` guard the pika-action branch needs:
-	 *  that guard requires a real slot being edited, which is never true on the team-overview
-	 *  screen the matrix only ever renders on, so folding the toggle into the switch below
-	 *  (behind that same guard) would make it permanently unreachable. One shared listener
-	 *  rather than two separate document.addEventListener('click', …) registrations for the same
-	 *  event type — CF.toggleDefMatrixMember itself lives in patchTeambuilderSidebar's own
-	 *  closure (defMatrixBaseFormeSlots' own doc comment), reached here the same cross-scope-
-	 *  handoff way CF.getSimilarTeamMatch/CF.getTeamThreat already are elsewhere in this file. */
+	 *  early, deliberately ahead of the `!tbRoom.curSet` guard the *rest* of the pika-action
+	 *  branch needs: that guard requires a real slot being edited, which is never true on the
+	 *  team-overview screen the matrix only ever renders on, so folding the toggle into the
+	 *  switch below (behind that same guard) would make it permanently unreachable. One shared
+	 *  listener rather than two separate document.addEventListener('click', …) registrations for
+	 *  the same event type — CF.toggleDefMatrixMember itself lives in patchTeambuilderSidebar's
+	 *  own closure (defMatrixBaseFormeSlots' own doc comment), reached here the same cross-scope-
+	 *  handoff way CF.getSimilarTeamMatch/CF.getTeamThreat already are elsewhere in this file.
+	 *
+	 *  'teammate' (applyTeammate) is checked before the `!tbRoom.curSet` guard too, for the exact
+	 *  same reason the Defensive Profile toggle is: it's also reachable from the team-overview
+	 *  screen now (the Popular column there, buildSpeedTierColumnHTML's own doc comment), which
+	 *  never has a curSet — and applyTeammate itself never reads curSet anyway (it appends a new
+	 *  slot rather than editing the one open, same as it's always worked from Common Teammates).
+	 *  Every other action genuinely does need a real open slot to apply onto, so that guard stays
+	 *  in front of the switch for the rest of them. (Keeping this screen's own panels in sync
+	 *  after a 'teammate' add is applyTeammate's own job now — its own doc comment covers why —
+	 *  not something this click handler needs to do anything extra for.) */
 	function onPikaSidebarClick(ev) {
 		const defMatrixCell = ev.target.closest('[data-cf-defmatrix-member-idx]');
 		if (defMatrixCell) {
@@ -1387,15 +1516,20 @@
 		const el = ev.target.closest('[data-cf-pika-action]');
 		if (!el) return;
 		const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
-		if (!tbRoom || !tbRoom.curSet) return;
+		if (!tbRoom) return;
 		const value = el.dataset.cfPikaValue;
-		switch (el.dataset.cfPikaAction) {
+		const action = el.dataset.cfPikaAction;
+		if (action === 'teammate') {
+			applyTeammate(tbRoom, value);
+			return;
+		}
+		if (!tbRoom.curSet) return;
+		switch (action) {
 			case 'move': applyMove(tbRoom, value); break;
 			case 'ability': applySetField(tbRoom, 'ability', value); break;
 			case 'item': applySetField(tbRoom, 'item', value); break;
 			case 'nature': applySetField(tbRoom, 'nature', value); break;
 			case 'spread': applySpread(tbRoom, el.dataset.cfPikaNature || '', el.dataset.cfPikaEv); break;
-			case 'teammate': applyTeammate(tbRoom, value); break;
 			case 'addspecies': applySpeciesToBlankSlot(tbRoom, value); break;
 		}
 	}
@@ -2159,6 +2293,19 @@
 			return;
 		}
 
+		// Speed Spread diagram (team-overview screen) roster icon — a threshold marker (the
+		// format's own floor/ceiling, not a real team member) never carries data-cf-species
+		// (see speedSpectrumThresholdHTML), so this simply finds nothing and no tooltip shows
+		// for those, same as everywhere else here that a lookup comes up empty.
+		const spectrumIcon = ev.target.closest ? ev.target.closest('.cf-speedspectrum-icon') : null;
+		if (spectrumIcon) {
+			if (CF.buildSpeedSpectrumTooltipHTML) {
+				const html = CF.buildSpeedSpectrumTooltipHTML(spectrumIcon);
+				if (html) Tooltip.show(spectrumIcon, html);
+			}
+			return;
+		}
+
 		const similarTeamRow = ev.target.closest ? ev.target.closest('.cf-similarteam-row') : null;
 		// buildSimilarTeamTooltipHTML is a plain top-level function (unlike
 		// buildAddPokemonPreviewTooltipHTML/buildSpeedComparisonTooltipHTML above, it doesn't
@@ -2210,6 +2357,16 @@
 		const similarTeamRow = ev.target.closest ? ev.target.closest('.cf-similarteam-row') : null;
 		if (similarTeamRow) {
 			if (ev.relatedTarget && similarTeamRow.contains(ev.relatedTarget)) return;
+			Tooltip.hide();
+			return;
+		}
+
+		// Speed Spread diagram roster icon (see onMouseOver's matching branch) — missing here is
+		// exactly why this tooltip never went away on mouseout, confirmed live: every other
+		// custom hover tooltip in this file has a matching onMouseOut branch, this one didn't.
+		const spectrumIcon = ev.target.closest ? ev.target.closest('.cf-speedspectrum-icon') : null;
+		if (spectrumIcon) {
+			if (ev.relatedTarget && spectrumIcon.contains(ev.relatedTarget)) return;
 			Tooltip.hide();
 			return;
 		}
@@ -2665,8 +2822,18 @@
 	 *  icon itself — mutually exclusive in practice (a real set can only hold one item), but
 	 *  tracked as two independent booleans rather than one "which item" field, matching the
 	 *  same shape buildSpeedComparisonTooltipHTML's own allyHasScarf/allyHasIronBall use.
-	 *  `name` falls back to the resolved species (Mega forme included) for the hover title when
-	 *  the set has no nickname. */
+	 *  `name` falls back to the resolved species (Mega forme included) when the set has no
+	 *  nickname — this is what a tooltip *would* say if it needed a plain-text label, but
+	 *  buildSpeedSpectrumTooltipHTML doesn't: the sprite it renders already carries that
+	 *  identity, same as buildSimilarTeamTooltipHTML's own per-Pokémon columns. `evSpread`
+	 *  (formatEVSpread, "32/0/0/0/32/0") and `nature` are the raw, un-formatted building blocks
+	 *  of the real EV investment behind `speed` — kept as plain data here, consistent with
+	 *  `speed`/`hasScarf`/`hasIronBall` right below it. `item`/`ability`/`moves` are the set's
+	 *  own real, already-chosen values (not a Pikalytics usage stat the way the "Popular" row's
+	 *  preview tooltip shows — this is a real roster member, so its hover tooltip can just state
+	 *  what's actually equipped), read straight off `set` with no extra resolution — `moves`
+	 *  filtered to drop empty slots, same as buildTeammatesSection's own species filter just
+	 *  above skips blank entries rather than rendering them. */
 	function computeSpeedSpectrumEntries(tbRoom) {
 		return (tbRoom.curSetList || []).filter((s) => s && s.species).map((set) => {
 			const { species, isMega } = resolveSpeedSpectrumSpecies(set);
@@ -2677,8 +2844,13 @@
 				species,
 				name: set.name || species,
 				speed: applySpeedModifiers(rawSpeed, set.item, {}),
+				evSpread: formatEVSpread(set.evs),
+				nature: set.nature || '',
 				hasScarf: itemId === 'choicescarf',
 				hasIronBall: itemId === 'ironball',
+				item: set.item || '',
+				ability: set.ability || '',
+				moves: (set.moves || []).filter((m) => m),
 			};
 		});
 	}
@@ -2761,7 +2933,7 @@
 	 *  in left to right, rather than reflowing narrower and re-centering itself on every add (and
 	 *  the header row losing its own fixed column positions relative to the roster's own actual
 	 *  slot order in the process). An empty slot's own row of multipliers is `null` throughout —
-	 *  "nothing to compute," the same convention bestTeamCoverageMultiplier's own doc comment
+	 *  "nothing to compute," the same convention bestTeamCoverageReasons' own doc comment
 	 *  already establishes elsewhere in this file, not folded into the "genuinely neutral" 1x
 	 *  case even though defensiveTierClass/defensiveCellText render both the same (blank) way;
 	 *  the header cell's own empty-slot placeholder (buildTeamDefensiveProfileHTML) is what
@@ -2845,7 +3017,7 @@
 	 *  `null`/`undefined` (computeTeamDefensiveProfile's own still-open-slot placeholder) returns
 	 *  the same empty string as a genuinely neutral 1x — "nothing to compute" and "computed and
 	 *  it's neutral" both render as a plain uncolored cell, same convention
-	 *  bestTeamCoverageMultiplier's own doc comment already establishes elsewhere in this file. A
+	 *  bestTeamCoverageReasons' own doc comment already establishes elsewhere in this file. A
 	 *  bare `mult >= 4`-style comparison would otherwise coerce null to 0 and wrongly fall through
 	 *  to the immune branch at the bottom — a still-empty slot reading as "immune to everything"
 	 *  is a real, misleading bug this guards against explicitly, not a hypothetical one. */
@@ -2966,7 +3138,7 @@
 			else if (e.hasIronBall) badge = `<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon('Iron Ball'))}"></span>`;
 		}
 		return `<div class="cf-speedspectrum-icon" style="left:${e.pos.toFixed(1)}%;top:${e.top}px" ` +
-			`title="${escapeHTML(e.name)}: ${e.speed} Speed">` +
+			`data-cf-species="${escapeHTML(e.species)}">` +
 			`<span class="cf-speedcmp-sprite"><span class="picon" style="${escapeHTML(icon)}"></span>${badge}</span>` +
 			`<span class="cf-speedspectrum-value">${e.speed}</span>` +
 			`</div>`;
@@ -2998,8 +3170,7 @@
 		const icon = window.Dex ? window.Dex.getPokemonIcon(species) : '';
 		const badge = (!isMega && window.Dex) ?
 			`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(badgeItemName))}"></span>` : '';
-		return `<div class="cf-speedspectrum-icon cf-speedspectrum-threshold" style="left:${posPercent}%;top:${top}px" ` +
-			`title="Format ${posPercent === 0 ? 'floor' : 'ceiling'}: ${escapeHTML(species)}, ${value} Speed">` +
+		return `<div class="cf-speedspectrum-icon cf-speedspectrum-threshold" style="left:${posPercent}%;top:${top}px">` +
 			`<span class="cf-speedspectrum-value">${value}</span>` +
 			`<span class="cf-speedcmp-sprite"><span class="picon" style="${escapeHTML(icon)}"></span>${badge}</span>` +
 			`</div>`;
@@ -3192,14 +3363,49 @@
 		return `<td class="cf-teamthreats-reason cf-teamthreats-reason-stat">${escapeHTML(reason.text)}</td>`;
 	}
 
+	/** One row for a real, STAB-boosted priority move — computeThreatPriorityMoves' own rows in
+	 *  buildTeamThreatTooltipHTML below. Reuses the exact same icon/name/percent cell shape a
+	 *  `move`/`speed` reason gets (buildTeamThreatReasonCellHTML), just with a "+N" stage badge in
+	 *  the label slot "Outspeeds" would otherwise occupy — the priority value is the one new fact
+	 *  this row exists to state, so it takes that same up-front position. Kept as its own small
+	 *  render function rather than folded into buildTeamThreatReasonCellHTML's own kind-branching:
+	 *  the two lists are deliberately separate data (see computeThreatPriorityMoves' own doc
+	 *  comment), not variants of the same one, so their renderers stay separate too — but the rows
+	 *  they produce still land in the same table (see buildTeamThreatTooltipHTML below). */
+	function buildThreatPriorityRowHTML(move) {
+		const typeIcon = window.Dex ? window.Dex.getTypeIcon(move.type) : '';
+		return `<tr><td class="cf-teamthreats-reason">` +
+			`<span class="cf-teamthreats-reason-label">+${move.priority}</span>` +
+			`<span class="cf-teamthreats-move-type">${typeIcon}</span>` +
+			`<span class="cf-teamthreats-move-name">${escapeHTML(move.move)}</span>` +
+			`<span class="cf-pika-pct">${formatPikaPercent(move.percent)}%</span>` +
+			`</td></tr>`;
+	}
+
 	/** Biggest Threats hover tooltip content, for a single (team member, counter) pair — a table,
 	 *  one row per computeThreatReasons() entry (buildTeamThreatReasonCellHTML), which reads as a
 	 *  real table row far more naturally than as prose (a move reason needs its own type-icon/
 	 *  name/percent cells). Scoped to exactly one counter now — the row it's hovered from already
 	 *  shows which member this is about, so there's no need to repeat a member sprite or juggle
-	 *  several members' reasons in one tooltip the way an earlier, aggregated design had to. */
+	 *  several members' reasons in one tooltip the way an earlier, aggregated design had to.
+	 *
+	 *  `counter.priorityMoves` (computeThreatPriorityMoves) renders as its own rows
+	 *  (buildThreatPriorityRowHTML), in the *same* table as the reason rows rather than a
+	 *  visually separate block — but ordered in among them by the same "most-concrete-first"
+	 *  rule computeThreatReasons' own doc comment lays out for speed/move/stat: priority sits
+	 *  after the speed/move reasons (never mixed into those — a priority row and an "Outspeeds"
+	 *  row never share a row) but *before* the stat reasons, since a real move that hits first is
+	 *  still a more concrete fact than a raw stat-mismatch fallback. The "No specific reason
+	 *  found." placeholder only shows when there's truly nothing to say about this counter at
+	 *  all — no reasons *and* no priority moves. */
 	function buildTeamThreatTooltipHTML(counter) {
-		const rows = counter.reasons.length ? counter.reasons.map((r) => `<tr>${buildTeamThreatReasonCellHTML(r)}</tr>`).join('') :
+		const priorityMoves = counter.priorityMoves || [];
+		const leadReasons = counter.reasons.filter((r) => r.kind !== 'stat');
+		const statReasons = counter.reasons.filter((r) => r.kind === 'stat');
+		const rowsHTML = leadReasons.map((r) => `<tr>${buildTeamThreatReasonCellHTML(r)}</tr>`).join('') +
+			priorityMoves.map(buildThreatPriorityRowHTML).join('') +
+			statReasons.map((r) => `<tr>${buildTeamThreatReasonCellHTML(r)}</tr>`).join('');
+		const rows = rowsHTML ||
 			'<tr><td class="cf-teamthreats-reason cf-teamthreats-reason-none">No specific reason found.</td></tr>';
 		return `<div class="cf-tooltip cf-teamthreats-tooltip"><h2>${escapeHTML(counter.pokemon)}</h2>` +
 			`<table class="cf-teamthreats-table"><tbody>${rows}</tbody></table></div>`;
@@ -3332,22 +3538,73 @@
 	 *  tooltip and that row's Speed number stay consistent about which forme is the one worth
 	 *  showing). Read from Dex.species directly, not Pikalytics — the per-species payload here is
 	 *  queried under the base species name (see pikalytics.js's own resolveQuerySpecies), so it
-	 *  never carries the Mega forme's own base stats itself. */
-	function buildSpeciesPreviewTooltipHTML(mon, speciesName) {
-		const moveText = (mon.moves || []).slice(0, 4)
-			.map((m) => `${escapeHTML(m.move)} (${formatPikaPercent(m.percent)}%)`).join(', ') || 'No data';
-		const abilityText = (mon.abilities || []).slice(0, 2)
-			.map((a) => `${escapeHTML(a.ability)} (${formatPikaPercent(a.percent)}%)`).join(', ') || 'No data';
-		const itemText = (mon.items || []).slice(0, 2)
-			.map((it) => `${escapeHTML(it.item)} (${formatPikaPercent(it.percent)}%)`).join(', ') || 'No data';
+	 *  never carries the Mega forme's own base stats itself.
+	 *
+	 *  `coverage` (optional — every existing caller/test omits it, and the cell below simply
+	 *  shows "—" without it) is buildSpeedTierColumnHTML's own bestTeamCoverageReasons result
+	 *  for this row's species, the same one coverageTierClass turns into this row's border color
+	 *  — this is what actually explains that color instead of leaving it a mystery. Three cases:
+	 *  null (nothing to compute yet — empty team, or nobody's added a move) or mult === 1
+	 *  (genuinely neutral) both render the same "—" placeholder, matching the border's own "no
+	 *  color" for those two cases; mult === 0 (immune) gets one explicit line rather than naming
+	 *  absent contributors; anything else names every real move that reached the shared best
+	 *  multiplier (ties included — two independent ways to already hit hard is worth knowing,
+	 *  not something to silently collapse to a single pick), grouped by contributing species
+	 *  first so a species with two tied moves gets its sprite shown once, not once per move.
+	 *
+	 *  Moves/Ability/Item/Team-coverage each render as a stack of one-per-entry .cf-tooltip-row
+	 *  rows (name flexed left via .cf-pika-name, percent pinned right via .cf-pika-pct — the
+	 *  exact same two classes buildMovesSection's own rows use — rather than a bracketed
+	 *  "(99.9%)" squeezed onto the name, and rather than every entry crammed onto one
+	 *  comma-joined line, both of which earlier versions of this did). Moves/Items also reuse
+	 *  buildMovesSection/buildItemsSection's own iconOrSpacer for the same reason those two
+	 *  already need it: a row with no real icon (Pikalytics' "Other" bucket, or a lookup that
+	 *  came back empty) still has to reserve the same icon-column width as a row that does have
+	 *  one, or its name starts further left than every other row's — the actual bug an earlier
+	 *  version of this had, reported live as the type icons looking "a bit offset" from the move
+	 *  names. Nature/Spread get the
+	 *  same treatment despite being a single value, not a list, for the same reason: consistent
+	 *  with every other percent in this tooltip rather than the odd one out. All six sit in a
+	 *  2-column .cf-addpokemon-preview-grid (Moves|Ability, Item|Team coverage, Nature|Spread)
+	 *  mirroring the real per-species sidebar's own Moves/Abilities, Items/Teammates,
+	 *  Natures/Spreads layout (buildPikalyticsSidebarHTML) — Team coverage standing in for
+	 *  Teammates, which this tooltip deliberately excludes (see above) — rather than stacking
+	 *  every section as its own full-width row, which read as a flat list instead of the
+	 *  compact, organized layout used everywhere else in this extension. No species sprite in
+	 *  the header either, for the same reason buildSimilarTeamTooltipHTML's own columns have
+	 *  none: nothing here needs a second visual identity marker on top of the name already in
+	 *  the h2. */
+	function buildSpeciesPreviewTooltipHTML(mon, speciesName, coverage) {
+		// Every name+percent row below reuses .cf-pika-name/.cf-pika-pct as-is — the exact same
+		// two classes buildMovesSection's own rows use (pikaRowDivHTML) to flex the name out to
+		// the left and pin a muted, smaller percent to the right — rather than a bracketed
+		// "(99.9%)" squeezed onto the end of the name text, which is what every one of these
+		// used to do.
+		const pctRow = (iconHTML, name, pctText) =>
+			`<div class="cf-tooltip-row">${iconHTML}<span class="cf-pika-name">${name}</span>` +
+			(pctText ? `<span class="cf-pika-pct">${pctText}</span>` : '') + `</div>`;
+
+		const moveRows = (mon.moves || []).slice(0, 4).map((m) => {
+			const typeIcon = (m.type && window.Dex) ? window.Dex.getTypeIcon(m.type) : '';
+			return pctRow(iconOrSpacer(typeIcon), escapeHTML(m.move), `${formatPikaPercent(m.percent)}%`);
+		}).join('');
+		// Own row per ability now (was one comma-joined line) — same reasoning as Moves/Items
+		// already got: a list of things reads better as a list, not prose.
+		const abilityRows = (mon.abilities || []).slice(0, 2)
+			.map((a) => pctRow('', escapeHTML(a.ability), `${formatPikaPercent(a.percent)}%`)).join('');
+		const itemRows = (mon.items || []).slice(0, 2).map((it) => {
+			const itemIconStyle = (it.item && window.Dex) ? window.Dex.getItemIcon(it.item) : '';
+			const itemIcon = itemIconStyle ? `<span class="itemicon" style="${escapeHTML(itemIconStyle)}"></span>` : '';
+			return pctRow(iconOrSpacer(itemIcon), escapeHTML(it.item), `${formatPikaPercent(it.percent)}%`);
+		}).join('');
 		const topSpread = (mon.spreads || [])[0];
 		const topNature = (mon.natures || [])[0];
 		// Falls back to the spread's own `nature` field only when there's no standalone
 		// `natures` list at all (a format-shape gap, not the VGC norm) — with no percent
 		// attached in that case, since there'd be nothing real to attach it to.
-		const natureText = topNature ? `${escapeHTML(topNature.nature)} (${formatPikaPercent(topNature.percent)}%)` :
-			((topSpread && topSpread.nature) ? escapeHTML(topSpread.nature) : 'No data');
-		const spreadText = topSpread ? `${escapeHTML(topSpread.ev)} (${formatPikaPercent(topSpread.percent)}%)` : 'No data';
+		const natureRowHTML = topNature ? pctRow('', escapeHTML(topNature.nature), `${formatPikaPercent(topNature.percent)}%`) :
+			((topSpread && topSpread.nature) ? pctRow('', escapeHTML(topSpread.nature), '') : '');
+		const spreadRowHTML = topSpread ? pctRow('', escapeHTML(topSpread.ev), `${formatPikaPercent(topSpread.percent)}%`) : '';
 		const statsText = mon.stats ?
 			STAT_IDS.map((id) => `${STAT_LABEL_BY_ID[id]} ${mon.stats[id]}`).join(' &nbsp; ') : '';
 
@@ -3362,15 +3619,71 @@
 			}
 		}
 
+		// Team coverage always occupies its own grid cell (below) even when there's nothing to
+		// say — a 2-column grid can't just drop one cell without knocking Nature/Spread out of
+		// alignment with Moves/Ability/Item above them — so "nothing to compute yet" (null) and
+		// "genuinely neutral" (mult === 1) both render a plain "—" here, the same "no claim"
+		// meaning the border's own lack of color already carries for those two cases.
+		let coverageLabel = 'Team coverage';
+		let coverageBodyHTML = '<br>—';
+		if (coverage && coverage.mult === 0) {
+			coverageBodyHTML = '<br>Nothing on your team hits this for damage.';
+		} else if (coverage && coverage.mult !== 1) {
+			// Same fraction-glyph formatting the Defensive Profile matrix's own cells use
+			// (defensiveCellText) — reused directly rather than re-deriving it, so a ¼×/½× here can
+			// never drift out of sync with how that matrix writes the identical multiplier.
+			coverageLabel = `Team coverage (${defensiveCellText(coverage.mult)})`;
+			// Grouped by species first — a species with two tied-for-best moves (real, e.g. a
+			// dual-STAB attacker hitting the same defender super effectively with both) would
+			// otherwise repeat its own sprite once per move instead of once per contributing
+			// team member, which is what the icon is actually identifying.
+			const bySpecies = [];
+			const rowForSpecies = new Map();
+			coverage.reasons.forEach((r) => {
+				if (!rowForSpecies.has(r.species)) {
+					rowForSpecies.set(r.species, { species: r.species, moves: [] });
+					bySpecies.push(rowForSpecies.get(r.species));
+				}
+				rowForSpecies.get(r.species).moves.push(r);
+			});
+			coverageBodyHTML = bySpecies.map((entry) => {
+				const memberIconStyle = window.Dex ? window.Dex.getPokemonIcon(entry.species) : '';
+				const memberIcon = memberIconStyle ? `<span class="picon" style="${escapeHTML(memberIconStyle)}"></span>` : '';
+				// Each move gets its own small flex row (icon + name, .cf-tooltip-moveline —
+				// align-items: center, exactly the mechanism .cf-tooltip-row itself already uses
+				// to keep an icon and its text vertically centered against each other) stacked
+				// inside .cf-tooltip-movelines, rather than joining "icon name" text with <br>
+				// inside one shared plain <span>: that plain-text version had no flex context of
+				// its own to align the icon against, so the <img>'s own default vertical-align
+				// (a text-relative value, not "centered against this specific line's own text")
+				// put it visibly out of line with the move name next to it — first one way
+				// (baseline: icon low), then the other after a vertical-align: middle patch
+				// (icon's own inline-flex box tall enough to grow the line, pushing the name up)
+				// — a real flex row sidesteps guessing at either by centering the two directly
+				// against each other, the same way it already works for every other icon+text
+				// pairing in this file.
+				const moveLines = entry.moves.map((r) => {
+					const typeIcon = (r.type && window.Dex) ? window.Dex.getTypeIcon(r.type) : '';
+					return `<div class="cf-tooltip-moveline">${iconOrSpacer(typeIcon)}<span>${escapeHTML(r.move)}</span></div>`;
+				}).join('');
+				return `<div class="cf-tooltip-row">${memberIcon}<div class="cf-tooltip-movelines">${moveLines}</div></div>`;
+			}).join('');
+		}
+
+		const gridCell = (label, bodyHTML) => `<div class="cf-tooltip-gridcell"><strong>${label}</strong>${bodyHTML}</div>`;
+
 		return `<div class="cf-tooltip cf-addpokemon-preview-tooltip">` +
 			`<h2>${escapeHTML(speciesName)}</h2>` +
 			(statsText ? `<p class="tooltip-section">${statsText}</p>` : '') +
 			(megaStatsText ? `<p class="tooltip-section"><strong>${escapeHTML(megaFormeName)}</strong><br>${megaStatsText}</p>` : '') +
-			`<p class="tooltip-section"><strong>Moves</strong><br>${moveText}</p>` +
-			`<p class="tooltip-section"><strong>Ability</strong><br>${abilityText}</p>` +
-			`<p class="tooltip-section"><strong>Item</strong><br>${itemText}</p>` +
-			`<p class="tooltip-section"><strong>Nature</strong><br>${natureText}</p>` +
-			`<p class="tooltip-section"><strong>Spread</strong><br>${spreadText}</p>` +
+			`<div class="cf-addpokemon-preview-grid">` +
+				gridCell('Moves', moveRows || '<br>No data') +
+				gridCell('Ability', abilityRows || '<br>No data') +
+				gridCell('Item', itemRows || '<br>No data') +
+				gridCell(coverageLabel, coverageBodyHTML) +
+				gridCell('Nature', natureRowHTML || '<br>No data') +
+				gridCell('Spread', spreadRowHTML || '<br>No data') +
+			`</div>` +
 			`</div>`;
 	}
 
@@ -3475,11 +3788,15 @@
 		 *  disposable wrapper. Same header/row classes end up meaning the same fonts, colors,
 		 *  padding, and border as every other section — nothing bespoke to keep in sync.
 		 *
-		 *  On a blank slot (isBlankSlot — "Add Pokémon", before a species is picked yet) this
-		 *  column repurposes itself as "Popular": the header changes, every box gets a
+		 *  On a blank slot (isBlankSlot — "Add Pokémon", before a species is picked yet) OR the
+		 *  team-overview screen (isTeamOverview — wantsPopularColumn covers both) this column
+		 *  repurposes itself as "Popular": the header changes, every box gets a
 		 *  type-coverage-colored border (does *any* already-added team member's real damaging
-		 *  moves hit this one hard? — bestTeamCoverageMultiplier/coverageTierClass, purely a
-		 *  fact about your own moves' types, not a judgment call), a corner badge for whichever of
+		 *  moves hit this one hard? — bestTeamCoverageReasons/coverageTierClass, purely a
+		 *  fact about your own moves' types, not a judgment call — the same border color's own
+		 *  hover tooltip, buildAddPokemonPreviewTooltipHTML/buildSpeciesPreviewTooltipHTML below,
+		 *  names exactly which team member+move earned it, so the color is never just an
+		 *  unexplained hint), a corner badge for whichever of
 		 *  Choice Scarf or a Mega Stone is actually the more commonly run item (topSpeedItemBadge
 		 *  — real usage percent decides which one wins, not "Scarf always wins if present"), and
 		 *  its expected Speed stat (top spread + top nature, the same computation
@@ -3488,29 +3805,38 @@
 		 *  is the *Mega forme's* own base Speed rather than the base forme's — usually
 		 *  meaningfully different, and that's the number actually relevant to a Speed
 		 *  comparison once you know it's commonly Mega'd — with the base forme's own Speed kept
-		 *  alongside it, dimmed in parentheses, rather than dropped. Every row becomes
-		 *  a click-to-fill target for that same still-open slot (applySpeciesToBlankSlot via the
-		 *  'addspecies' action). There's no real ally Pokémon yet to usefully compare Speed
-		 *  against one-on-one (buildSpeedComparisonTooltipHTML already no-ops without one), but
-		 *  the *expected* Speed stat and "most popular in this format" are both still exactly
-		 *  what they say regardless. Species already on the team get the equipped look
-		 *  (cf-pika-row-equipped, no data-cf-pika-action) rather than cf-pika-row-disabled —
-		 *  deliberately NOT the same treatment buildTeammatesSection gives an equipped teammate
-		 *  (equipped AND disabled together there): cf-pika-row-disabled's `pointer-events: none`
-		 *  would block hover here too, and unlike a plain teammate suggestion this row's hover
-		 *  preview (buildAddPokemonPreviewTooltipHTML) is exactly as useful for a species
-		 *  already on the team as for any other — there's no reason to lose it just because
-		 *  clicking wouldn't do anything. Team-full is never a reason to disable here either
-		 *  way, since clicking fills the slot already open rather than adding a new one. */
+		 *  alongside it, dimmed in parentheses, rather than dropped.
+		 *
+		 *  Clicking a row does two different real things depending on *which* of the two states
+		 *  this is — a blank slot fills that one still-open slot (applySpeciesToBlankSlot, the
+		 *  'addspecies' action), while the team-overview screen has no open slot to fill at all,
+		 *  so it appends a brand new one instead (applyTeammate, the 'teammate' action — the same
+		 *  action/function buildTeammatesSection's own Common Teammates rows already use to add a
+		 *  teammate without editing it). That difference is also the one place curTeamFull matters
+		 *  here: a blank slot only exists because the roster wasn't full to begin with, so it's
+		 *  never a reason to disable there, but the team-overview screen can genuinely be full, and
+		 *  applyTeammate would otherwise silently no-op on click — disabled (cf-pika-row-disabled)
+		 *  there instead, same as any other full-team-disabled row elsewhere in this file. Species
+		 *  already on the team get the equipped look (cf-pika-row-equipped, no data-cf-pika-action)
+		 *  in *either* state — deliberately NOT the disabled treatment buildTeammatesSection gives
+		 *  an equipped teammate (equipped AND disabled together there): cf-pika-row-disabled's
+		 *  `pointer-events: none` would block hover here too, and unlike a plain teammate
+		 *  suggestion this row's hover preview (buildAddPokemonPreviewTooltipHTML) is exactly as
+		 *  useful for a species already on the team as for any other — there's no reason to lose
+		 *  it just because clicking wouldn't do anything. There's no real ally Pokémon yet to
+		 *  usefully compare Speed against one-on-one (buildSpeedComparisonTooltipHTML already
+		 *  no-ops without one) in either state, but the *expected* Speed stat and "most popular in
+		 *  this format" are both still exactly what they say regardless. */
 		function speedTierColumnHTML(headerText, rowsHTML) {
 			return `<h3 class="cf-pika-header">${escapeHTML(headerText)}</h3><div class="cf-pika-rows">${rowsHTML}</div>`;
 		}
 		function buildSpeedTierColumnHTML(list, tbRoom) {
-			const blank = isBlankSlot(tbRoom);
-			const header = blank ? 'Popular' : 'Speed';
+			const popular = wantsPopularColumn(tbRoom);
+			const header = popular ? 'Popular' : 'Speed';
 			if (!list || !list.length) return speedTierColumnHTML(header, '<p class="cf-sidebar-placeholder">No data.</p>');
 
-			const moveTypes = blank ? teamDamagingMoveTypes(tbRoom) : null;
+			const coverageMoves = popular ? teamCoverageMoves(tbRoom) : null;
+			const overview = isTeamOverview(tbRoom);
 			const rows = list.map((entry) => {
 				const iconStyle = window.Dex ? window.Dex.getPokemonIcon(entry.name) : '';
 				const rankCls = entry.rank >= 1 && entry.rank <= 3 ? ` cf-speedtier-rank-${entry.rank}` : '';
@@ -3520,18 +3846,21 @@
 				let badgeHTML = '';
 				let speedHTML = '';
 
-				if (blank) {
+				if (popular) {
 					const alreadyOnTeam = curTeamHasSpecies(tbRoom, entry.name);
 					if (alreadyOnTeam) {
 						rowCls += ' cf-pika-row-equipped';
+					} else if (overview && curTeamFull(tbRoom)) {
+						rowCls += ' cf-pika-row-disabled';
 					} else {
 						rowCls += ' cf-pika-row-clickable';
-						rowAttrs += ` data-cf-pika-action="addspecies" data-cf-pika-value="${escapeHTML(entry.name)}"`;
+						const action = overview ? 'teammate' : 'addspecies';
+						rowAttrs += ` data-cf-pika-action="${action}" data-cf-pika-value="${escapeHTML(entry.name)}"`;
 					}
 
 					if (entry.mon) {
-						const mult = bestTeamCoverageMultiplier(moveTypes, entry.mon.types);
-						const tierCls = coverageTierClass(mult);
+						const coverage = bestTeamCoverageReasons(coverageMoves, entry.mon.types);
+						const tierCls = coverageTierClass(coverage && coverage.mult);
 						if (tierCls) boxCls += ' ' + tierCls;
 
 						const badge = topSpeedItemBadge(entry.mon, entry.name);
@@ -3833,22 +4162,86 @@
 		// CF.lastEngine already uses for patchDexSearch -> onMouseOver.
 		CF.buildSpeedComparisonTooltipHTML = buildSpeedComparisonTooltipHTML;
 
-		/** Blank-slot counterpart to buildSpeedComparisonTooltipHTML above, tried first by
-		 *  onMouseOver (see the dispatch there) — returns null outside a blank slot so that
+		/** Populated by renderSpeedSpectrumSection on every render — buildSpeedSpectrumTooltipHTML
+		 *  (below) looks up the hovered roster icon's already-computed entry here on hover, the
+		 *  same cache-and-look-up-by-data-attribute pattern lastSpeedTierList/
+		 *  buildSpeedComparisonTooltipHTML use above, kept as its own separate variable since
+		 *  these are two independent screens/data sets — Speed Spread is team-overview-only,
+		 *  entirely synchronous real team data (no Pikalytics fetch involved at all), where the
+		 *  Speed Tier column is per-slot and Pikalytics-backed. */
+		let lastSpeedSpectrumEntries = null;
+
+		/** Hover popup for one Speed Spread roster icon (team-overview screen) — "Showdown style"
+		 *  in the sense of matching this extension's own existing tooltip system (Tooltip.show,
+		 *  the shared .cf-tooltip card shell), not a native `title` — the earlier native-title
+		 *  version of this was deliberately removed. No `<h2>` name at all: the sprite already
+		 *  carries that identity, same as buildSimilarTeamTooltipHTML's own per-Pokémon columns
+		 *  (which have no name label either) — this is that exact column
+		 *  (.cf-similarteam-tooltip-col/-moves) reused as-is, not re-derived, just with one extra
+		 *  line: the real nature + full 6-stat EV spread (formatEVSpread, "32/0/0/0/32/0" —
+		 *  Showdown's own canonical shorthand, the same one Pikalytics' own `spreads[].ev`
+		 *  already arrives pre-formatted in) behind the Speed number already printed on the icon
+		 *  being hovered. Item is a corner badge on the sprite, not standalone text, matching
+		 *  that same reused column. No type icons on the moves either, for the same
+		 *  reason: that reference column doesn't have them.
+		 *  All of item/ability/moves are real, already-chosen facts about this specific roster
+		 *  member (unlike the "Popular" row's preview tooltip, which shows a *usage statistic*
+		 *  about a species that isn't on the team yet), read straight off the entry with no
+		 *  Pikalytics involved. Each is simply omitted (not shown as "No data") when genuinely
+		 *  unset — a still-being-built real set, not a data gap to call out the way Pikalytics'
+		 *  own gaps are elsewhere in this file. The EV spread itself always shows (even
+		 *  "0/0/0/0/0/0") since that's a real, meaningful fact about the build, not an unset gap
+		 *  the way a still-empty ability/moveset is.
+		 *  Returns null (no popup) for a threshold marker — see the dispatch in onMouseOver — or
+		 *  if the hovered icon's species isn't found in the last-rendered entries for any other
+		 *  reason (e.g. a stale hover right as the roster changes). */
+		function buildSpeedSpectrumTooltipHTML(rowEl) {
+			const speciesName = rowEl.getAttribute('data-cf-species');
+			if (!speciesName) return null;
+			const entry = lastSpeedSpectrumEntries && lastSpeedSpectrumEntries.find((e) => e.species === speciesName);
+			if (!entry) return null;
+
+			const spriteIconStyle = window.Dex ? window.Dex.getPokemonIcon(entry.species) : '';
+			const itemBadgeHTML = (entry.item && window.Dex) ?
+				`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(entry.item))}"></span>` : '';
+			const spriteHTML = spriteIconStyle ?
+				`<span class="cf-speedcmp-sprite"><span class="picon" style="${escapeHTML(spriteIconStyle)}"></span>${itemBadgeHTML}</span>` : '';
+
+			const natureText = entry.nature ? `${escapeHTML(entry.nature)} ` : '';
+			const spreadHTML = `<span>${natureText}${escapeHTML(entry.evSpread)}</span>`;
+			const abilityHTML = entry.ability ? `<span><em>${escapeHTML(entry.ability)}</em></span>` : '';
+			const movesText = entry.moves.map((m) => escapeHTML(m)).join('<br>');
+			const movesHTML = movesText ? `<span class="cf-similarteam-tooltip-moves">${movesText}</span>` : '';
+
+			return `<div class="cf-tooltip cf-speedspectrum-tooltip">` +
+				`<div class="cf-similarteam-tooltip-col">${spriteHTML}${spreadHTML}${abilityHTML}${movesHTML}</div>` +
+				`</div>`;
+		}
+		CF.buildSpeedSpectrumTooltipHTML = buildSpeedSpectrumTooltipHTML;
+
+		/** "Popular" counterpart to buildSpeedComparisonTooltipHTML above, tried first by
+		 *  onMouseOver (see the dispatch there) — returns null outside a state that wants the
+		 *  Popular column (wantsPopularColumn — a blank slot or the team-overview screen) so that
 		 *  branch falls through to the ordinary Speed comparison popup unchanged. Looks the
 		 *  hovered row's species up in lastSpeedTierList (populated by renderSpeedTierColumn)
 		 *  the same way buildSpeedComparisonTooltipHTML already does, since the row's own
 		 *  `mon` payload — already fetched for the coverage color / item badge / expected Speed
 		 *  this row is already showing — is exactly what buildSpeciesPreviewTooltipHTML needs
-		 *  too; no extra fetch. */
+		 *  too; no extra fetch. The coverage reasons themselves ARE recomputed fresh here
+		 *  (teamCoverageMoves/bestTeamCoverageReasons, same call buildSpeedTierColumnHTML made to
+		 *  decide this row's border color at render time) rather than threaded through from
+		 *  there — cheap and entirely synchronous, and it means a click-to-apply elsewhere that
+		 *  changes the roster is reflected on the very next hover instead of showing whatever
+		 *  reasons happened to be true when this row last actually re-rendered. */
 		function buildAddPokemonPreviewTooltipHTML(rowEl) {
 			const tbRoom = window.app.rooms && window.app.rooms['teambuilder'];
-			if (!isBlankSlot(tbRoom)) return null;
+			if (!wantsPopularColumn(tbRoom)) return null;
 			const speciesName = rowEl.getAttribute('data-cf-species');
 			if (!speciesName) return null;
 			const entry = lastSpeedTierList && lastSpeedTierList.find((e) => e.name === speciesName);
 			if (!entry || !entry.mon) return null;
-			return buildSpeciesPreviewTooltipHTML(entry.mon, speciesName);
+			const coverage = bestTeamCoverageReasons(teamCoverageMoves(tbRoom), entry.mon.types);
+			return buildSpeciesPreviewTooltipHTML(entry.mon, speciesName, coverage);
 		}
 		CF.buildAddPokemonPreviewTooltipHTML = buildAddPokemonPreviewTooltipHTML;
 
@@ -4283,14 +4676,15 @@
 		 *  switching to a completely different, definitely-indexed species — since nothing but a
 		 *  format change or leaving the teambuilder ever reset lastSpeedTierFormatId. */
 		let lastSpeedTierFailed = false;
-		/** Whether the last render was for a blank slot — tracked alongside
-		 *  lastSpeedTierFormatId (not folded into one composite key) because the two need
-		 *  different staleness rules: a format change always means genuinely new data to fetch,
-		 *  but a blank-state flip within the *same* format (e.g. picking a species finishes the
-		 *  slot, or backing out of that pick reopens a blank one) is just redrawing the exact
+		/** Whether the last render wanted the "Popular" column (wantsPopularColumn — a blank slot
+		 *  or the team-overview screen) — tracked alongside lastSpeedTierFormatId (not folded into
+		 *  one composite key) because the two need different staleness rules: a format change
+		 *  always means genuinely new data to fetch, but a popular-state flip within the *same*
+		 *  format (e.g. picking a species finishes the slot, or backing out of that pick reopens a
+		 *  blank one, or leaving/re-entering the team-overview screen) is just redrawing the exact
 		 *  same already-fetched lastSpeedTierList with a different header/coloring/clickability
 		 *  — no refetch needed, see the branch below. */
-		let lastSpeedTierBlank = null;
+		let lastSpeedTierPopular = null;
 		function renderSpeedTierColumn(tbRoom) {
 			const formatId = tbRoom.curTeam && tbRoom.curTeam.format;
 			// Falls back to any already-added roster member's species when the currently-open
@@ -4309,12 +4703,12 @@
 				((tbRoom.curSetList || []).find((s) => s && s.species) || {}).species;
 			const colEl = document.getElementById('cf-speedtier-col');
 			if (!colEl) return;
-			const blank = isBlankSlot(tbRoom);
+			const popular = wantsPopularColumn(tbRoom);
 
 			if (!formatId || !window.CF_Pikalytics || !window.CF_Pikalytics.getTopUsageList) {
-				colEl.innerHTML = speedTierColumnHTML(blank ? 'Popular' : 'Speed', '<p class="cf-sidebar-placeholder">No data.</p>');
+				colEl.innerHTML = speedTierColumnHTML(popular ? 'Popular' : 'Speed', '<p class="cf-sidebar-placeholder">No data.</p>');
 				lastSpeedTierFormatId = null;
-				lastSpeedTierBlank = null;
+				lastSpeedTierPopular = null;
 				lastSpeedTierList = null;
 				lastSpeedTierFailed = false;
 				// Invalidates any fetch still in flight from before this state was reached (e.g.
@@ -4328,27 +4722,27 @@
 			// Same format as last time AND that lookup didn't fail: nothing new to *fetch*,
 			// whether it's still in flight (lastSpeedTierFailed hasn't had a chance to flip yet)
 			// or already succeeded (lastSpeedTierList is already showing). Still redrawn from the
-			// already-fetched list (cheap, no refetch) whenever `blank` is true — unlike the
-			// "Speed" comparison view, blank-slot rendering (coverage coloring, already-on-team
+			// already-fetched list (cheap, no refetch) whenever `popular` is true — unlike the
+			// "Speed" comparison view, Popular rendering (coverage coloring, already-on-team
 			// disabling, click targets) reads live tbRoom.curSetList, which can change without
-			// `blank` itself ever flipping (e.g. switching from one team to a same-format, empty
-			// one while both happen to be sitting on a blank "Add Pokémon" slot) — confirmed
-			// live: without this, the column kept showing the previous team's coverage
-			// colors/disabled species after switching teams. Also redrawn on a blank-state flip
-			// even when *not* currently blank, to redraw once back to the plain "Speed" header/
-			// non-clickable rows.
+			// `popular` itself ever flipping (e.g. switching from one team to a same-format, empty
+			// one while both happen to be sitting on a blank "Add Pokémon" slot, or while staying
+			// on the team-overview screen the whole time) — confirmed live: without this, the
+			// column kept showing the previous team's coverage colors/disabled species after
+			// switching teams. Also redrawn on a popular-state flip even when *not* currently
+			// popular, to redraw once back to the plain "Speed" header/non-clickable rows.
 			if (formatId === lastSpeedTierFormatId && !lastSpeedTierFailed) {
-				if (lastSpeedTierList && (blank || blank !== lastSpeedTierBlank)) {
-					lastSpeedTierBlank = blank;
+				if (lastSpeedTierList && (popular || popular !== lastSpeedTierPopular)) {
+					lastSpeedTierPopular = popular;
 					colEl.innerHTML = buildSpeedTierColumnHTML(lastSpeedTierList, tbRoom);
 				}
 				return;
 			}
 			lastSpeedTierFormatId = formatId;
-			lastSpeedTierBlank = blank;
+			lastSpeedTierPopular = popular;
 
 			const token = ++speedTierRenderToken;
-			colEl.innerHTML = speedTierColumnHTML(blank ? 'Popular' : 'Speed', '<p class="cf-sidebar-placeholder">Loading…</p>');
+			colEl.innerHTML = speedTierColumnHTML(popular ? 'Popular' : 'Speed', '<p class="cf-sidebar-placeholder">Loading…</p>');
 			lastSpeedTierList = null;
 			lastSpeedTierFailed = false;
 
@@ -4361,7 +4755,7 @@
 				if (token !== speedTierRenderToken) return;
 				lastSpeedTierFailed = true;
 				console.error('[Better Teambuilder] Speed tier usage list lookup failed:', e);
-				colEl.innerHTML = speedTierColumnHTML(isBlankSlot(tbRoom) ? 'Popular' : 'Speed', '<p class="cf-sidebar-placeholder">Failed to load.</p>');
+				colEl.innerHTML = speedTierColumnHTML(wantsPopularColumn(tbRoom) ? 'Popular' : 'Speed', '<p class="cf-sidebar-placeholder">Failed to load.</p>');
 			});
 		}
 
@@ -4385,7 +4779,9 @@
 				spectrumEl.innerHTML = pikaSectionHTML('Speed Spread', '<p class="cf-pika-empty">No data for this format.</p>');
 				return;
 			}
-			spectrumEl.innerHTML = buildSpeedSpectrumHTML(computeSpeedSpectrumEntries(tbRoom), computeSpeedSpectrumDomain(tbRoom));
+			const entries = computeSpeedSpectrumEntries(tbRoom);
+			lastSpeedSpectrumEntries = entries;
+			spectrumEl.innerHTML = buildSpeedSpectrumHTML(entries, computeSpeedSpectrumDomain(tbRoom));
 		}
 
 		/** Team-overview screen (isTeamOverview: a team is open, curRoom is the teambuilder room,
@@ -4509,11 +4905,17 @@
 		 *  repeat fetch cheap anyway, but deduping the *requests* themselves avoids firing
 		 *  redundant ones in the same Promise.all at all. Every real counter for every member gets
 		 *  enriched now, not just a capped top few — this section shows everything, not a curated
-		 *  shortlist (own doc comment on buildMemberThreatRows). lastTeamThreats (module-level,
-		 *  alongside CF.getTeamThreat below) is the enriched result of that second stage — what
-		 *  the hover tooltip (onMouseOver's own .cf-teamthreats-counter branch) actually reads, by
-		 *  the same by-index convention buildSimilarTeamRowHTML's own hover lookup already uses,
-		 *  just two indices (member, counter) instead of one flat one. */
+		 *  shortlist (own doc comment on buildMemberThreatRows). Each enriched counter carries both
+		 *  `reasons` (computeThreatReasons — needs `defense`, since those prove a real hit against
+		 *  *this* member specifically) and `priorityMoves` (computeThreatPriorityMoves — doesn't
+		 *  need `defense` for its own STAB check, a priority move mattering here is a fact about the
+		 *  counter's own kit regardless of who it's threatening, but `reasons` is still passed in so
+		 *  it can drop any move that reasons already named, since a STAB move that's also
+		 *  super-effective would otherwise show up twice). lastTeamThreats (module-level, alongside
+		 *  CF.getTeamThreat below) is the enriched result of that second stage — what the hover
+		 *  tooltip (onMouseOver's own .cf-teamthreats-counter branch) actually reads, by the same
+		 *  by-index convention buildSimilarTeamRowHTML's own hover lookup already uses, just two
+		 *  indices (member, counter) instead of one flat one. */
 		let lastTeamThreats = null;
 		let teamThreatsRenderToken = 0;
 		function renderTeamThreatsSection(tbRoom, threatsEl) {
@@ -4568,7 +4970,8 @@
 							const counters = row.counters.map((c) => {
 								const offense = computeThreatOffense(tbRoom, c.pokemon, monByName.get(c.pokemon));
 								const reasons = defense ? computeThreatReasons(offense, defense) : [];
-								return { pokemon: c.pokemon, rank: c.rank, reasons };
+								const priorityMoves = computeThreatPriorityMoves(offense, reasons);
+								return { pokemon: c.pokemon, rank: c.rank, reasons, priorityMoves };
 							});
 							return { member: row.member, counters };
 						});
@@ -4615,18 +5018,19 @@
 					try { renderPikalyticsSidebar(tbRoom); } catch (e) {
 						console.error('[Better Teambuilder] renderPikalyticsSidebar failed:', e);
 					}
-					try { renderSpeedTierColumn(tbRoom); } catch (e) {
-						console.error('[Better Teambuilder] renderSpeedTierColumn failed:', e);
-					}
+				}
+				// Now reached on the team-overview screen too, not just per-slot editing —
+				// #cf-speedtier-col repurposes itself as the "Popular" column there the same way it
+				// already does for a blank slot (wantsPopularColumn/buildSpeedTierColumnHTML's own
+				// doc comments), rather than sitting hidden the way it used to (style.css no longer
+				// hides it on this screen either — see #cf-speedtier-col's own comment there).
+				try { renderSpeedTierColumn(tbRoom); } catch (e) {
+					console.error('[Better Teambuilder] renderSpeedTierColumn failed:', e);
 				}
 			} else {
 				lastRenderKey = null; // force a fresh render next time the sidebar becomes active
 			}
 			document.body.classList.toggle('cf-teambuilder-split', active);
-			// Hides #cf-speedtier-col entirely on the team-overview screen (style.css) — there's
-			// nothing assigned to that column there (see renderTeamOverviewPanel's own comment),
-			// and #cf-pika-panel's existing `flex: 1 1 auto` already expands to take the freed
-			// width on its own once the column is gone, no extra sizing rule needed here.
 			document.body.classList.toggle('cf-teambuilder-team-overview', active && isTeamOverview(tbRoom));
 		}
 
