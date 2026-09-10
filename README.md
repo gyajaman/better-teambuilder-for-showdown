@@ -45,14 +45,14 @@ Leave the number blank to keep the filter inactive.
 
 When the window is wide enough, no side room is docked, and a Pokémon is being edited, the teambuilder splits in half and a panel appears alongside it with live Pikalytics usage stats for that Pokémon in the team's current format: Common Moves, Abilities, Items, Natures, Spreads, and Teammates. Data always matches the species and format currently being edited, and shows "No data" rather than stale results when nothing is available. Mega/Primal Pokémon are looked up under their base species, matching how Pikalytics tracks Mega usage.
 
-Format coverage is a deliberate, narrow allowlist — Pokemon Champions VGC 2026 Regulations A and B only:
+Format coverage is a deliberate, narrow allowlist — Pokemon Champions VGC 2026 Regulations B and C only (Reg A was retired from Showdown and dropped from this list; it's no longer selectable there anyway):
 
 | Format | Data source |
 |---|---|
-| Reg A (Bo1) | Ranked ladder |
-| Reg A (Bo3) | Tournament |
 | Reg B (Bo1) | Ranked ladder |
 | Reg B (Bo3) | Tournament |
+| Reg C (Bo1) | Ranked ladder *(temporary: Pikalytics hasn't published an official Reg C ranked slug yet, so this points at the Showdown-ladder data directly until one exists)* |
+| Reg C (Bo3) | Tournament |
 
 Any other format shows "No data" rather than guessing at a slug mapping. Results are cached locally for up to 24 hours and refresh automatically when Pikalytics rolls over to a new month.
 

@@ -78,12 +78,19 @@ beforeEach(() => {
 describe('slugFor', () => {
 	it('returns the mapped slug for an allowlisted format', () => {
 		expect(CF_Pikalytics.slugFor('gen9championsvgc2026regmb')).toBe('battledataregmbs3');
-		expect(CF_Pikalytics.slugFor('gen9championsvgc2026regmbbo3')).toBe('championstournaments');
+		expect(CF_Pikalytics.slugFor('gen9championsvgc2026regmbbo3')).toBe('championstournamentsregmb');
+		expect(CF_Pikalytics.slugFor('gen9championsvgc2026regmc')).toBe('gen9championsvgc2026regmc');
+		expect(CF_Pikalytics.slugFor('gen9championsvgc2026regmcbo3')).toBe('championstournaments');
 	});
 
 	it('returns undefined for a format outside the deliberate allowlist', () => {
 		expect(CF_Pikalytics.slugFor('gen9ou')).toBeUndefined();
 		expect(CF_Pikalytics.slugFor('gen9championsvgc2026regmb'.toUpperCase())).toBeUndefined();
+	});
+
+	it('returns undefined for Reg M-A — removed from Showdown, deleted from the allowlist', () => {
+		expect(CF_Pikalytics.slugFor('gen9championsvgc2026regma')).toBeUndefined();
+		expect(CF_Pikalytics.slugFor('gen9championsvgc2026regmabo3')).toBeUndefined();
 	});
 });
 
@@ -246,6 +253,67 @@ describe('getSpeciesData', () => {
 		expect(result.name).toBe('Sinistcha');
 		expect(requestedSpecies.every((s) => s === 'Sinistcha')).toBe(true); // queried Sinistcha directly, no retry
 	});
+
+	it('drops an ability entry that is not actually obtainable on the species (e.g. bad/hacked ladder data)', async () => {
+		window.Dex = {
+			species: {
+				get: () => ({
+					exists: true, battleOnly: false, otherFormes: null,
+					name: 'Incineroar', abilities: { '0': 'Blaze', H: 'Intimidate' },
+				}),
+			},
+		};
+		installFetchMock({
+			discover: (u) => discoveryResponse(decodeURIComponent(u.split('/').pop()), '2026-05', '1500'),
+			species: () => JSON.stringify(mon('Incineroar', {
+				abilities: [
+					{ ability: 'Intimidate', percent: '98.584' },
+					{ ability: 'Trace', percent: '0.283' }, // confirmed-live Reg M-C noise — not a real Incineroar ability
+				],
+			})),
+		});
+		const result = await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Incineroar');
+		expect(result.abilities.map((a) => a.ability)).toEqual(['Intimidate']);
+	});
+
+	it('treats a Mega/Primal forme\'s ability as legal too, since Pikalytics folds Mega usage into the base species page', async () => {
+		window.Dex = {
+			species: {
+				get: (name) => (name === 'Charizard-Mega-Y'
+					? { exists: true, battleOnly: 'Charizard', abilities: { '0': 'Drought' } }
+					: {
+						exists: true, battleOnly: false, name: 'Charizard',
+						otherFormes: ['Charizard-Mega-Y'], abilities: { '0': 'Blaze', H: 'Solar Power' },
+					}),
+			},
+		};
+		installFetchMock({
+			discover: (u) => discoveryResponse(decodeURIComponent(u.split('/').pop()), '2026-05', '1500'),
+			species: () => JSON.stringify(mon('Charizard', {
+				abilities: [
+					{ ability: 'Blaze', percent: '40.0' },
+					{ ability: 'Drought', percent: '35.0' },
+					{ ability: 'Levitate', percent: '1.0' }, // not legal on Charizard in any forme
+				],
+			})),
+		});
+		const result = await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Charizard');
+		expect(result.abilities.map((a) => a.ability).sort()).toEqual(['Blaze', 'Drought']);
+	});
+
+	it('does not filter abilities when the Dex is unavailable — fails open, not closed', async () => {
+		installFetchMock({
+			discover: (u) => discoveryResponse(decodeURIComponent(u.split('/').pop()), '2026-05', '1500'),
+			species: () => JSON.stringify(mon('Landorus-Therian', {
+				abilities: [
+					{ ability: 'Intimidate', percent: '98.5' },
+					{ ability: 'TotallyFakeAbility', percent: '0.1' },
+				],
+			})),
+		});
+		const result = await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Landorus-Therian');
+		expect(result.abilities.length).toBe(2);
+	});
 });
 
 describe('getTopUsageList', () => {
@@ -303,7 +371,7 @@ describe('getTopTeams', () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
-	it('treats a response missing a real `teams` array as no data (e.g. the confirmed-live battledataregmas2 404)', async () => {
+	it('treats a response missing a real `teams` array as no data (e.g. an "Unknown top teams format" error body)', async () => {
 		installFetchMock({ topteams: () => ({ error: 'Unknown top teams format' }) });
 		const teams = await CF_Pikalytics.getTopTeams(FORMAT_ID);
 		expect(teams).toBeNull();

@@ -66,11 +66,9 @@
 
 	/** Deliberate, explicit allowlist — NOT a "matches unless overridden" default. A format
 	 *  not listed here is "no data," full stop, even if Pikalytics happens to have a
-	 *  same-named slug (e.g. gen9championsvgc2026regma matches Pikalytics' own
-	 *  "gen9championsvgc2026regma" — Showdown-ladder data — directly, but is deliberately
-	 *  NOT used that way; see below). Scoped to Pokemon Champions VGC regulations only —
-	 *  Smogon tiers (OU/UU/etc, any gen), National Dex, Battle Spot Singles, are all out of
-	 *  scope by choice, not oversight.
+	 *  same-named slug. Scoped to Pokemon Champions VGC regulations only — Smogon tiers
+	 *  (OU/UU/etc, any gen), National Dex, Battle Spot Singles, are all out of scope by
+	 *  choice, not oversight.
 	 *
 	 *  Bo1 and Bo3 deliberately use different data sources, not just different slugs of the
 	 *  same source, because they're actually played in different places: Bo1 is the official
@@ -79,22 +77,43 @@
 	 *  a far larger sample than the Showdown-specific ladder data) is the right fit. Bo3 is
 	 *  NOT played on that ladder at all — it's tournament-only — so it's mapped to
 	 *  Pikalytics' tournament-aggregate data instead ("championstournaments" for the
-	 *  *current* regulation, "championstournamentsregma" pinned specifically to Reg M-A —
-	 *  confirmed live, its title literally reads "...TournamentsREGMA").
+	 *  *current* regulation, "championstournamentsregmb" pinned specifically to Reg M-B —
+	 *  confirmed live, its formatLabel literally reads "...Tournament (Reg M-B)").
 	 *
-	 *  Only Reg M-A and Reg M-B are mapped. Reg M-A is realistically dead (nobody's playing
-	 *  it anymore) — it's kept anyway as the base pattern for whoever adds Reg M-C when it
-	 *  ships: same shape, one more {regX -> ranked data, regXbo3 -> tournament data} pair.
-	 *  Note "championstournaments" (no reg suffix) tracks whatever the *current* regulation
-	 *  is — it'll silently start meaning Reg M-C's tournaments the moment that regulation
-	 *  goes live, at which point gen9championsvgc2026regmbbo3 below should be re-pointed to
-	 *  a still-to-exist "championstournamentsregmb"-shaped pin (mirroring regma's), the same
-	 *  way battledataregmbs3 will eventually need succeeding by a Reg M-C ranked-data slug. */
+	 *  Reg M-A was removed from Showdown entirely (confirmed live, 2026-09-09:
+	 *  gen9championsvgc2026regma/regmabo3 no longer appear in play.pokemonshowdown.com's own
+	 *  BattleFormats at all) so its entries were deleted outright rather than kept around as
+	 *  dead allowlist rows.
+	 *
+	 *  Reg M-C went live on Pikalytics 2026-09-10 (one day after going live on Showdown,
+	 *  during which it was deliberately left unmapped — see git history — since every
+	 *  guessed Reg M-C slug 404'd until then). As of today:
+	 *   - Bo1 (gen9championsvgc2026regmc) is mapped to the Showdown-ladder slug of the exact
+	 *     same name — confirmed live: 200s with a full-shaped payload (moves/items/abilities/
+	 *     team all real non-empty arrays; natures/spreads present but empty, i.e. real early-
+	 *     season data, not a malformed response). This is a DELIBERATE, TEMPORARY departure
+	 *     from the "prefer official ranked-battle data" rule above: no "battledataregmc*"
+	 *     slug exists yet (still 404s as of this check), and this is the only real Reg M-C
+	 *     data source Pikalytics currently publishes. Once a battledataregmc*-shaped slug
+	 *     appears (mirroring battledataregmbs3), swap this row to it and drop the interim
+	 *     Showdown-ladder one — don't let both linger.
+	 *   - Bo3 (gen9championsvgc2026regmcbo3) is mapped to "championstournaments" — confirmed
+	 *     live: its team cores now match the Reg M-C homepage exactly (e.g. Rillaboom/
+	 *     Sneasler, 159 teams), i.e. Pikalytics has switched "championstournaments" over to
+	 *     mean the current regulation, exactly as this comment previously predicted it would.
+	 *     Reg M-B's Bo3 row above was re-pointed to the new "championstournamentsregmb" pin
+	 *     in the same change, since staying on "championstournaments" would have silently
+	 *     started serving Reg M-C tournament data under a Reg M-B format id otherwise.
+	 *  CACHE_VERSION was bumped alongside this change specifically because of that
+	 *  regmbbo3 slug swap: an existing user's browser could have a same-origin cache entry
+	 *  keyed "championstournaments" from before this change, holding real Reg M-B data under
+	 *  a key that now means Reg M-C — TTL expiry alone wouldn't catch that, since the entry
+	 *  isn't stale by Pikalytics' own clock, just wrong now. */
 	const FORMAT_SLUG_MAP = {
 		gen9championsvgc2026regmb: 'battledataregmbs3',
-		gen9championsvgc2026regmbbo3: 'championstournaments',
-		gen9championsvgc2026regma: 'battledataregmas2',
-		gen9championsvgc2026regmabo3: 'championstournamentsregma',
+		gen9championsvgc2026regmbbo3: 'championstournamentsregmb',
+		gen9championsvgc2026regmc: 'gen9championsvgc2026regmc',
+		gen9championsvgc2026regmcbo3: 'championstournaments',
 	};
 
 	const FORMAT_META_PREFIX = 'cf_pikalytics_meta_';
@@ -118,7 +137,7 @@
 	 *  returns null), so a change like that takes effect immediately for every user on next
 	 *  lookup — no manual "clear your cache" step, and nothing to remember to do for the next
 	 *  fix either. Shared by both cache tiers — bump it for either kind of change. */
-	const CACHE_VERSION = 8;
+	const CACHE_VERSION = 10;
 
 	/** Two-tier cache, so a new month goes live for everyone within CACHE_TTL_MS, not up to
 	 *  CACHE_TTL_MS *per species already looked up*:
@@ -168,6 +187,17 @@
 	 *     base has real (200) data. Meowstic-F passes step 1 (identical stats/types to Meowstic)
 	 *     but not step 2 — confirmed live, it has its own page — so it's deliberately not here.
 	 *
+	 *  Re-verified against Reg M-C on 2026-09-10 (all six candidates legal per step 1, same as
+	 *  Reg M-B; all five real cosmetic formes below still 404 under
+	 *  /ai/pokedex/gen9championsvgc2026regmc/{name}, so this table applies unchanged). Meowstic-F
+	 *  also 404'd there — but this early in a brand-new regulation's data, that 404 is a weak
+	 *  negative-control signal: it's plausibly just "no one's used it yet" sample-size noise
+	 *  rather than actual folding. Doesn't change anything either way: Meowstic-F fails step 2's
+	 *  own baseStats/types-identical filter (a real, non-cosmetic, stat-distinct forme) before
+	 *  the 404 check is even reached, so it never belonged in this table regardless of its page
+	 *  status — noted here only so a future re-check doesn't mistake that 404 for folding
+	 *  evidence.
+	 *
 	 *  Re-verify both steps (legality can change with a new regulation; Pikalytics' page set can
 	 *  change with a new season/cutoff) if this table ever looks stale. */
 	const COSMETIC_FORME_FALLBACK = new Map([
@@ -200,6 +230,48 @@
 
 	function toID(s) {
 		return (window.toID || ((x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, '')))(s);
+	}
+
+	/** The set of ability ids actually obtainable on `querySpecies` — its own declarable
+	 *  abilities (0/1/H/S slots) plus, for a Mega/Primal-eligible species, every one of its
+	 *  Mega/Primal formes' abilities too. That second part matters because resolveQuerySpecies
+	 *  above folds every Mega/Primal forme into its base species' Pikalytics query (Pikalytics
+	 *  tracks their usage there, not on a separate page — see its own doc comment), so a
+	 *  legitimate real result for e.g. "Charizard" can carry Drought (Mega Y) or Blaze (no
+	 *  Mega) alike; validating against only the base forme's own two abilities would wrongly
+	 *  reject the Mega ones.
+	 *
+	 *  Returns null (skip filtering entirely) rather than an empty set when the Dex isn't
+	 *  available or the species can't be found — "can't validate" must never be treated the
+	 *  same as "everything is invalid," which would wipe out otherwise-real ability data. */
+	function legalAbilityIdsFor(querySpecies) {
+		if (!window.Dex) return null;
+		const species = window.Dex.species.get(querySpecies);
+		if (!species || !species.exists) return null;
+		const ids = new Set(Object.values(species.abilities || {}).map(toID));
+		for (const formeName of species.otherFormes || []) {
+			const forme = window.Dex.species.get(formeName);
+			if (forme && forme.exists && forme.battleOnly) {
+				Object.values(forme.abilities || {}).forEach((a) => ids.add(toID(a)));
+			}
+		}
+		return ids;
+	}
+
+	/** Drops any `abilities` entry Pikalytics' usage data reports that isn't actually
+	 *  obtainable on the species being queried — confirmed live: e.g. Incineroar (real
+	 *  abilities Blaze/Intimidate only) shows up with "Trace: 0.283%" and "Magic Bounce:
+	 *  0.142%" in Reg M-C's early usage data, presumably hacked/mismatched entries in the
+	 *  underlying ladder sample rather than a Pikalytics bug — real usage stats aren't immune
+	 *  to bad actors the way move/item legality checks might assume. Silently no-ops (returns
+	 *  `data` unchanged) when legality can't be determined, or when there's no abilities array
+	 *  to filter in the first place. */
+	function withValidAbilities(data, querySpecies) {
+		if (!data || !Array.isArray(data.abilities)) return data;
+		const legalIds = legalAbilityIdsFor(querySpecies);
+		if (!legalIds) return data;
+		data.abilities = data.abilities.filter((a) => a && legalIds.has(toID(a.ability)));
+		return data;
 	}
 
 	function readEntry(prefix, key) {
@@ -285,7 +357,7 @@
 				for (const field of ARRAY_FIELDS) {
 					if (data[field] !== undefined && !Array.isArray(data[field])) return null;
 				}
-				return data;
+				return withValidAbilities(data, querySpecies);
 			})
 			.catch(() => null);
 	}
@@ -435,10 +507,10 @@
 	//                                                        confirmed live via the network
 	//                                                        request it fires.
 	//
-	// Confirmed live: battledataregmas2 (Reg M-A ranked ladder) 404s on the bulk endpoint
-	// ("Unknown top teams format") while every other FORMAT_SLUG_MAP slug 200s — consistent
-	// with Reg M-A being realistically dead already (see FORMAT_SLUG_MAP's own doc comment).
-	// Treated as "no data" the same as any other unsupported format, not a special case.
+	// A format missing from FORMAT_SLUG_MAP (e.g. Reg M-C right now — see that map's own doc
+	// comment) never reaches this endpoint at all: getTopTeams below bails out on slugFor
+	// returning undefined before fetching anything. Treated as "no data" the same as any
+	// other unsupported format, not a special case.
 	// ---------------------------------------------------------------------
 	const TOP_TEAMS_CACHE_PREFIX = 'cf_pikalytics_topteams_';
 	const TEAM_DETAIL_CACHE_PREFIX = 'cf_pikalytics_teamdetail_';

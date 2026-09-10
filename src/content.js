@@ -4339,7 +4339,7 @@
 		}
 
 		/** Speed Spread's floor/ceiling (computeSpeedSpectrumDomain) is hardcoded specifically for
-		 *  the four VGC Reg A/B formats window.CF_Pikalytics.slugFor knows about — meaningless, and
+		 *  the four VGC Reg B/C formats window.CF_Pikalytics.slugFor knows about — meaningless, and
 		 *  for a non-Champions format outright *wrong* (TeambuilderRoom.getStat's own
 		 *  usesStatPoints branch switches to the classic 0-252 EV formula entirely for anything
 		 *  else, a different stat scale than the hardcoded reference values assume), for any
