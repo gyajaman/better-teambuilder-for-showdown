@@ -901,6 +901,39 @@
 		});
 	}
 
+	/** Whether `defenderMoves` — a real team member's own already-chosen moveset, NOT a
+	 *  Pikalytics usage list, so nothing here is gated on a usage percent the way the threat's
+	 *  own moves are elsewhere in this file — has zero real answers to a counter's own real
+	 *  types/ability: every one of the member's own damaging moves lands resisted (<1x) or
+	 *  immune (0x), so the counter is a genuine, real wall against this specific member, not
+	 *  just a hard hitter. `defenderAbility` feeds effectiveMoveType (the defender's own real
+	 *  ability can change its own move's effective type — a Pixilate Sylveon's own Hyper Voice
+	 *  is checked as Fairy here too, same as everywhere else this file resolves a move's real
+	 *  effective type) and `threatAbility` feeds applyDefensiveAbility (the counter's own real
+	 *  ability — a Water Absorb/Levitate/Flash Fire/etc. holder reads as genuinely blocking the
+	 *  matching type here too, the identical mechanism computeThreatMoveReasons/
+	 *  computeThreatSpeedReason already apply in the opposite direction).
+	 *
+	 *  Returns false, not true, when there's nothing real to check at all (no window.Dex, no
+	 *  threat types, or the member's own moveset has no real damaging move in it — a
+	 *  still-being-built set, or one that's genuinely all Status) — "can't verify a wall" is not
+	 *  the same claim as "genuinely walled," the same "don't credit what you can't confirm"
+	 *  reasoning movePower's own doc comment already uses for an unconfirmable base power. */
+	function computeThreatHasNoAnswer(defenderMoves, defenderAbility, threatTypes, threatAbility) {
+		if (!window.Dex || !threatTypes || !threatTypes.length) return false;
+		let sawRealDamagingMove = false;
+		for (const moveName of (defenderMoves || [])) {
+			if (!moveName || !isDamagingMove(moveName)) continue;
+			const moveData = window.Dex.moves.get(moveName);
+			if (!moveData || !moveData.exists || !moveData.type) continue;
+			sawRealDamagingMove = true;
+			const type = effectiveMoveType(moveName, moveData.type, defenderAbility);
+			const mult = applyDefensiveAbility(typeEffectivenessMultiplier(type, threatTypes), type, threatAbility);
+			if (mult >= 1) return false; // a real answer exists
+		}
+		return sawRealDamagingMove;
+	}
+
 	/** The actual "why" behind one threat/team-member matchup, for the Biggest Threats hover
 	 *  tooltip (buildTeamThreatTooltipHTML). `threat` is `{moves, ability, types, atk, spa,
 	 *  baseSpeed, scarfSpeed, weight}` — the threatening species' own Pikalytics move list, real
@@ -918,14 +951,18 @@
 	 *  offensive stats and Speed (computeThreatOffense below derives those from its top real
 	 *  spread+nature, the same "no item" Foe-column technique buildSpeedComparisonTooltipHTML
 	 *  already uses, `scarfSpeed` additionally accounting for a real, common-enough Choice Scarf);
-	 *  `defender` is `{types, def, spd, speed, ability, weight}` — the threatened team member's own
-	 *  real defensive types/stats/Speed/weight and real (or Mega-resolved) ability, fed into
-	 *  applyDefensiveAbility inside computeThreatMoveReasons/computeThreatSpeedReason the same way
-	 *  the Defensive Profile matrix already applies it — a Water Absorb/Levitate/Flash Fire/etc.
-	 *  holder reads as genuinely unhit by its immune type here too, not just by typing alone.
-	 *  `weight`/Speed on both sides feed movePower's own variableMovePower for Grass Knot/Low
-	 *  Kick/Heavy Slam/Heat Crash/Gyro Ball/Electro Ball — real moves with no fixed real power to
-	 *  rank by otherwise (movePower's own doc comment).
+	 *  `defender` is `{types, def, spd, speed, ability, weight, moves}` — the threatened team
+	 *  member's own real defensive types/stats/Speed/weight/moveset and real (or Mega-resolved)
+	 *  ability, fed into applyDefensiveAbility inside computeThreatMoveReasons/
+	 *  computeThreatSpeedReason the same way the Defensive Profile matrix already applies it — a
+	 *  Water Absorb/Levitate/Flash Fire/etc. holder reads as genuinely unhit by its immune type
+	 *  here too, not just by typing alone. `weight`/Speed on both sides feed movePower's own
+	 *  variableMovePower for Grass Knot/Low Kick/Heavy Slam/Heat Crash/Gyro Ball/Electro Ball —
+	 *  real moves with no fixed real power to rank by otherwise (movePower's own doc comment).
+	 *  `moves` (the member's own real, already-chosen moveset — computeMemberDefense's own doc
+	 *  comment) is what computeThreatHasNoAnswer, below, checks against the threat's own real
+	 *  types/ability in the *opposite* direction from every reason above: not "how does the
+	 *  threat hurt this member," but "can this member hurt the threat back at all."
 	 *
 	 *  Returns a handful of typed reason objects, ordered most-concrete-first: `{kind: 'speed',
 	 *  move, type, percent, viaScarf}` for outspeeding with a real, non-resisted hit
@@ -945,7 +982,14 @@
 	 *  (threatHasMoveOfCategory) backing the raw number up. Any of
 	 *  `threat.atk`/`threat.spa`/`threat.baseSpeed` being null (computeThreatOffense couldn't derive
 	 *  a real stat — no spread data for this species) simply skips the reason(s) that depend on
-	 *  it rather than guessing. */
+	 *  it rather than guessing.
+	 *
+	 *  Finally, at most one `{kind: 'wall', text}` entry (computeThreatHasNoAnswer) when the
+	 *  member's own real moveset has zero answers to the threat at all — a fundamentally
+	 *  different kind of danger from everything above (which are all "how it hurts you"; this
+	 *  one is "you can't hurt it back either"), so it isn't ranked against the others the same
+	 *  "most concrete" way — just appended, since exactly how this should be surfaced in the UI
+	 *  is still expected to be revisited. */
 	function computeThreatReasons(threat, defender) {
 		const reasons = [];
 		const speedReason = computeThreatSpeedReason(threat, defender);
@@ -961,6 +1005,9 @@
 		if (threat.spa && defender.spd && (threat.spa / defender.spd) >= TEAM_THREATS_STAT_RATIO_THRESHOLD &&
 			threatHasMoveOfCategory(threat.moves, 'Special')) {
 			reasons.push({ kind: 'stat', text: 'High Special Attack vs Low Special Defense' });
+		}
+		if (computeThreatHasNoAnswer(defender.moves, defender.ability, threat.types, threat.ability)) {
+			reasons.push({ kind: 'wall', text: 'Nothing on this set threatens it back' });
 		}
 		return reasons;
 	}
@@ -1082,7 +1129,12 @@
 	 *  Mega Blastoise reads as Mega Launcher here too, not whatever ability its base build has
 	 *  chosen — so computeThreatMoveReasons/computeThreatSpeedReason can run it through
 	 *  applyDefensiveAbility the exact same way that matrix already does, instead of the two
-	 *  panels disagreeing about whether a given member is actually immune to something. */
+	 *  panels disagreeing about whether a given member is actually immune to something. `moves`
+	 *  is this member's own real, already-chosen moveset (blank slots filtered out) — not a
+	 *  Pikalytics usage stat the way a threat's own `moves` are, so nothing here is gated on a
+	 *  usage percent; every real move the member actually has counts. computeThreatHasNoAnswer
+	 *  below is what actually reads it, checking whether any of them can hit a given counter
+	 *  back at all. */
 	function computeMemberDefense(tbRoom, memberSet) {
 		const { species: resolvedSpecies, isMega } = resolveSpeedSpectrumSpecies(memberSet);
 		const statSet = isMega ? Object.assign({}, memberSet, { species: resolvedSpecies }) : memberSet;
@@ -1095,7 +1147,8 @@
 		// Same real weightkg computeThreatOffense's own `weight` carries for the threat side —
 		// movePower's own doc comment covers why both sides are needed.
 		const weight = (resolved && resolved.exists && typeof resolved.weightkg === 'number') ? resolved.weightkg : null;
-		return { types, def, spd, speed, ability, weight };
+		const moves = (memberSet.moves || []).filter((m) => m);
+		return { types, def, spd, speed, ability, weight, moves };
 	}
 
 	/** The current roster's own species, base-species-ID'd (same normalization
@@ -1453,7 +1506,7 @@
 			buildMemberThreatRows, isDamagingMove, movePower, variableMovePower, stabAdjustedPower, effectiveMoveType,
 			computeThreatMoveReasons, computeThreatSpeedReason, computeThreatPriorityMoves,
 			threatHasMoveOfCategory,
-			computeThreatReasons,
+			computeThreatReasons, computeThreatHasNoAnswer,
 			computeThreatOffense, computeMemberDefense,
 			buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
 			buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,

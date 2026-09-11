@@ -24,7 +24,7 @@ const {
 	buildMemberThreatRows, isDamagingMove, movePower, variableMovePower, effectiveMoveType, stabAdjustedPower, computeThreatMoveReasons, computeThreatSpeedReason,
 	computeThreatPriorityMoves,
 	threatHasMoveOfCategory,
-	computeThreatReasons,
+	computeThreatReasons, computeThreatHasNoAnswer,
 	computeThreatOffense, computeMemberDefense,
 	buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
 	buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
@@ -2612,6 +2612,101 @@ describe('computeThreatReasons', () => {
 		const defender = { types: ['weak'], def: 100, spd: 100, speed: 100, ability: 'Water Absorb' };
 		expect(computeThreatReasons(threat, defender)).toEqual([]);
 	});
+
+	it('appends a wall reason when the member\'s own real moveset has zero answers to the threat', () => {
+		mockThreatsDex();
+		// No speed/move/stat reason applies here at all (threat has no own moves, no
+		// baseSpeed/scarfSpeed, no atk/spa) — the wall reason is the only thing left to show.
+		// The threat's own real types ('resists') resist the member's only move (Water Spout,
+		// 0.5x) — a genuine, real wall against this specific member.
+		const threat = { moves: [], types: ['resists'] };
+		const defender = { types: ['neutral'], moves: ['Water Spout'] };
+		expect(computeThreatReasons(threat, defender)).toEqual([
+			{ kind: 'wall', text: 'Nothing on this set threatens it back' },
+		]);
+	});
+
+	it('does NOT append a wall reason once the member has a real answer, even alongside other reasons', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], types: ['neutral'], atk: 60, spa: 60 };
+		// Wave Crash (Water) lands neutral (1x) against the threat's own 'neutral' types — a real
+		// answer, so no wall reason even though the matchup also produces a real move reason.
+		const defender = { types: ['weak'], def: 100, spd: 100, moves: ['Wave Crash'] };
+		expect(computeThreatReasons(threat, defender)).toEqual([
+			{ kind: 'move', move: 'Water Spout', type: 'Water', percent: 90 },
+		]);
+	});
+});
+
+describe('computeThreatHasNoAnswer', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('returns true when every real damaging move on the set is resisted', () => {
+		mockThreatsDex();
+		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['resists'], '')).toBe(true); // 0.5x
+	});
+
+	it('returns false as soon as one real move clears neutral (>=1x)', () => {
+		mockThreatsDex();
+		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['neutral'], '')).toBe(false); // 1x
+	});
+
+	it('returns false when a real move is super effective', () => {
+		mockThreatsDex();
+		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['weak'], '')).toBe(false); // 2x
+	});
+
+	it('returns false as soon as ANY one move in a mixed set clears neutral, even if the rest are resisted', () => {
+		mockThreatsDex();
+		// 'resists' only lists Water as resisted (0.5x) — Brave Bird's own Flying type isn't
+		// listed at all, which defaults to neutral (1x), a real answer on its own.
+		expect(computeThreatHasNoAnswer(['Water Spout', 'Brave Bird'], '', ['resists'], '')).toBe(false);
+	});
+
+	it('returns false — not true — when the set has no real damaging move at all (can\'t verify a wall, not the same as a confirmed one)', () => {
+		mockThreatsDex();
+		expect(computeThreatHasNoAnswer(['Protect'], '', ['neutral'], '')).toBe(false); // Status only
+		expect(computeThreatHasNoAnswer([], '', ['neutral'], '')).toBe(false); // empty moveset
+		expect(computeThreatHasNoAnswer(undefined, '', ['neutral'], '')).toBe(false);
+	});
+
+	it('returns false without window.Dex or without real threat types to check against', () => {
+		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['neutral'], '')).toBe(false); // no window.Dex at all
+		mockThreatsDex();
+		expect(computeThreatHasNoAnswer(['Water Spout'], '', [], '')).toBe(false); // no threat types
+		expect(computeThreatHasNoAnswer(['Water Spout'], '', null, '')).toBe(false);
+	});
+
+	it('resolves the defender\'s own move through its real ability before checking it — a Pixilate user\'s own Hyper Voice hits as Fairy, not Normal', () => {
+		window.Dex = {
+			moves: { get: (name) => ({
+				'hyper voice': { exists: true, type: 'Normal', category: 'Special', flags: { sound: 1 } },
+			}[String(name).toLowerCase()] || { exists: false }) },
+			types: {
+				// Resists Normal specifically, but is weak to Fairy — isolates the ability's real
+				// effect on the checked type from a "some fictional type just happens to like
+				// everything" false positive.
+				get: (name) => ({
+					fairyweaknormalresist: { exists: true, damageTaken: { Normal: 2, Fairy: 1 } },
+				}[String(name).toLowerCase()] || { exists: false }),
+			},
+		};
+		expect(computeThreatHasNoAnswer(['Hyper Voice'], '', ['fairyweaknormalresist'], '')).toBe(true); // bare Normal, resisted
+		expect(computeThreatHasNoAnswer(['Hyper Voice'], 'Pixilate', ['fairyweaknormalresist'], '')).toBe(false); // Fairy via Pixilate, super effective
+	});
+
+	it('applies the threat\'s own real defensive ability — a Water Absorb holder genuinely blocks a Water move back', () => {
+		window.Dex = {
+			moves: { get: (name) => ({
+				'water spout': { exists: true, type: 'Water', category: 'Special' },
+			}[String(name).toLowerCase()] || { exists: false }) },
+			types: { get: (name) => ({
+				weak: { exists: true, damageTaken: { Water: 1 } }, // super effective by typing alone
+			}[String(name).toLowerCase()] || { exists: false }) },
+		};
+		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['weak'], '')).toBe(false); // no ability -> real 2x answer
+		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['weak'], 'Water Absorb')).toBe(true); // blocked entirely
+	});
 });
 
 describe('computeThreatOffense', () => {
@@ -2729,19 +2824,25 @@ describe('computeThreatOffense', () => {
 describe('computeMemberDefense', () => {
 	afterEach(() => { delete window.Dex; });
 
-	it('reads real def/spd/types/speed/ability/weight from the member\'s own set, folding its own held item into Speed', () => {
+	it('reads real def/spd/types/speed/ability/weight/moves from the member\'s own set, folding its own held item into Speed', () => {
 		window.Dex = {
 			items: { get: () => ({ exists: false }) },
 			species: { get: (name) => (name === 'Sceptile' ? { exists: true, types: ['Grass', 'Poison'], weightkg: 52.5 } : { exists: false }) },
 		};
-		const memberSet = { species: 'Sceptile', item: 'Choice Scarf', ability: 'Overgrow', evs: {}, nature: '' };
+		const memberSet = {
+			species: 'Sceptile', item: 'Choice Scarf', ability: 'Overgrow', evs: {}, nature: '',
+			moves: ['Leaf Blade', '', 'Earthquake', 'Dragon Claw'], // a blank slot mixed in
+		};
 		const getStat = (stat, set) => {
 			expect(set).toBe(memberSet);
 			return stat === 'def' ? 60 : stat === 'spd' ? 90 : 100; // spe: 100
 		};
 		const tbRoom = { getStat };
 		const defense = computeMemberDefense(tbRoom, memberSet);
-		expect(defense).toEqual({ types: ['Grass', 'Poison'], def: 60, spd: 90, speed: 150, ability: 'Overgrow', weight: 52.5 }); // floor(100 * 1.5)
+		expect(defense).toEqual({
+			types: ['Grass', 'Poison'], def: 60, spd: 90, speed: 150, ability: 'Overgrow', weight: 52.5, // floor(100 * 1.5)
+			moves: ['Leaf Blade', 'Earthquake', 'Dragon Claw'], // blank slot filtered out
+		});
 	});
 
 	it('falls back to a null weight when the species lookup carries no real weightkg', () => {
