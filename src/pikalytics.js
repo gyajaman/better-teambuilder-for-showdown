@@ -220,11 +220,29 @@
 	 *  independently viable, independently tiered Pokémon with their own usage entries
 	 *  (confirmed live: e.g. "Ninetales-Alola" has its own page, distinct from "Ninetales").
 	 *  COSMETIC_FORME_FALLBACK above is checked the same way, for the same reason, for the
-	 *  formes it covers. */
+	 *  formes it covers.
+	 *
+	 *  Folds to `species.battleOnly` itself, not `species.baseSpecies` — confirmed directly
+	 *  against data/pokedex.ts: for most battle-only formes the two are the same real species
+	 *  name (a plain Mega Blastoise's own battleOnly IS "Blastoise", its baseSpecies), but not
+	 *  always. Floette-Mega's own real `battleOnly` is "Floette-Eternal", not "Floette" — you
+	 *  build Floette-Eternal (a real, independently-legal forme with its own real stats, not a
+	 *  cosmetic variant) holding Floettite, not plain Floette — `baseSpecies` only ever names
+	 *  the *ultimate* root ancestor (skipping over that real intermediate forme entirely), while
+	 *  `battleOnly` names the *direct* one this specific battle-only forme actually requires. The
+	 *  real, current-VGC-relevant case this matters for: Ogerpon-Wellspring/Hearthflame/
+	 *  Cornerstone-Tera's own `battleOnly` is "Ogerpon-Wellspring"/etc, not the bare "Ogerpon" its
+	 *  baseSpecies names — collapsing those to plain Ogerpon would query the wrong, unmasked
+	 *  Pokémon's usage page entirely for three real, independently-tiered, mask-holding builds.
+	 *  Falls back to `baseSpecies` only when `battleOnly` is an array (real, if rare: Zygarde-
+	 *  Complete is reachable from either Zygarde or Zygarde-10%, Necrozma-Ultra from either
+	 *  Dawn-Wings or Dusk-Mane Necrozma) — there's no single obviously-correct one of several
+	 *  real parents to pick without further empirical Pikalytics verification, so this keeps the
+	 *  same behavior those cases already had rather than guessing at one arm of the ambiguity. */
 	function resolveQuerySpecies(speciesName) {
 		const species = window.Dex && window.Dex.species.get(speciesName);
 		if (!species || !species.exists) return speciesName;
-		if (species.battleOnly) return species.baseSpecies;
+		if (species.battleOnly) return typeof species.battleOnly === 'string' ? species.battleOnly : species.baseSpecies;
 		return COSMETIC_FORME_FALLBACK.get(toID(species.name)) || species.name;
 	}
 
@@ -235,11 +253,21 @@
 	/** The set of ability ids actually obtainable on `querySpecies` — its own declarable
 	 *  abilities (0/1/H/S slots) plus, for a Mega/Primal-eligible species, every one of its
 	 *  Mega/Primal formes' abilities too. That second part matters because resolveQuerySpecies
-	 *  above folds every Mega/Primal forme into its base species' Pikalytics query (Pikalytics
-	 *  tracks their usage there, not on a separate page — see its own doc comment), so a
-	 *  legitimate real result for e.g. "Charizard" can carry Drought (Mega Y) or Blaze (no
-	 *  Mega) alike; validating against only the base forme's own two abilities would wrongly
-	 *  reject the Mega ones.
+	 *  above folds every Mega/Primal forme into its own real battleOnly species' Pikalytics query
+	 *  (Pikalytics tracks their usage there, not on a separate page — see that function's own doc
+	 *  comment), so a legitimate real result for e.g. "Charizard" can carry Drought (Mega Y) or
+	 *  Blaze (no Mega) alike; validating against only the base forme's own two abilities would
+	 *  wrongly reject the Mega ones.
+	 *
+	 *  `otherFormes` is read off the real *root* species (`species.baseSpecies`, when present),
+	 *  not off `querySpecies` itself — confirmed directly against data/pokedex.ts: `querySpecies`
+	 *  can now already be an intermediate battle-only forme rather than the true base
+	 *  (resolveQuerySpecies' own doc comment: Floette-Eternal, Ogerpon-Wellspring, etc), and only
+	 *  the true root's own `otherFormes` list reaches every real sibling Mega/battle-only forme —
+	 *  Floette-Eternal's own `otherFormes` doesn't list Floette-Mega at all, only plain Floette's
+	 *  does. Without this, Floette-Mega's own real fixed ability (Fairy Aura) would be wrongly
+	 *  stripped as "illegal" from a real Floette-Eternal usage result. A species with no
+	 *  `baseSpecies` of its own (already the root) falls back to itself, unchanged from before.
 	 *
 	 *  Returns null (skip filtering entirely) rather than an empty set when the Dex isn't
 	 *  available or the species can't be found — "can't validate" must never be treated the
@@ -249,7 +277,8 @@
 		const species = window.Dex.species.get(querySpecies);
 		if (!species || !species.exists) return null;
 		const ids = new Set(Object.values(species.abilities || {}).map(toID));
-		for (const formeName of species.otherFormes || []) {
+		const rootSpecies = (species.baseSpecies && window.Dex.species.get(species.baseSpecies)) || species;
+		for (const formeName of (rootSpecies.exists ? rootSpecies.otherFormes : null) || []) {
 			const forme = window.Dex.species.get(formeName);
 			if (forme && forme.exists && forme.battleOnly) {
 				Object.values(forme.abilities || {}).forEach((a) => ids.add(toID(a)));
@@ -479,10 +508,11 @@
 	 *  abilities/natures/spreads/team/counters/teams/faq — see the module doc comment) for a
 	 *  Showdown format id + species name, or null if unavailable. Never rejects. A format not
 	 *  in FORMAT_SLUG_MAP resolves to null immediately, no network at all — that's the
-	 *  allowlist doing its job, not a fallback for a missing mapping. Mega/Primal species are
-	 *  resolved to their base species first (see resolveQuerySpecies) before either querying
-	 *  or reading/writing the cache, so e.g. "Blastoise-Mega" and "Blastoise" share one cache
-	 *  entry.
+	 *  allowlist doing its job, not a fallback for a missing mapping. Mega/Primal (and other
+	 *  battle-only) species are resolved to their own real battleOnly species first (see
+	 *  resolveQuerySpecies — usually, but not always, the same as the base species) before
+	 *  either querying or reading/writing the cache, so e.g. "Blastoise-Mega" and "Blastoise"
+	 *  share one cache entry.
 	 *
 	 *  Tier 2 of the cache (see the module comment above): a cached entry is only served as-is
 	 *  when it's both within CACHE_TTL_MS *and* still matches the format's current

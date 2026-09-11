@@ -43,7 +43,7 @@ Leave the number blank to keep the filter inactive.
 
 ## Pikalytics sidebar
 
-When the window is wide enough, no side room is docked, and a Pokémon is being edited, the teambuilder splits in half and a panel appears alongside it with live Pikalytics usage stats for that Pokémon in the team's current format: Common Moves, Abilities, Items, Natures, Spreads, and Teammates. Data always matches the species and format currently being edited, and shows "No data" rather than stale results when nothing is available. Mega/Primal Pokémon are looked up under their base species, matching how Pikalytics tracks Mega usage.
+When the window is wide enough, no side room is docked, and a Pokémon is being edited, the teambuilder splits in half and a panel appears alongside it with live Pikalytics usage stats for that Pokémon in the team's current format: Common Moves, Abilities, Items, Natures, Spreads, and Teammates. Data always matches the species and format currently being edited, and shows "No data" rather than stale results when nothing is available. Mega/Primal Pokémon are looked up under their own real in-battle-only species, matching how Pikalytics tracks Mega usage — usually the plain base species, but not always (Floette-Mega is looked up under Floette-Eternal, not plain Floette; Ogerpon's Tera-mask formes under their own masked build, not bare Ogerpon).
 
 Format coverage is a deliberate, narrow allowlist — Pokemon Champions VGC 2026 Regulations B and C only (Reg A was retired from Showdown and dropped from this list; it's no longer selectable there anyway):
 

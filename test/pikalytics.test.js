@@ -109,13 +109,58 @@ describe('resolveQuerySpecies', () => {
 		expect(CF_Pikalytics.resolveQuerySpecies('Not A Real Mon')).toBe('Not A Real Mon');
 	});
 
-	it('collapses a battle-only forme (Mega/Primal) to its base species', () => {
+	it('collapses a battle-only forme (Mega/Primal) to its own real battleOnly species — same as baseSpecies for an ordinary Mega', () => {
+		// Real shape confirmed against data/pokedex.ts: battleOnly is a species name string, not
+		// a bare boolean — for a plain Mega like Blastoise-Mega it's the exact same string as
+		// baseSpecies ("Blastoise"), since the real chain is base -> Mega directly.
 		window.Dex = {
 			species: {
-				get: () => ({ exists: true, battleOnly: true, baseSpecies: 'Blastoise', name: 'Blastoise-Mega' }),
+				get: () => ({ exists: true, battleOnly: 'Blastoise', baseSpecies: 'Blastoise', name: 'Blastoise-Mega' }),
 			},
 		};
 		expect(CF_Pikalytics.resolveQuerySpecies('Blastoise-Mega')).toBe('Blastoise');
+	});
+
+	it('collapses to the real battleOnly species, NOT the ultimate baseSpecies, when the two genuinely differ (Floette-Mega -> Floette-Eternal, not plain Floette)', () => {
+		// Real shape confirmed against data/pokedex.ts: Floette-Mega's own real chain is
+		// Floette -> Floette-Eternal (a real, independently-legal forme with its own real
+		// stats, not a cosmetic variant) -> Floette-Mega, so its battleOnly is "Floette-Eternal"
+		// while baseSpecies names the ultimate root, plain "Floette" — collapsing to baseSpecies
+		// would query the wrong (and likely unfielded, per this file's own COSMETIC_FORME_FALLBACK
+		// doc comment on illegal non-Eternal Floette formes) species entirely.
+		window.Dex = {
+			species: {
+				get: () => ({ exists: true, battleOnly: 'Floette-Eternal', baseSpecies: 'Floette', name: 'Floette-Mega' }),
+			},
+		};
+		expect(CF_Pikalytics.resolveQuerySpecies('Floette-Mega')).toBe('Floette-Eternal');
+	});
+
+	it('collapses an Ogerpon Tera-mask forme to its own real mask-holding battleOnly species, not the bare unmasked base', () => {
+		// Real shape confirmed against data/pokedex.ts: Ogerpon-Wellspring-Tera's own real
+		// battleOnly is "Ogerpon-Wellspring" (the real, independently-tiered, mask-holding
+		// build), not the bare "Ogerpon" its baseSpecies names — a real, currently VGC-relevant
+		// case this matters for, not just an obscure one.
+		window.Dex = {
+			species: {
+				get: () => ({ exists: true, battleOnly: 'Ogerpon-Wellspring', baseSpecies: 'Ogerpon', name: 'Ogerpon-Wellspring-Tera' }),
+			},
+		};
+		expect(CF_Pikalytics.resolveQuerySpecies('Ogerpon-Wellspring-Tera')).toBe('Ogerpon-Wellspring');
+	});
+
+	it('falls back to baseSpecies when battleOnly is a real array of several possible parents (Zygarde-Complete: Zygarde or Zygarde-10%)', () => {
+		// Real shape confirmed against data/pokedex.ts — battleOnly can genuinely be a string
+		// array, not just a single string, when a battle-only forme is reachable from more than
+		// one real parent. No single one of several is obviously the right query target without
+		// further empirical verification, so this keeps the same baseSpecies fallback the array
+		// case already had rather than guessing at one arm of the ambiguity.
+		window.Dex = {
+			species: {
+				get: () => ({ exists: true, battleOnly: ['Zygarde', 'Zygarde-10%'], baseSpecies: 'Zygarde', name: 'Zygarde-Complete' }),
+			},
+		};
+		expect(CF_Pikalytics.resolveQuerySpecies('Zygarde-Complete')).toBe('Zygarde');
 	});
 
 	it('leaves an independently-viable forme (e.g. a regional form) alone', () => {
@@ -304,6 +349,44 @@ describe('getSpeciesData', () => {
 		});
 		const result = await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Charizard');
 		expect(result.abilities.map((a) => a.ability).sort()).toEqual(['Blaze', 'Drought']);
+	});
+
+	it('queries under the real direct battle-only species, not the ultimate base, for a multi-level chain — and still credits that forme\'s own Mega ability as legal (Floette-Mega -> Floette-Eternal, not plain Floette)', async () => {
+		// Real shape confirmed against data/pokedex.ts: Floette-Mega's own real chain is
+		// Floette -> Floette-Eternal (a real, independently-legal forme, not a cosmetic
+		// variant) -> Floette-Mega — its own battleOnly is "Floette-Eternal", not "Floette".
+		// Floette-Eternal's own otherFormes doesn't list Floette-Mega at all; only plain
+		// Floette's does, so legalAbilityIdsFor has to walk to that real root via baseSpecies
+		// to still find Floette-Mega's own ability, not just Floette-Eternal's own two.
+		window.Dex = {
+			species: {
+				get: (name) => ({
+					'floette-mega': { exists: true, battleOnly: 'Floette-Eternal', baseSpecies: 'Floette', abilities: { '0': 'Fairy Aura' } },
+					'floette-eternal': { exists: true, battleOnly: false, baseSpecies: 'Floette', abilities: { '0': 'Flower Veil', H: 'Symbiosis' } },
+					floette: { exists: true, battleOnly: false, otherFormes: ['Floette-Eternal', 'Floette-Mega'], abilities: { '0': 'Flower Veil', H: 'Symbiosis' } },
+				}[String(name).toLowerCase()] || { exists: false }),
+			},
+		};
+		const requestedSpecies = [];
+		installFetchMock({
+			discover: (u) => {
+				requestedSpecies.push(decodeURIComponent(u.split('/').pop()));
+				return discoveryResponse('Floette-Eternal', '2026-05', '1500');
+			},
+			species: (u) => {
+				requestedSpecies.push(decodeURIComponent(u.split('/').pop()));
+				return JSON.stringify(mon('Floette-Eternal', {
+					abilities: [
+						{ ability: 'Flower Veil', percent: '50.0' },
+						{ ability: 'Fairy Aura', percent: '48.0' }, // real, via commonly Mega Evolving
+						{ ability: 'Levitate', percent: '1.0' }, // not real on any Floette forme
+					],
+				}));
+			},
+		});
+		const result = await CF_Pikalytics.getSpeciesData(FORMAT_ID, 'Floette-Mega');
+		expect(requestedSpecies.every((s) => s === 'Floette-Eternal')).toBe(true); // not plain "Floette"
+		expect(result.abilities.map((a) => a.ability).sort()).toEqual(['Fairy Aura', 'Flower Veil']);
 	});
 
 	it('does not filter abilities when the Dex is unavailable — fails open, not closed', async () => {
