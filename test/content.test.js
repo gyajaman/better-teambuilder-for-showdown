@@ -2628,10 +2628,16 @@ describe('computeThreatReasons', () => {
 
 	it('does NOT append a wall reason once the member has a real answer, even alongside other reasons', () => {
 		mockThreatsDex();
-		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], types: ['neutral'], atk: 60, spa: 60 };
-		// Wave Crash (Water) lands neutral (1x) against the threat's own 'neutral' types — a real
-		// answer, so no wall reason even though the matchup also produces a real move reason.
-		const defender = { types: ['weak'], def: 100, spd: 100, moves: ['Wave Crash'] };
+		// threat.baseSpeed (50) stays well under defender.speed (150) so the *forward* speed
+		// reason still doesn't fire (matching this matchup's own expected move-reason-only
+		// output) — it's only used here as the reversed check's own "does the member outspeed
+		// the counter" input.
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], types: ['neutral'], atk: 60, spa: 60, baseSpeed: 50 };
+		// Wave Crash (Water) lands merely neutral (1x) against the threat's own 'neutral' types,
+		// but the member's own real Speed advantage (150 vs the threat's 50) backs it up — a real
+		// answer by the same standard computeThreatSpeedReason already uses, so no wall reason
+		// even though the matchup also produces a real move reason.
+		const defender = { types: ['weak'], def: 100, spd: 100, speed: 150, moves: ['Wave Crash'] };
 		expect(computeThreatReasons(threat, defender)).toEqual([
 			{ kind: 'move', move: 'Water Spout', type: 'Water', percent: 90 },
 		]);
@@ -2643,38 +2649,48 @@ describe('computeThreatHasNoAnswer', () => {
 
 	it('returns true when every real damaging move on the set is resisted', () => {
 		mockThreatsDex();
-		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['resists'], '')).toBe(true); // 0.5x
+		const defender = { moves: ['Water Spout'], ability: '' };
+		expect(computeThreatHasNoAnswer(defender, { types: ['resists'] })).toBe(true); // 0.5x
 	});
 
-	it('returns false as soon as one real move clears neutral (>=1x) — a deliberately known-imperfect bar, see this function\'s own doc comment', () => {
+	it('returns false when a real Speed advantage backs up an otherwise merely neutral hit — the same >=1x bar computeThreatSpeedReason already uses for "how it hurts you"', () => {
 		mockThreatsDex();
-		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['neutral'], '')).toBe(false); // 1x
+		const defender = { moves: ['Water Spout'], ability: '', speed: 150 };
+		expect(computeThreatHasNoAnswer(defender, { types: ['neutral'], baseSpeed: 100 })).toBe(false);
 	});
 
-	it('returns false when a real move is super effective', () => {
+	it('returns true for that same merely-neutral hit once there\'s no real Speed advantage backing it — consistent with computeThreatMoveReasons requiring >=2x on its own', () => {
 		mockThreatsDex();
-		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['weak'], '')).toBe(false); // 2x
+		const defender = { moves: ['Water Spout'], ability: '', speed: 50 }; // slower, not faster
+		expect(computeThreatHasNoAnswer(defender, { types: ['neutral'], baseSpeed: 100 })).toBe(true);
 	});
 
-	it('returns false as soon as ANY one move in a mixed set clears neutral, even if the rest are resisted', () => {
+	it('returns false when a real move is super effective, even with no Speed advantage at all', () => {
 		mockThreatsDex();
-		// 'resists' only lists Water as resisted (0.5x) — Brave Bird's own Flying type isn't
-		// listed at all, which defaults to neutral (1x), a real answer on its own.
-		expect(computeThreatHasNoAnswer(['Water Spout', 'Brave Bird'], '', ['resists'], '')).toBe(false);
+		const defender = { moves: ['Water Spout'], ability: '' };
+		expect(computeThreatHasNoAnswer(defender, { types: ['weak'] })).toBe(false); // 2x
+	});
+
+	it('returns false as soon as ANY one move in a mixed set is super effective, Status moves skipped along the way', () => {
+		mockThreatsDex();
+		const defender = { moves: ['Protect', 'Water Spout'], ability: '' };
+		expect(computeThreatHasNoAnswer(defender, { types: ['weak'] })).toBe(false);
 	});
 
 	it('returns false — not true — when the set has no real damaging move at all (can\'t verify a wall, not the same as a confirmed one)', () => {
 		mockThreatsDex();
-		expect(computeThreatHasNoAnswer(['Protect'], '', ['neutral'], '')).toBe(false); // Status only
-		expect(computeThreatHasNoAnswer([], '', ['neutral'], '')).toBe(false); // empty moveset
-		expect(computeThreatHasNoAnswer(undefined, '', ['neutral'], '')).toBe(false);
+		const threat = { types: ['neutral'] };
+		expect(computeThreatHasNoAnswer({ moves: ['Protect'], ability: '' }, threat)).toBe(false); // Status only
+		expect(computeThreatHasNoAnswer({ moves: [], ability: '' }, threat)).toBe(false); // empty moveset
+		expect(computeThreatHasNoAnswer({ moves: undefined, ability: '' }, threat)).toBe(false);
 	});
 
 	it('returns false without window.Dex or without real threat types to check against', () => {
-		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['neutral'], '')).toBe(false); // no window.Dex at all
+		const defender = { moves: ['Water Spout'], ability: '' };
+		expect(computeThreatHasNoAnswer(defender, { types: ['neutral'] })).toBe(false); // no window.Dex at all
 		mockThreatsDex();
-		expect(computeThreatHasNoAnswer(['Water Spout'], '', [], '')).toBe(false); // no threat types
-		expect(computeThreatHasNoAnswer(['Water Spout'], '', null, '')).toBe(false);
+		expect(computeThreatHasNoAnswer(defender, { types: [] })).toBe(false); // no threat types
+		expect(computeThreatHasNoAnswer(defender, { types: null })).toBe(false);
 	});
 
 	it('resolves the defender\'s own move through its real ability before checking it — a Pixilate user\'s own Hyper Voice hits as Fairy, not Normal', () => {
@@ -2691,8 +2707,9 @@ describe('computeThreatHasNoAnswer', () => {
 				}[String(name).toLowerCase()] || { exists: false }),
 			},
 		};
-		expect(computeThreatHasNoAnswer(['Hyper Voice'], '', ['fairyweaknormalresist'], '')).toBe(true); // bare Normal, resisted
-		expect(computeThreatHasNoAnswer(['Hyper Voice'], 'Pixilate', ['fairyweaknormalresist'], '')).toBe(false); // Fairy via Pixilate, super effective
+		const threat = { types: ['fairyweaknormalresist'] };
+		expect(computeThreatHasNoAnswer({ moves: ['Hyper Voice'], ability: '' }, threat)).toBe(true); // bare Normal, resisted
+		expect(computeThreatHasNoAnswer({ moves: ['Hyper Voice'], ability: 'Pixilate' }, threat)).toBe(false); // Fairy via Pixilate, super effective
 	});
 
 	it('applies the threat\'s own real defensive ability — a Water Absorb holder genuinely blocks a Water move back', () => {
@@ -2704,8 +2721,9 @@ describe('computeThreatHasNoAnswer', () => {
 				weak: { exists: true, damageTaken: { Water: 1 } }, // super effective by typing alone
 			}[String(name).toLowerCase()] || { exists: false }) },
 		};
-		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['weak'], '')).toBe(false); // no ability -> real 2x answer
-		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['weak'], 'Water Absorb')).toBe(true); // blocked entirely
+		const defender = { moves: ['Water Spout'], ability: '' };
+		expect(computeThreatHasNoAnswer(defender, { types: ['weak'], ability: '' })).toBe(false); // no ability -> real 2x answer
+		expect(computeThreatHasNoAnswer(defender, { types: ['weak'], ability: 'Water Absorb' })).toBe(true); // blocked entirely
 	});
 });
 

@@ -901,51 +901,65 @@
 		});
 	}
 
-	/** Whether `defenderMoves` — a real team member's own already-chosen moveset, NOT a
-	 *  Pikalytics usage list, so nothing here is gated on a usage percent the way the threat's
-	 *  own moves are elsewhere in this file — has zero real answers to a counter's own real
-	 *  types/ability: every one of the member's own damaging moves lands resisted (<1x) or
-	 *  immune (0x), so the counter is a genuine, real wall against this specific member, not
-	 *  just a hard hitter.
+	/** Whether the member (`defender`) has zero *real* answers back against the counter
+	 *  (`threat`) — reusing the exact same criteria this file already uses to decide whether the
+	 *  counter's own moves are a real threat, just with the two sides swapped, rather than a
+	 *  second, bespoke "how hard does this hit" heuristic. Two earlier standalone attempts here
+	 *  (mult >= 1x, then mult >= 2x on their own) each fixed one failure mode and broke the
+	 *  opposite one — a weak neutral hit wrongly counting, or a strong neutral hit wrongly not —
+	 *  because type multiplier alone was never the right signal on its own; computeThreatMoveReasons
+	 *  already had to solve exactly this (real power AND type multiplier AND, separately, whether
+	 *  a Speed advantage backs it up) for the identical "is this move a real answer" question in
+	 *  the other direction, so reusing it here is both less code and inherently consistent: this
+	 *  member's own real moveset is judged as a real answer by the *identical* standard the
+	 *  counter's moveset already is, not a looser or stricter one.
 	 *
-	 *  The bar is deliberately >=1x (merely not resisted), not >=2x (super effective) — that
-	 *  stricter bar was tried and reverted: it fixed a weak *neutral* move wrongly counting as a
-	 *  real answer, but broke the opposite, equally real case the exact same way — a genuinely
-	 *  strong *neutral* hit (no type disadvantage, real power) stopped counting as an answer at
-	 *  all just for not also being super effective. A fully correct bar would need real
-	 *  power/STAB folded in too (movePower/stabAdjustedPower, the same "how hard does this hit"
-	 *  proxy computeThreatMoveReasons already uses for the opposite direction) rather than type
-	 *  multiplier alone — deliberately not done here yet, since picking a defensible absolute
-	 *  power floor is its own real design question, not a quick follow-up. >=1x is the accepted,
-	 *  known-imperfect interim: a weak neutral move can still register as "an answer" when it
-	 *  isn't really much of one, but at least a strong neutral hit is never wrongly discounted.
-	 *
-	 *  `defenderAbility` feeds effectiveMoveType (the defender's own real ability can change its
-	 *  own move's effective type — a Pixilate Sylveon's own Hyper Voice is checked as Fairy here
-	 *  too, same as everywhere else this file resolves a move's real effective type) and
-	 *  `threatAbility` feeds applyDefensiveAbility (the counter's own real ability — a Water
-	 *  Absorb/Levitate/Flash Fire/etc. holder reads as genuinely blocking the matching type here
-	 *  too, the identical mechanism computeThreatMoveReasons/computeThreatSpeedReason already
-	 *  apply in the opposite direction).
+	 *  `defender.moves` (real, already-chosen move name strings — no usage percent to gate on,
+	 *  unlike a Pikalytics move list) is reshaped into the same `{move, type, percent}` triples
+	 *  computeThreatMoveReasons/computeThreatSpeedReason expect, `percent: 100` since a move
+	 *  that's actually on the set is used 100% of the time, always clearing
+	 *  TEAM_THREATS_MOVE_USAGE_MIN_PERCENT. The member then plays the "threat" role in a reversed
+	 *  call (its own real ability/types/Speed/weight) and the counter plays the "defender" role
+	 *  (its own real types/ability/Speed/weight) — real answers are exactly what either reversed
+	 *  function call would report as a real reason: outspeeding the counter with a non-resisted
+	 *  hit (computeThreatSpeedReason, >=1x — a real Speed advantage is what makes even a merely
+	 *  neutral hit meaningful there), or a real super-effective move on its own merit
+	 *  (computeThreatMoveReasons, >=2x). `scarfSpeed` is left null on the reversed side — a real
+	 *  team member's held item is already folded into `defender.speed` itself
+	 *  (computeMemberDefense's own applySpeedModifiers), unlike the counter's own hypothetical
+	 *  "what if it ran Scarf" possibility. The reversed stat-mismatch reason (High Attack vs Low
+	 *  Defense and its Special counterpart) is deliberately NOT replayed here — it would need the
+	 *  counter's own real Defense/Special Defense, which computeThreatOffense's own return shape
+	 *  doesn't carry (it was only ever built to be the *attacking* side of a matchup).
 	 *
 	 *  Returns false, not true, when there's nothing real to check at all (no window.Dex, no
 	 *  threat types, or the member's own moveset has no real damaging move in it — a
 	 *  still-being-built set, or one that's genuinely all Status) — "can't verify a wall" is not
 	 *  the same claim as "genuinely walled," the same "don't credit what you can't confirm"
 	 *  reasoning movePower's own doc comment already uses for an unconfirmable base power. */
-	function computeThreatHasNoAnswer(defenderMoves, defenderAbility, threatTypes, threatAbility) {
-		if (!window.Dex || !threatTypes || !threatTypes.length) return false;
-		let sawRealDamagingMove = false;
-		for (const moveName of (defenderMoves || [])) {
+	function computeThreatHasNoAnswer(defender, threat) {
+		if (!window.Dex || !threat.types || !threat.types.length) return false;
+		const moveEntries = [];
+		for (const moveName of (defender.moves || [])) {
 			if (!moveName || !isDamagingMove(moveName)) continue;
 			const moveData = window.Dex.moves.get(moveName);
 			if (!moveData || !moveData.exists || !moveData.type) continue;
-			sawRealDamagingMove = true;
-			const type = effectiveMoveType(moveName, moveData.type, defenderAbility);
-			const mult = applyDefensiveAbility(typeEffectivenessMultiplier(type, threatTypes), type, threatAbility);
-			if (mult >= 1) return false; // a real answer exists
+			moveEntries.push({ move: moveName, type: moveData.type, percent: 100 });
 		}
-		return sawRealDamagingMove;
+		if (!moveEntries.length) return false; // nothing real to check — can't verify a wall
+
+		const reversedThreat = {
+			moves: moveEntries, ability: defender.ability, types: defender.types,
+			baseSpeed: defender.speed, scarfSpeed: null, weight: defender.weight,
+		};
+		const reversedDefender = { types: threat.types, ability: threat.ability, speed: threat.baseSpeed, weight: threat.weight };
+
+		if (computeThreatSpeedReason(reversedThreat, reversedDefender)) return false;
+		const moveReasons = computeThreatMoveReasons(
+			reversedThreat.moves, reversedDefender.types, reversedThreat.ability, reversedThreat.types, null, reversedDefender.ability,
+			{ attacker: reversedThreat.weight, defender: reversedDefender.weight },
+			{ attacker: reversedThreat.baseSpeed, defender: reversedDefender.speed });
+		return moveReasons.length === 0;
 	}
 
 	/** The actual "why" behind one threat/team-member matchup, for the Biggest Threats hover
@@ -1020,7 +1034,7 @@
 			threatHasMoveOfCategory(threat.moves, 'Special')) {
 			reasons.push({ kind: 'stat', text: 'High Special Attack vs Low Special Defense' });
 		}
-		if (computeThreatHasNoAnswer(defender.moves, defender.ability, threat.types, threat.ability)) {
+		if (computeThreatHasNoAnswer(defender, threat)) {
 			reasons.push({ kind: 'wall', text: 'Nothing on this set threatens it back' });
 		}
 		return reasons;
