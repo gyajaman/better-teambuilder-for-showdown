@@ -919,6 +919,39 @@ describe('resolveSpeedSpectrumSpecies', () => {
 		};
 		expect(resolveSpeedSpectrumSpecies({ species: 'Aegislash-Blade', item: '' })).toEqual({ species: 'Aegislash-Blade', isMega: false });
 	});
+
+	it('reports isMega for Rayquaza-Mega picked directly from search, even though it has no requiredItem at all', () => {
+		// Real shape confirmed against data/pokedex.ts and the real client's own Species class
+		// (battle-dex-data.ts): Mega Rayquaza carries requiredMove: "Dragon Ascent" instead of a
+		// Mega Stone — it Mega Evolves via its own moveset, no held item involved — so a bare
+		// requiredItem check alone would have missed it entirely.
+		window.Dex = {
+			items: { get: () => ({ exists: false }) },
+			species: {
+				get: (name) => (name === 'Rayquaza-Mega' ?
+					{ exists: true, name: 'Rayquaza-Mega', forme: 'Mega', battleOnly: 'Rayquaza', requiredMove: 'Dragon Ascent', baseSpecies: 'Rayquaza' } :
+					{ exists: false }),
+			},
+		};
+		expect(resolveSpeedSpectrumSpecies({ species: 'Rayquaza-Mega', item: '' })).toEqual({ species: 'Rayquaza-Mega', isMega: true });
+	});
+
+	it('does NOT report isMega for Meloetta-Pirouette, despite sharing Rayquaza-Mega\'s exact requiredMove shape', () => {
+		// The real, deliberate distinction requiredItem alone can't make: Meloetta-Pirouette's
+		// own real forme id ("pirouette") doesn't contain "mega" the way Rayquaza-Mega's own
+		// ("mega") does — confirmed against the real client's own isMega getter
+		// (formeid.includes('mega')) — so this is correctly excluded even though both share the
+		// identical requiredMove field shape (real base data: requiredMove: "Relic Song").
+		window.Dex = {
+			items: { get: () => ({ exists: false }) },
+			species: {
+				get: (name) => (name === 'Meloetta-Pirouette' ?
+					{ exists: true, name: 'Meloetta-Pirouette', forme: 'Pirouette', battleOnly: 'Meloetta', requiredMove: 'Relic Song', baseSpecies: 'Meloetta' } :
+					{ exists: false }),
+			},
+		};
+		expect(resolveSpeedSpectrumSpecies({ species: 'Meloetta-Pirouette', item: '' })).toEqual({ species: 'Meloetta-Pirouette', isMega: false });
+	});
 });
 
 describe('assignSpeedSpectrumLanes', () => {

@@ -2976,19 +2976,27 @@
 	 *  species.requiredItem — the megaStone lookup alone can't catch this case, since that map is
 	 *  keyed by the base species name, not the Mega forme's own).
 	 *
-	 *  `requiredItem`, not the broader `battleOnly`, gates that second branch — confirmed
-	 *  directly against data/pokedex.ts: `battleOnly` alone is also true for real, unrelated
-	 *  in-battle-only formes with no held item behind them at all (Aegislash-Blade, Palafin-Hero,
-	 *  Darmanitan-Zen, Wishiwashi-School — each `requiredAbility` instead, triggered by Stance
-	 *  Change/Zero to Hero/Zen Mode/Schooling, never directly pickable from species search on
-	 *  their own). A bare `battleOnly` check would mislabel any of those as isMega if its exact
-	 *  forme name ever ended up as a real set's own species (a pasted/imported set naming the
-	 *  in-battle state directly, not a search pick) — a real Mega/Primal/Crowned-Sword forme
-	 *  always carries `requiredItem` (the item Showdown auto-fills once you pick that entry) on
-	 *  top of `battleOnly`, so gating on that instead only narrows which battleOnly formes
-	 *  qualify, it can never wrongly add one that didn't already. Returns `{species, isMega}`
-	 *  rather than just the name — callers need to know *whether* a substitution happened, not
-	 *  just its result (see computeSpeedSpectrumDomain's own Mega-vs-Scarf comparison, and
+	 *  `requiredItem` OR a real Mega forme id, not the broader `battleOnly` alone, gates that
+	 *  second branch — confirmed directly against data/pokedex.ts: `battleOnly` alone is also
+	 *  true for real, unrelated in-battle-only formes with no held item behind them at all
+	 *  (Aegislash-Blade, Palafin-Hero, Darmanitan-Zen, Wishiwashi-School — each
+	 *  `requiredAbility` instead, triggered by Stance Change/Zero to Hero/Zen Mode/Schooling,
+	 *  never directly pickable from species search on their own). A bare `battleOnly` check
+	 *  would mislabel any of those as isMega if its exact forme name ever ended up as a real
+	 *  set's own species (a pasted/imported set naming the in-battle state directly, not a
+	 *  search pick). `requiredItem` alone isn't quite enough either, though — confirmed live
+	 *  against the real client (battle-dex-data.ts's own Species class): Mega Rayquaza carries
+	 *  `requiredMove: "Dragon Ascent"` instead, no requiredItem at all, since it Mega Evolves via
+	 *  its own moveset, not a stone — the exact same field shape Meloetta-Pirouette's real
+	 *  `requiredMove: "Relic Song"` has, despite Pirouette NOT being a Mega and NOT being
+	 *  directly search-pickable the way Rayquaza-Mega is. The real client's own `isMega` getter
+	 *  resolves this ambiguity by checking the forme id itself for "mega" instead
+	 *  (`formeid.includes('mega')` — battle-dex-data.ts, confirmed live), which this mirrors:
+	 *  `requiredItem` alone still correctly covers Primal Reversion and the Crowned Sword/Shield
+	 *  formes (their own forme ids don't contain "mega"), and the forme-id check alone still
+	 *  correctly covers Rayquaza-Mega. Returns `{species, isMega}` rather than just the name —
+	 *  callers need to know *whether* a substitution happened, not just its result (see
+	 *  computeSpeedSpectrumDomain's own Mega-vs-Scarf comparison, and
 	 *  computeTeamDefensiveProfile's own canToggle, which needs isMega true for a directly-picked
 	 *  Mega just as much as for one built via a separate Mega Stone item). */
 	function resolveSpeedSpectrumSpecies(set) {
@@ -2999,7 +3007,10 @@
 		}
 		if (window.Dex) {
 			const species = window.Dex.species.get(set.species);
-			if (species && species.exists && species.battleOnly && species.requiredItem) return { species: set.species, isMega: true };
+			const isRealMegaForme = !!(species && species.forme && toIDSafe(species.forme).includes('mega'));
+			if (species && species.exists && species.battleOnly && (species.requiredItem || isRealMegaForme)) {
+				return { species: set.species, isMega: true };
+			}
 		}
 		return { species: set.species, isMega: false };
 	}
