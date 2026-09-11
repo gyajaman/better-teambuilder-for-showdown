@@ -903,23 +903,30 @@
 
 	/** Whether `defenderMoves` — a real team member's own already-chosen moveset, NOT a
 	 *  Pikalytics usage list, so nothing here is gated on a usage percent the way the threat's
-	 *  own moves are elsewhere in this file — has zero *real* answers to a counter's own real
-	 *  types/ability: every one of the member's own damaging moves lands resisted (<1x), immune
-	 *  (0x), or merely neutral (exactly 1x), so the counter is a genuine, real wall against this
-	 *  specific member, not just a hard hitter. The bar is >=2x, not >=1x — a weak neutral hit
-	 *  clears >=1x just as easily as a genuinely strong one, so that threshold alone let a real
-	 *  wall matchup slip through uncredited as "having an answer" when the answer was too shallow
-	 *  to mean anything. >=2x, not just "not neutral," is also the identical bar this file's own
-	 *  bestTeamCoverageReasons/coverageTierClass already draw the same line at elsewhere — a
-	 *  plain 1x cell there gets no color and no claim either, the exact same "genuinely neutral
-	 *  isn't a real answer" reasoning. `defenderAbility` feeds effectiveMoveType (the defender's
-	 *  own real ability can change its own move's effective type — a Pixilate Sylveon's own
-	 *  Hyper Voice is checked as Fairy here too, same as everywhere else this file resolves a
-	 *  move's real effective type) and `threatAbility` feeds applyDefensiveAbility (the counter's
-	 *  own real ability — a Water Absorb/Levitate/Flash Fire/etc. holder reads as genuinely
-	 *  blocking the matching type here too, the identical mechanism
-	 *  computeThreatMoveReasons/computeThreatSpeedReason already apply in the opposite
-	 *  direction).
+	 *  own moves are elsewhere in this file — has zero real answers to a counter's own real
+	 *  types/ability: every one of the member's own damaging moves lands resisted (<1x) or
+	 *  immune (0x), so the counter is a genuine, real wall against this specific member, not
+	 *  just a hard hitter.
+	 *
+	 *  The bar is deliberately >=1x (merely not resisted), not >=2x (super effective) — that
+	 *  stricter bar was tried and reverted: it fixed a weak *neutral* move wrongly counting as a
+	 *  real answer, but broke the opposite, equally real case the exact same way — a genuinely
+	 *  strong *neutral* hit (no type disadvantage, real power) stopped counting as an answer at
+	 *  all just for not also being super effective. A fully correct bar would need real
+	 *  power/STAB folded in too (movePower/stabAdjustedPower, the same "how hard does this hit"
+	 *  proxy computeThreatMoveReasons already uses for the opposite direction) rather than type
+	 *  multiplier alone — deliberately not done here yet, since picking a defensible absolute
+	 *  power floor is its own real design question, not a quick follow-up. >=1x is the accepted,
+	 *  known-imperfect interim: a weak neutral move can still register as "an answer" when it
+	 *  isn't really much of one, but at least a strong neutral hit is never wrongly discounted.
+	 *
+	 *  `defenderAbility` feeds effectiveMoveType (the defender's own real ability can change its
+	 *  own move's effective type — a Pixilate Sylveon's own Hyper Voice is checked as Fairy here
+	 *  too, same as everywhere else this file resolves a move's real effective type) and
+	 *  `threatAbility` feeds applyDefensiveAbility (the counter's own real ability — a Water
+	 *  Absorb/Levitate/Flash Fire/etc. holder reads as genuinely blocking the matching type here
+	 *  too, the identical mechanism computeThreatMoveReasons/computeThreatSpeedReason already
+	 *  apply in the opposite direction).
 	 *
 	 *  Returns false, not true, when there's nothing real to check at all (no window.Dex, no
 	 *  threat types, or the member's own moveset has no real damaging move in it — a
@@ -936,7 +943,7 @@
 			sawRealDamagingMove = true;
 			const type = effectiveMoveType(moveName, moveData.type, defenderAbility);
 			const mult = applyDefensiveAbility(typeEffectivenessMultiplier(type, threatTypes), type, threatAbility);
-			if (mult >= 2) return false; // a real answer exists
+			if (mult >= 1) return false; // a real answer exists
 		}
 		return sawRealDamagingMove;
 	}
