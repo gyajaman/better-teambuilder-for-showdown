@@ -2417,12 +2417,48 @@ describe('computeThreatPriorityMoves', () => {
 		]);
 	});
 
-	it('excludes a priority move that does not get STAB — no defender check at all, just not a real STAB attack', () => {
+	it('excludes a priority move that does not get STAB, regardless of the defender', () => {
 		mockThreatsDex();
 		// Aqua Jet is Water, but this attacker isn't Water-type -> no STAB -> doesn't qualify,
-		// regardless of what the defender is (not even passed in, unlike every other reason here).
+		// even against a defender this would otherwise hit for neutral damage.
 		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Normal'] };
-		expect(computeThreatPriorityMoves(threat)).toEqual([]);
+		expect(computeThreatPriorityMoves(threat, [], ['neutral'])).toEqual([]);
+	});
+
+	it('defaults to a neutral matchup (still qualifies) when no defenderTypes are passed in at all', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat)).toEqual([
+			{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 },
+		]);
+	});
+
+	it('excludes a real STAB priority move the defender resists — moving first isn\'t a real threat if it doesn\'t connect', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat, [], ['resists'])).toEqual([]);
+	});
+
+	it('excludes a real STAB priority move a defensive ability blocks outright, same as computeThreatMoveReasons', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat, [], ['neutral'], 'Water Absorb')).toEqual([]);
+	});
+
+	it('still credits a real STAB priority move that only reaches neutral damage — not resisted is enough, unlike computeThreatMoveReasons\' own >=2x bar', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat, [], ['neutral'])).toEqual([
+			{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 },
+		]);
+	});
+
+	it('still credits a real STAB priority move that is also super effective', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat, [], ['weak'])).toEqual([
+			{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 },
+		]);
 	});
 
 	it('checks STAB against the move\'s real effective type via threat.ability, same as every other reason', () => {

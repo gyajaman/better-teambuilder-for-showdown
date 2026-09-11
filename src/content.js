@@ -834,22 +834,27 @@
 	}
 
 	/** Real, commonly-used (>=TEAM_THREATS_MOVE_USAGE_MIN_PERCENT), STAB-boosted positive-priority
-	 *  moves on a threat — its own list, kept deliberately separate from computeThreatReasons'
-	 *  array rather than one more entry interleaved among the speed/move/stat reasons there (see
-	 *  buildTeamThreatTooltipHTML's own doc comment for why "Priority" renders as its own
-	 *  section instead).
+	 *  moves on a threat that at least connect for neutral damage — its own list, kept
+	 *  deliberately separate from computeThreatReasons' array rather than one more entry
+	 *  interleaved among the speed/move/stat reasons there (see buildTeamThreatTooltipHTML's own
+	 *  doc comment for why priority moves render alongside, not headed separately from, those).
 	 *
 	 *  A priority move is only worth flagging at all for one of two real reasons: it's STAB (this
 	 *  function's own job) or it's independently super effective against the defender — but that
 	 *  second case is already caught by computeThreatMoveReasons' own >=2x bar regardless of
 	 *  whether the move happens to have priority, so re-checking it here would just duplicate an
-	 *  already-shown reason under a second heading. This function deliberately checks the STAB
-	 *  half only. Unlike computeThreatSpeedReason/computeThreatMoveReasons above, there's no
-	 *  defender-side check at all (no typeEffectivenessMultiplier, no applyDefensiveAbility, no
-	 *  "does this actually connect") — a priority move mattering here is purely a fact about the
-	 *  attacker's own real, commonly-run kit (a real STAB attack that moves first regardless of
-	 *  Speed), not a claim about how hard it specifically hits *this* team member the way the
-	 *  reasons above have to prove.
+	 *  already-shown reason under a second heading. This function checks the STAB half, plus one
+	 *  more real bar: `mult` (typeEffectivenessMultiplier, then applyDefensiveAbility for the
+	 *  defender's own real ability) has to be at least 1 — resisted or blocked outright doesn't
+	 *  become a real threat just because it moves first. Not the >=2 bar computeThreatMoveReasons
+	 *  uses (a genuinely super-effective STAB priority move is already that function's own job,
+	 *  excluded from here via `reasons` below to avoid double-counting) — >=1 is enough here,
+	 *  since moving first with a merely-neutral STAB hit is still a real answer a slower/weaker
+	 *  defender has to account for, unlike a resisted or immune one.
+	 *
+	 *  `defenderTypes`/`defenderAbility` (both optional) default to a neutral matchup when
+	 *  omitted — typeEffectivenessMultiplier's own "no defender types, no penalty" default —
+	 *  same as every other call site in this file that can't always supply a real defender.
 	 *
 	 *  `reasons` is this same counter's own computeThreatReasons() output (or `[]`/omitted) — a
 	 *  move that's STAB *and* already named by a speed/move reason there (both carry `.move`) is
@@ -864,7 +869,7 @@
 	 *  nothing to rank by power for — STAB is binary, not a magnitude) and capped at
 	 *  TEAM_THREATS_MAX_MOVE_REASONS, the same cap computeThreatMoveReasons uses, for the same
 	 *  "don't let an unusual movepool flood the section" reason. */
-	function computeThreatPriorityMoves(threat, reasons) {
+	function computeThreatPriorityMoves(threat, reasons, defenderTypes, defenderAbility) {
 		if (!window.Dex) return [];
 		const shownMoves = new Set((reasons || []).filter((r) => r.move).map((r) => r.move));
 		const candidates = [];
@@ -878,6 +883,8 @@
 			if (!moveData || !moveData.exists || !(moveData.priority > 0)) continue;
 			const type = effectiveMoveType(m.move, m.type, threat.ability);
 			if (!threat.types || !threat.types.includes(type)) continue; // STAB only
+			const mult = applyDefensiveAbility(typeEffectivenessMultiplier(type, defenderTypes), type, defenderAbility);
+			if (mult < 1) continue; // resisted or immune — priority alone doesn't make it a real threat
 			candidates.push({ move: m.move, type, percent, priority: moveData.priority });
 		}
 		candidates.sort((a, b) => b.percent - a.percent);
@@ -5303,7 +5310,7 @@
 							const counters = row.counters.map((c) => {
 								const offense = computeThreatOffense(tbRoom, c.pokemon, monByName.get(c.pokemon));
 								const reasons = defense ? computeThreatReasons(offense, defense) : [];
-								const priorityMoves = computeThreatPriorityMoves(offense, reasons);
+								const priorityMoves = computeThreatPriorityMoves(offense, reasons, defense && defense.types, defense && defense.ability);
 								return { pokemon: c.pokemon, rank: c.rank, reasons, priorityMoves };
 							});
 							return { member: row.member, counters };
