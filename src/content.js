@@ -903,16 +903,23 @@
 
 	/** Whether `defenderMoves` — a real team member's own already-chosen moveset, NOT a
 	 *  Pikalytics usage list, so nothing here is gated on a usage percent the way the threat's
-	 *  own moves are elsewhere in this file — has zero real answers to a counter's own real
-	 *  types/ability: every one of the member's own damaging moves lands resisted (<1x) or
-	 *  immune (0x), so the counter is a genuine, real wall against this specific member, not
-	 *  just a hard hitter. `defenderAbility` feeds effectiveMoveType (the defender's own real
-	 *  ability can change its own move's effective type — a Pixilate Sylveon's own Hyper Voice
-	 *  is checked as Fairy here too, same as everywhere else this file resolves a move's real
-	 *  effective type) and `threatAbility` feeds applyDefensiveAbility (the counter's own real
-	 *  ability — a Water Absorb/Levitate/Flash Fire/etc. holder reads as genuinely blocking the
-	 *  matching type here too, the identical mechanism computeThreatMoveReasons/
-	 *  computeThreatSpeedReason already apply in the opposite direction).
+	 *  own moves are elsewhere in this file — has zero *real* answers to a counter's own real
+	 *  types/ability: every one of the member's own damaging moves lands resisted (<1x), immune
+	 *  (0x), or merely neutral (exactly 1x), so the counter is a genuine, real wall against this
+	 *  specific member, not just a hard hitter. The bar is >=2x, not >=1x — a weak neutral hit
+	 *  clears >=1x just as easily as a genuinely strong one, so that threshold alone let a real
+	 *  wall matchup slip through uncredited as "having an answer" when the answer was too shallow
+	 *  to mean anything. >=2x, not just "not neutral," is also the identical bar this file's own
+	 *  bestTeamCoverageReasons/coverageTierClass already draw the same line at elsewhere — a
+	 *  plain 1x cell there gets no color and no claim either, the exact same "genuinely neutral
+	 *  isn't a real answer" reasoning. `defenderAbility` feeds effectiveMoveType (the defender's
+	 *  own real ability can change its own move's effective type — a Pixilate Sylveon's own
+	 *  Hyper Voice is checked as Fairy here too, same as everywhere else this file resolves a
+	 *  move's real effective type) and `threatAbility` feeds applyDefensiveAbility (the counter's
+	 *  own real ability — a Water Absorb/Levitate/Flash Fire/etc. holder reads as genuinely
+	 *  blocking the matching type here too, the identical mechanism
+	 *  computeThreatMoveReasons/computeThreatSpeedReason already apply in the opposite
+	 *  direction).
 	 *
 	 *  Returns false, not true, when there's nothing real to check at all (no window.Dex, no
 	 *  threat types, or the member's own moveset has no real damaging move in it — a
@@ -929,7 +936,7 @@
 			sawRealDamagingMove = true;
 			const type = effectiveMoveType(moveName, moveData.type, defenderAbility);
 			const mult = applyDefensiveAbility(typeEffectivenessMultiplier(type, threatTypes), type, threatAbility);
-			if (mult >= 1) return false; // a real answer exists
+			if (mult >= 2) return false; // a real answer exists
 		}
 		return sawRealDamagingMove;
 	}

@@ -2626,11 +2626,14 @@ describe('computeThreatReasons', () => {
 		]);
 	});
 
-	it('does NOT append a wall reason once the member has a real answer, even alongside other reasons', () => {
+	it('does NOT append a wall reason once the member has a real (>=2x) answer, even alongside other reasons', () => {
 		mockThreatsDex();
-		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], types: ['neutral'], atk: 60, spa: 60 };
-		// Wave Crash (Water) lands neutral (1x) against the threat's own 'neutral' types — a real
-		// answer, so no wall reason even though the matchup also produces a real move reason.
+		// threat.types reused as 'weak' too (Water/Flying-weak) — a bare neutral hit wouldn't be
+		// enough to count as a real answer any more, so this specifically needs Wave Crash to
+		// land super effective, not just unresisted.
+		const threat = { moves: [{ move: 'Water Spout', percent: '90', type: 'Water' }], types: ['weak'], atk: 60, spa: 60 };
+		// Wave Crash (Water) lands super effective (2x) against the threat's own 'weak' types — a
+		// real answer, so no wall reason even though the matchup also produces a real move reason.
 		const defender = { types: ['weak'], def: 100, spd: 100, moves: ['Wave Crash'] };
 		expect(computeThreatReasons(threat, defender)).toEqual([
 			{ kind: 'move', move: 'Water Spout', type: 'Water', percent: 90 },
@@ -2646,21 +2649,25 @@ describe('computeThreatHasNoAnswer', () => {
 		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['resists'], '')).toBe(true); // 0.5x
 	});
 
-	it('returns false as soon as one real move clears neutral (>=1x)', () => {
+	it('returns true — not false — for a merely neutral (exactly 1x) move: too shallow a bar to count as a real answer', () => {
 		mockThreatsDex();
-		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['neutral'], '')).toBe(false); // 1x
+		// A weak neutral hit clears >=1x exactly as easily as a genuinely strong one, so 1x alone
+		// was never a meaningful signal — same reasoning this file's own coverageTierClass
+		// already applies elsewhere (a plain 1x cell gets no color and no claim either).
+		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['neutral'], '')).toBe(true); // 1x
 	});
 
-	it('returns false when a real move is super effective', () => {
+	it('returns false when a real move is super effective (>=2x)', () => {
 		mockThreatsDex();
 		expect(computeThreatHasNoAnswer(['Water Spout'], '', ['weak'], '')).toBe(false); // 2x
 	});
 
-	it('returns false as soon as ANY one move in a mixed set clears neutral, even if the rest are resisted', () => {
+	it('returns false as soon as ANY one move in a mixed set is super effective, even with a merely neutral move alongside it', () => {
 		mockThreatsDex();
-		// 'resists' only lists Water as resisted (0.5x) — Brave Bird's own Flying type isn't
-		// listed at all, which defaults to neutral (1x), a real answer on its own.
-		expect(computeThreatHasNoAnswer(['Water Spout', 'Brave Bird'], '', ['resists'], '')).toBe(false);
+		// 'stabtest' is super effective against Grass and Fire specifically — Water Spout's own
+		// Water type isn't listed at all (neutral, 1x, doesn't count on its own), but Solar
+		// Beam's real Grass type does (2x) — a real answer, regardless of move order.
+		expect(computeThreatHasNoAnswer(['Water Spout', 'Solar Beam'], '', ['stabtest'], '')).toBe(false);
 	});
 
 	it('returns false — not true — when the set has no real damaging move at all (can\'t verify a wall, not the same as a confirmed one)', () => {
