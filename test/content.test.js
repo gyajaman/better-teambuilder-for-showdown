@@ -27,7 +27,7 @@ const {
 	computeThreatReasons, computeThreatHasNoAnswer,
 	computeThreatOffense, computeMemberDefense,
 	buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
-	buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
+	buildThreatMoveRowHTML, buildTeamThreatTooltipHTML,
 	buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
 	buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad, mapWithConcurrency, watchSettingsAttribute,
 } = require('../src/content.js');
@@ -41,6 +41,10 @@ function mockDex() {
 		getTypeIcon: (type) => `<img class="type-icon" alt="${type}">`,
 		getItemIcon: (item) => `background:url(${item})`,
 		getPokemonIcon: (species) => `background:url(${species})`,
+		// Callers that resolve Mega Stones (resolveSpeedSpectrumSpecies) need these to exist even
+		// when a test isn't exercising Mega resolution itself — "not found" is the correct default.
+		items: { get: () => ({ exists: false }) },
+		species: { get: () => ({ exists: false }) },
 	};
 }
 
@@ -2622,7 +2626,7 @@ describe('computeThreatReasons', () => {
 		const threat = { moves: [], types: ['resists'] };
 		const defender = { types: ['neutral'], moves: ['Water Spout'] };
 		expect(computeThreatReasons(threat, defender)).toEqual([
-			{ kind: 'wall', text: 'Nothing on this set threatens it back' },
+			{ kind: 'wall', text: "Doesn't threaten back" },
 		]);
 	});
 
@@ -2950,73 +2954,26 @@ describe('buildTeamThreatsSectionHTML', () => {
 	});
 });
 
-describe('buildTeamThreatReasonCellHTML', () => {
+describe('buildThreatMoveRowHTML', () => {
 	afterEach(() => { delete window.Dex; });
 
-	it('renders a move reason with its real type icon, name, and usage percent', () => {
+	it('renders the exact icon+name+pct .cf-tooltip-row shape/classes the Popular tooltip already uses', () => {
 		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
-		const html = buildTeamThreatReasonCellHTML({ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 80 });
-		expect(html).toContain('<img alt="Flying">');
-		expect(html).toContain('Brave Bird');
-		expect(html).toContain('80.0%');
+		const html = buildThreatMoveRowHTML('Brave Bird', 80, 'Flying');
+		expect(html).toBe('<div class="cf-tooltip-row"><img alt="Flying">' +
+			'<span class="cf-pika-name">Brave Bird</span><span class="cf-pika-pct">80.0%</span></div>');
 	});
 
-	it('renders a plain stat reason with no icon', () => {
-		const html = buildTeamThreatReasonCellHTML({ kind: 'stat', text: 'High Atk vs Low Def' });
-		expect(html).toContain('High Atk vs Low Def');
-		expect(html).toContain('cf-teamthreats-reason-stat');
-	});
-
-	it('renders a speed reason with an "Outspeeds" label and no Scarf note when it holds unconditionally', () => {
-		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
-		const html = buildTeamThreatReasonCellHTML({ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: false });
-		expect(html).toContain('Outspeeds');
-		expect(html).toContain('<img alt="Water">');
-		expect(html).toContain('Water Spout');
-		expect(html).toContain('90.0%');
-		expect(html).not.toContain('needs Scarf');
-	});
-
-	it('adds a "(needs Scarf)" note right alongside "Outspeeds", not trailing after the move name/percent', () => {
-		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
-		const html = buildTeamThreatReasonCellHTML({ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: true });
-		expect(html).toContain('needs Scarf');
-		// The qualifier is about the outspeed claim itself, not the move backing it up — it has
-		// to land inside/next to the "Outspeeds" label, before the move's own name and percent,
-		// not after them where it would read as qualifying the move instead.
-		const outspeedsIdx = html.indexOf('Outspeeds');
-		const scarfIdx = html.indexOf('needs Scarf');
-		const moveNameIdx = html.indexOf('Water Spout');
-		const percentIdx = html.indexOf('90.0%');
-		expect(outspeedsIdx).toBeLessThan(scarfIdx);
-		expect(scarfIdx).toBeLessThan(moveNameIdx);
-		expect(scarfIdx).toBeLessThan(percentIdx);
-	});
-});
-
-describe('buildThreatPriorityRowHTML', () => {
-	afterEach(() => { delete window.Dex; });
-
-	it('renders a "+N" stage badge, the real type icon, move name, and usage percent', () => {
-		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
-		const html = buildThreatPriorityRowHTML({ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 });
-		expect(html).toContain('+1');
-		expect(html).toContain('<img alt="Water">');
-		expect(html).toContain('Aqua Jet');
-		expect(html).toContain('90.0%');
-	});
-
-	it('shows a higher priority stage correctly (Fake Out, +3)', () => {
-		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
-		const html = buildThreatPriorityRowHTML({ move: 'Fake Out', type: 'Normal', percent: 40, priority: 3 });
-		expect(html).toContain('+3');
+	it('reserves the icon column with a spacer when there\'s no real type icon, keeping names aligned', () => {
+		const html = buildThreatMoveRowHTML('Brave Bird', 80, 'Flying');
+		expect(html).toContain('cf-pika-icon-spacer');
 	});
 });
 
 describe('buildTeamThreatTooltipHTML', () => {
 	afterEach(() => { delete window.Dex; });
 
-	it('renders a table row for a real (move/speed/wall) reason, for a single (member, counter) pair', () => {
+	it('renders a move reason as a plain move row in a .cf-tooltip-gridcell, no category header', () => {
 		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
 		const counter = {
 			pokemon: 'Staraptor',
@@ -3025,11 +2982,45 @@ describe('buildTeamThreatTooltipHTML', () => {
 		};
 		const html = buildTeamThreatTooltipHTML(counter);
 		expect(html).toContain('Staraptor');
-		expect(html).toContain('cf-teamthreats-table');
+		expect(html).toContain('<div class="cf-tooltip-gridcell"><div class="cf-tooltip-row">');
+		expect(html).toContain('Brave Bird');
+		expect(html).not.toContain('Super effective');
+		expect(html).not.toContain('<strong>');
+		expect(html).not.toContain('<table'); // no table anywhere — the shared .cf-tooltip-gridcell shape instead
+	});
+
+	it('states a real Outspeeds reason in the title, not its own gridcell, while still rendering the outspeeding move as a row', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const counter = {
+			pokemon: 'Staraptor',
+			rank: 1,
+			reasons: [{ kind: 'speed', move: 'Brave Bird', type: 'Flying', percent: 80, viaScarf: false }],
+		};
+		const html = buildTeamThreatTooltipHTML(counter);
+		expect(html).toContain('<h2>Staraptor <span class="cf-speedcmp-evinfo">(Outspeeds)</span></h2>');
+		expect(html).not.toContain('<strong>');
 		expect(html).toContain('Brave Bird');
 	});
 
-	it('renders a stat reason in the title next to the name, muted, instead of as a table row', () => {
+	it('appends a plain "with Scarf" note right after "Outspeeds" in the title, with no nested parens', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const counter = {
+			pokemon: 'Staraptor',
+			rank: 1,
+			reasons: [{ kind: 'speed', move: 'Brave Bird', type: 'Flying', percent: 80, viaScarf: true }],
+		};
+		const html = buildTeamThreatTooltipHTML(counter);
+		expect(html).toContain('<span class="cf-speedcmp-evinfo">(Outspeeds<span class="cf-teamthreats-scarf-note">with Scarf</span>)</span>');
+	});
+
+	it('renders a wall reason as its own gridcell with just its plain text, no header/icon/percent', () => {
+		const counter = { pokemon: 'Dondozo', rank: 1, reasons: [{ kind: 'wall', text: "Doesn't threaten back" }] };
+		const html = buildTeamThreatTooltipHTML(counter);
+		expect(html).toContain("<div class=\"cf-tooltip-gridcell\">Doesn't threaten back</div>");
+		expect(html).not.toContain('cf-pika-pct');
+	});
+
+	it('renders a stat reason in the title next to the name, muted, instead of its own gridcell', () => {
 		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
 		const counter = {
 			pokemon: 'Staraptor',
@@ -3043,9 +3034,9 @@ describe('buildTeamThreatTooltipHTML', () => {
 		// Same muted-title-badge class buildSpeedComparisonTooltipHTML already uses for its own
 		// ally/foe EV info, reused here rather than a bespoke class.
 		expect(html).toContain('<h2>Staraptor <span class="cf-speedcmp-evinfo">(High Atk vs Low Def)</span></h2>');
-		// Not duplicated as its own table row alongside the real move reason.
-		const rowCount = (html.match(/<tr>/g) || []).length;
-		expect(rowCount).toBe(1);
+		// Not duplicated as its own gridcell alongside the real move reason.
+		const cellCount = (html.match(/cf-tooltip-gridcell/g) || []).length;
+		expect(cellCount).toBe(1);
 	});
 
 	it('joins two stat reasons (physical and special) in the same title badge', () => {
@@ -3061,21 +3052,21 @@ describe('buildTeamThreatTooltipHTML', () => {
 		expect(html).toContain('<span class="cf-speedcmp-evinfo">(High Atk vs Low Def, High SpA vs Low SpD)</span>');
 	});
 
-	it('shows the title-only stat note with no table underneath at all, when a stat mismatch is the counter\'s only real reason', () => {
+	it('shows the title-only stat note with nothing rendered underneath at all, when a stat mismatch is the counter\'s only real reason', () => {
 		const counter = { pokemon: 'Basculegion', rank: 1, reasons: [{ kind: 'stat', text: 'High Atk vs Low Def' }] };
 		const html = buildTeamThreatTooltipHTML(counter);
 		expect(html).toContain('High Atk vs Low Def');
-		expect(html).not.toContain('<table');
+		expect(html).not.toContain('cf-tooltip-gridcell');
 		expect(html).not.toContain('No specific reason found.');
 	});
 
-	it('shows "No specific reason found." rather than an empty table when there are no reasons', () => {
+	it('shows "No specific reason found." rather than an empty body when there are no reasons', () => {
 		const html = buildTeamThreatTooltipHTML({ pokemon: 'Garchomp', rank: 5, reasons: [] });
 		expect(html).toContain('Garchomp');
 		expect(html).toContain('No specific reason found.');
 	});
 
-	it('renders priority moves as rows after the move/speed reasons, in the same table (not interleaved, not a separate table)', () => {
+	it('renders priority moves with their own real stage number as plain text, no "Priority" header, after the move/speed rows in the same gridcell', () => {
 		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
 		const counter = {
 			pokemon: 'Basculegion',
@@ -3084,17 +3075,17 @@ describe('buildTeamThreatTooltipHTML', () => {
 			priorityMoves: [{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 }],
 		};
 		const html = buildTeamThreatTooltipHTML(counter);
-		// Exactly one table — the priority row lands in the same <table> as the reason row,
-		// after it, rather than in a second table or under its own section label.
-		expect(html.match(/<table/g)).toHaveLength(1);
-		expect(html).not.toContain('Priority');
+		expect(html).not.toContain('<strong>');
+		expect(html).not.toContain('Priority</');
+		expect(html).toContain('+1 Aqua Jet');
 		const waveCrashIdx = html.indexOf('Wave Crash');
 		const aquaJetIdx = html.indexOf('Aqua Jet');
 		expect(waveCrashIdx).toBeGreaterThan(-1);
 		expect(aquaJetIdx).toBeGreaterThan(waveCrashIdx);
+		expect((html.match(/cf-tooltip-gridcell/g) || []).length).toBe(1); // one shared cell, not a separate Priority cell
 	});
 
-	it('renders priority rows in the table even when the only `reasons` entry is a stat mismatch (title-only, no competing row to order against)', () => {
+	it('still renders a priority-move row even when the only `reasons` entry is a stat mismatch (title-only, no other row to order against)', () => {
 		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
 		const counter = {
 			pokemon: 'Basculegion',
@@ -3107,8 +3098,8 @@ describe('buildTeamThreatTooltipHTML', () => {
 		const statIdx = html.indexOf('High Atk vs Low Def');
 		expect(aquaJetIdx).toBeGreaterThan(-1);
 		expect(statIdx).toBeGreaterThan(-1);
-		expect(statIdx).toBeLessThan(aquaJetIdx); // the title (with the stat note) comes before the table
-		expect(html).toContain('<table'); // a real priority row still gets a real table, unlike the stat-only case above
+		expect(statIdx).toBeLessThan(aquaJetIdx); // the title (with the stat note) comes before the cell
+		expect(html).toContain('cf-tooltip-gridcell'); // a real priority row still gets a real cell, unlike the stat-only case above
 	});
 
 	it('omits priority rows entirely when there are no qualifying priority moves', () => {
@@ -3246,6 +3237,14 @@ describe('buildSimilarTeamRowHTML / buildSimilarTeamsSectionHTML', () => {
 		const html = buildSimilarTeamsSectionHTML(matches);
 		expect((html.match(/cf-similarteam-row/g) || []).length).toBe(15);
 	});
+
+	it('shows the Mega sprite, not the pre-Mega one, for a member holding its Mega Stone (same resolution as the user\'s own roster)', () => {
+		mockBattleDex();
+		const match = { record: '13-2', pokemon: [{ name: 'Blastoise', item: 'Blastoisinite' }] };
+		const html = buildSimilarTeamRowHTML(match, 0);
+		expect(html).toContain('background:url(Blastoise-Mega)');
+		expect(html).not.toContain('background:url(Blastoise)"');
+	});
 });
 
 describe('buildSimilarTeamTooltipHTML', () => {
@@ -3302,6 +3301,14 @@ describe('buildSimilarTeamTooltipHTML', () => {
 		const match = { author: 'Ash', pokemon: [{ name: 'Garchomp' }, { name: 'Incineroar' }] };
 		const html = buildSimilarTeamTooltipHTML(match, ['incineroar', 'garchomp']);
 		expect(html.indexOf('Incineroar')).toBeLessThan(html.indexOf('Garchomp'));
+	});
+
+	it('shows the Mega sprite, not the pre-Mega one, for a member holding its Mega Stone, while still badging the Mega Stone itself', () => {
+		mockBattleDex();
+		const match = { pokemon: [{ name: 'Blastoise', item: 'Blastoisinite' }] };
+		const html = buildSimilarTeamTooltipHTML(match);
+		expect(html).toContain('background:url(Blastoise-Mega)');
+		expect(html).toContain('class="itemicon cf-speedcmp-item-badge" style="background:url(Blastoisinite)"');
 	});
 });
 

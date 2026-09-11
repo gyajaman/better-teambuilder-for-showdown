@@ -1462,69 +1462,33 @@ body.cf-pika-blur-pending .cf-pika-row-clickable {
 	width: 620px;
 }
 
-/* Biggest Threats hover tooltip (content.js buildTeamThreatTooltipHTML) — a table, not the base
- * .cf-tooltip's stacked paragraphs, so it needs its own width (a move reason's type icon + name
- * + percent needs more room than the default 300px gives comfortably) and its own table styling,
- * copied from .cf-spread-table's own conventions (border-collapse, cell padding/border, row
- * hover, .cf-pika-pct reused verbatim for the usage percent) rather than a new table look. */
+/* Biggest Threats hover tooltip (content.js buildTeamThreatTooltipHTML) — a stack of
+ * .cf-tooltip-gridcell sections, the exact same labeled-cell classes/shape the Popular row's own
+ * preview tooltip already uses for Moves/Ability/Item/etc (buildSpeciesPreviewTooltipHTML) —
+ * no dedicated table/row/cell styling of its own, everything here reuses what that tooltip (and
+ * .cf-tooltip-gridcell/.cf-tooltip-row/.cf-pika-name/.cf-pika-pct generally) already defines.
+ * Width capped below the shared base 300px, not above it — a single column of short icon+name+
+ * pct rows needs less room than that tooltip's own 2-column grid does, not more. */
 #cf-tooltipwrapper .cf-tooltip.cf-teamthreats-tooltip {
-	width: 340px;
+	width: 260px;
 }
-.cf-teamthreats-table {
-	width: 100%;
-	border-collapse: collapse;
-	font-family: Verdana, sans-serif;
-	font-size: 8.5pt;
-}
-.cf-teamthreats-table td {
-	padding: 3px 5px;
-	border-bottom: 1px solid #D8D8D8;
-	vertical-align: middle;
-	color: #000000;
-}
-.dark .cf-teamthreats-table td {
-	border-bottom-color: #4A4D50;
-	color: #EEEEEE;
-}
-.cf-teamthreats-table tbody tr:hover {
-	background: #F8F8F8;
-}
-.dark .cf-teamthreats-table tbody tr:hover {
-	background: rgba(100, 100, 100, .5);
-}
-.cf-teamthreats-move-type {
-	display: inline-flex;
-	align-items: center;
-	vertical-align: middle;
-	margin-right: 4px;
-}
-.cf-teamthreats-move-name {
-	margin-right: 4px;
-}
-/* "Outspeeds" label on a `speed`-kind reason cell (buildTeamThreatReasonCellHTML) — bold and
- * slightly larger than the move name it precedes, so the headline claim ("this moves first")
- * reads before the move backing it up, on its own line above rather than crowded onto the same
- * line as the type icon/name/percent. */
-.cf-teamthreats-reason-label {
-	display: block;
-	font-weight: bold;
-	margin-bottom: 2px;
-}
-/* "(needs Scarf)" — only present when computeThreatSpeedReason's own viaScarf is true, i.e. the
+/* "with Scarf" — only present when computeThreatSpeedReason's own viaScarf is true, i.e. the
  * outspeed only holds with a real, common-enough Choice Scarf (CF_SETTINGS.scarfThresholdPercent)
- * rather than on a bare stat spread. Muted and small so it reads as a qualifier, not a claim of
- * its own equal weight to the rest of the cell. */
+ * rather than on a bare stat spread. Sits inside the tooltip's own title, right after "Outspeeds"
+ * (buildTeamThreatTooltipHTML), appended plainly rather than in its own nested parens — muted and
+ * small so it reads as a qualifier on that claim, not a claim of its own equal weight. */
 .cf-teamthreats-scarf-note {
 	margin-left: 4px;
 	font-size: 7.5pt;
 	font-style: italic;
-	font-weight: normal; /* sits inside .cf-teamthreats-reason-label's own bold now — stays a muted qualifier, not bold itself */
+	font-weight: normal;
 	color: #777777;
 }
 .dark .cf-teamthreats-scarf-note {
 	color: #AAAAAA;
 }
 .cf-teamthreats-reason-none {
+	padding: 2px 4px;
 	color: #777777;
 	font-style: italic;
 }

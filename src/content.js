@@ -1000,7 +1000,7 @@
 	 *  type, percent}` entries for other real, distinct super-effective moves
 	 *  (computeThreatMoveReasons), excluding whichever move the speed reason already named (that
 	 *  exact move, already shown with its own type icon in the speed reason's own cell — see
-	 *  buildTeamThreatReasonCellHTML — would just be the same underlying fact restated, not a
+	 *  buildTeamThreatTooltipHTML — would just be the same underlying fact restated, not a
 	 *  second one) but still naming a genuinely *different* strong move when the threat has one.
 	 *  Both kept structured (not pre-formatted text) so buildTeamThreatTooltipHTML's table can
 	 *  render each move's own type icon next to its name, not just describe it in prose.
@@ -1039,7 +1039,7 @@
 			reasons.push({ kind: 'stat', text: 'High SpA vs Low SpD' });
 		}
 		if (computeThreatHasNoAnswer(defender, threat)) {
-			reasons.push({ kind: 'wall', text: 'Nothing on this set threatens it back' });
+			reasons.push({ kind: 'wall', text: "Doesn't threaten back" });
 		}
 		return reasons;
 	}
@@ -1541,7 +1541,7 @@
 			computeThreatReasons, computeThreatHasNoAnswer,
 			computeThreatOffense, computeMemberDefense,
 			buildTeamThreatCounterHTML, buildTeamThreatMemberRowHTML, buildTeamThreatsSectionHTML,
-			buildTeamThreatReasonCellHTML, buildThreatPriorityRowHTML, buildTeamThreatTooltipHTML,
+			buildThreatMoveRowHTML, buildTeamThreatTooltipHTML,
 			buildSimilarTeamRowHTML, buildSimilarTeamsSectionHTML, buildSimilarTeamTooltipHTML,
 			buildSpeciesPreviewTooltipHTML, patchDexSearch, closeSideRoomsOnLoad, mapWithConcurrency, watchSettingsAttribute,
 		};
@@ -3628,101 +3628,83 @@
 		return pikaSectionHTML('Biggest Threats', `<table class="cf-teamthreats-rows"><tbody>${rowsHTML}</tbody></table>`);
 	}
 
-	/** One <td> for a single computeThreatReasons() entry, inside buildTeamThreatTooltipHTML's
-	 *  table. A `move` reason gets its own three-part cell — the real type icon
-	 *  (window.Dex.getTypeIcon, same call buildMovesSection already makes for the six-section
-	 *  sidebar's own Moves list), the move's name, and its real usage percent (`.cf-pika-pct`,
-	 *  reused verbatim rather than a new percent style) — so it reads the same way a move
-	 *  already does everywhere else in this file, not a new "moves as prose" idiom. A `speed`
-	 *  reason (computeThreatSpeedReason) gets the same move-shaped cell plus an "Outspeeds" label
-	 *  up front — and, right alongside that label, only when `viaScarf` is true (i.e. it doesn't
-	 *  outspeed on a bare stat spread alone), a small muted "(needs Scarf)" note: the qualifier is
-	 *  about the *outspeed claim itself*, not about the move backing it up, so it reads next to
-	 *  "Outspeeds" rather than trailing after the move's own name/percent where it could look like
-	 *  it was qualifying the move instead. A `stat` reason is just its own plain text, no icon —
-	 *  there's nothing to show an icon of. */
-	function buildTeamThreatReasonCellHTML(reason) {
-		if (reason.kind === 'move' || reason.kind === 'speed') {
-			const typeIcon = window.Dex ? window.Dex.getTypeIcon(reason.type) : '';
-			const scarfNote = (reason.kind === 'speed' && reason.viaScarf) ?
-				' <span class="cf-teamthreats-scarf-note">(needs Scarf)</span>' : '';
-			const label = reason.kind === 'speed' ?
-				`<span class="cf-teamthreats-reason-label">Outspeeds${scarfNote}</span>` : '';
-			return `<td class="cf-teamthreats-reason">${label}` +
-				`<span class="cf-teamthreats-move-type">${typeIcon}</span>` +
-				`<span class="cf-teamthreats-move-name">${escapeHTML(reason.move)}</span>` +
-				`<span class="cf-pika-pct">${formatPikaPercent(reason.percent)}%</span>` +
-				`</td>`;
-		}
-		return `<td class="cf-teamthreats-reason cf-teamthreats-reason-stat">${escapeHTML(reason.text)}</td>`;
+	/** One `.cf-tooltip-row` for a single move — the exact icon + `.cf-pika-name` + `.cf-pika-pct`
+	 *  shape/classes (via `iconOrSpacer`) the Popular row's own preview tooltip already uses for
+	 *  a Moves entry (buildSpeciesPreviewTooltipHTML), reused verbatim rather than a new "reason
+	 *  row" idiom — no new class, no new color, nothing this file doesn't already render
+	 *  elsewhere. Shared by both the `move`/`speed` reasons and the priority-move list below,
+	 *  since a real move is a real move regardless of which list it came from. */
+	function buildThreatMoveRowHTML(move, percent, type) {
+		const typeIcon = window.Dex ? window.Dex.getTypeIcon(type) : '';
+		return `<div class="cf-tooltip-row">${iconOrSpacer(typeIcon)}` +
+			`<span class="cf-pika-name">${escapeHTML(move)}</span>` +
+			`<span class="cf-pika-pct">${formatPikaPercent(percent)}%</span></div>`;
 	}
 
-	/** One row for a real, STAB-boosted priority move — computeThreatPriorityMoves' own rows in
-	 *  buildTeamThreatTooltipHTML below. Reuses the exact same icon/name/percent cell shape a
-	 *  `move`/`speed` reason gets (buildTeamThreatReasonCellHTML), just with a "+N" stage badge in
-	 *  the label slot "Outspeeds" would otherwise occupy — the priority value is the one new fact
-	 *  this row exists to state, so it takes that same up-front position. Kept as its own small
-	 *  render function rather than folded into buildTeamThreatReasonCellHTML's own kind-branching:
-	 *  the two lists are deliberately separate data (see computeThreatPriorityMoves' own doc
-	 *  comment), not variants of the same one, so their renderers stay separate too — but the rows
-	 *  they produce still land in the same table (see buildTeamThreatTooltipHTML below). */
-	function buildThreatPriorityRowHTML(move) {
-		const typeIcon = window.Dex ? window.Dex.getTypeIcon(move.type) : '';
-		return `<tr><td class="cf-teamthreats-reason">` +
-			`<span class="cf-teamthreats-reason-label">+${move.priority}</span>` +
-			`<span class="cf-teamthreats-move-type">${typeIcon}</span>` +
-			`<span class="cf-teamthreats-move-name">${escapeHTML(move.move)}</span>` +
-			`<span class="cf-pika-pct">${formatPikaPercent(move.percent)}%</span>` +
-			`</td></tr>`;
-	}
-
-	/** Biggest Threats hover tooltip content, for a single (team member, counter) pair — a table,
-	 *  one row per non-stat computeThreatReasons() entry (buildTeamThreatReasonCellHTML), which
-	 *  reads as a real table row far more naturally than as prose (a move reason needs its own
-	 *  type-icon/name/percent cells). Scoped to exactly one counter now — the row it's hovered
-	 *  from already shows which member this is about, so there's no need to repeat a member
-	 *  sprite or juggle several members' reasons in one tooltip the way an earlier, aggregated
-	 *  design had to.
+	/** Biggest Threats hover tooltip content, for a single (team member, counter) pair. No
+	 *  per-reason headers (`<strong>Outspeeds</strong>`, etc.) — a real move's own name/type icon
+	 *  already says why it matters, so labeling the category on top of that was just noise. All
+	 *  the moves that make this a real threat (the Outspeeds move, any super-effective moves,
+	 *  any priority moves) sit as plain `buildThreatMoveRowHTML` rows in a single
+	 *  `.cf-tooltip-gridcell`, unlabeled and in that order.
 	 *
-	 *  `kind: 'stat'` reasons don't get a row at all — they render in the title itself, right
-	 *  next to the counter's own name, muted (`.cf-speedcmp-evinfo`, the exact same treatment
-	 *  buildSpeedComparisonTooltipHTML already gives ally/foe EV info in its own title): a raw
-	 *  stat mismatch reads as a quick aside about the matchup, not a fact that needs its own
-	 *  full table row the way a real move does, and keeping it out of the table leaves that
-	 *  entirely for actual actionable moves. `computeThreatReasons` already hands these back
-	 *  pre-abbreviated ("High Atk vs Low Def") specifically so this title stays short — a fixed-
-	 *  width tooltip (cf-teamthreats-tooltip, style.css) is what actually keeps this capped, not
-	 *  the abbreviation alone, but a long spelled-out stat name would still wrap the title across
-	 *  more lines than necessary.
+	 *  `kind: 'stat'` reasons and the fact that this counter Outspeeds both render in the
+	 *  tooltip's own title instead, right next to the counter's name, muted
+	 *  (`.cf-speedcmp-evinfo`, the exact treatment buildSpeedComparisonTooltipHTML already gives
+	 *  ally/foe EV info in its own title) — short asides about the matchup, not a fact that needs
+	 *  its own labeled section. `computeThreatReasons` already hands stat reasons back
+	 *  pre-abbreviated ("High Atk vs Low Def") specifically so this title stays short; "Outspeeds"
+	 *  is added the same way here, with its own "with Scarf" qualifier (`.cf-teamthreats-scarf-note`)
+	 *  appended plainly rather than in its own nested parens, when computeThreatSpeedReason's own
+	 *  viaScarf is true. The Outspeeds move itself still gets a row below, same as any other
+	 *  threatening move — the title just says *that* it outspeeds, the row says *with what*.
 	 *
-	 *  `counter.priorityMoves` (computeThreatPriorityMoves) renders as its own rows
-	 *  (buildThreatPriorityRowHTML), in the *same* table as the reason rows rather than a
-	 *  visually separate block, after them — a real move that hits first is still a more
-	 *  concrete fact than a raw stat-mismatch aside, but that comparison is moot now that stat
-	 *  reasons aren't rows to order against at all. The "No specific reason found." placeholder
-	 *  only shows when there's truly nothing to say about this counter anywhere — no table rows
-	 *  *and* no stat note in the title either; a counter whose only real reason is a stat
-	 *  mismatch gets just the title, no empty table underneath it. */
+	 *  Priority moves keep their own real stage number as plain text in front of the move's name
+	 *  (the one place this isn't a bare buildThreatMoveRowHTML call, since the number is
+	 *  genuinely per-row data) — that number already distinguishes them from the rest without
+	 *  needing a "Priority" label of their own. A `wall` reason is its own real sentence, no
+	 *  move/icon/percent to show, so it gets its own separate cell, just the plain text. The
+	 *  "No specific reason found." placeholder (`.cf-teamthreats-reason-none`, unchanged from
+	 *  before) only shows when there's truly nothing to say anywhere — no move rows, no wall
+	 *  reason, *and* no title note either. */
 	function buildTeamThreatTooltipHTML(counter) {
 		const priorityMoves = counter.priorityMoves || [];
-		const leadReasons = counter.reasons.filter((r) => r.kind !== 'stat');
+		const speedReason = counter.reasons.find((r) => r.kind === 'speed');
+		const moveReasons = counter.reasons.filter((r) => r.kind === 'move');
+		const wallReason = counter.reasons.find((r) => r.kind === 'wall');
 		const statReasons = counter.reasons.filter((r) => r.kind === 'stat');
-		const statNoteHTML = statReasons.length ?
-			` <span class="cf-speedcmp-evinfo">(${statReasons.map((r) => escapeHTML(r.text)).join(', ')})</span>` : '';
-		const rowsHTML = leadReasons.map((r) => `<tr>${buildTeamThreatReasonCellHTML(r)}</tr>`).join('') +
-			priorityMoves.map(buildThreatPriorityRowHTML).join('');
 
-		let tableHTML;
-		if (rowsHTML) {
-			tableHTML = `<table class="cf-teamthreats-table"><tbody>${rowsHTML}</tbody></table>`;
-		} else if (!statReasons.length) {
-			tableHTML = '<table class="cf-teamthreats-table"><tbody>' +
-				'<tr><td class="cf-teamthreats-reason cf-teamthreats-reason-none">No specific reason found.</td></tr>' +
-				'</tbody></table>';
-		} else {
-			tableHTML = '';
+		const titleNoteParts = statReasons.map((r) => escapeHTML(r.text));
+		if (speedReason) {
+			const scarfNote = speedReason.viaScarf ? '<span class="cf-teamthreats-scarf-note">with Scarf</span>' : '';
+			titleNoteParts.push(`Outspeeds${scarfNote}`);
 		}
-		return `<div class="cf-tooltip cf-teamthreats-tooltip"><h2>${escapeHTML(counter.pokemon)}${statNoteHTML}</h2>${tableHTML}</div>`;
+		const statNoteHTML = titleNoteParts.length ?
+			` <span class="cf-speedcmp-evinfo">(${titleNoteParts.join(', ')})</span>` : '';
+
+		const moveRowsHTML = [];
+		if (speedReason) moveRowsHTML.push(buildThreatMoveRowHTML(speedReason.move, speedReason.percent, speedReason.type));
+		for (const r of moveReasons) moveRowsHTML.push(buildThreatMoveRowHTML(r.move, r.percent, r.type));
+		for (const m of priorityMoves) {
+			const typeIcon = window.Dex ? window.Dex.getTypeIcon(m.type) : '';
+			moveRowsHTML.push(`<div class="cf-tooltip-row">${iconOrSpacer(typeIcon)}` +
+				`<span class="cf-pika-name">+${m.priority} ${escapeHTML(m.move)}</span>` +
+				`<span class="cf-pika-pct">${formatPikaPercent(m.percent)}%</span></div>`);
+		}
+
+		const sections = [];
+		if (moveRowsHTML.length) sections.push(`<div class="cf-tooltip-gridcell">${moveRowsHTML.join('')}</div>`);
+		if (wallReason) sections.push(`<div class="cf-tooltip-gridcell">${escapeHTML(wallReason.text)}</div>`);
+
+		let bodyHTML;
+		if (sections.length) {
+			bodyHTML = sections.join('');
+		} else if (!titleNoteParts.length) {
+			bodyHTML = '<p class="cf-teamthreats-reason-none">No specific reason found.</p>';
+		} else {
+			bodyHTML = '';
+		}
+		return `<div class="cf-tooltip cf-teamthreats-tooltip"><h2>${escapeHTML(counter.pokemon)}${statNoteHTML}</h2>${bodyHTML}</div>`;
 	}
 
 	/** "1st"/"2nd"/"3rd"/"4th"/"11th"/"21st"/... from a plain placement number —
@@ -3753,10 +3735,14 @@
 	 *  both are rebuilt together on every render. */
 	function buildSimilarTeamRowHTML(match, idx, rosterSpeciesIds) {
 		const aligned = alignSimilarTeamPokemon(match.pokemon, rosterSpeciesIds);
-		const sprites = aligned.map((p) => p ?
-			`<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(p.name) : '')}"></span>` :
-			`<span class="picon cf-similarteam-empty-slot"></span>`
-		).join('');
+		const sprites = aligned.map((p) => {
+			if (!p) return `<span class="picon cf-similarteam-empty-slot"></span>`;
+			// Same Mega-Stone-holder resolution as the user's own roster (resolveSpeedSpectrumSpecies)
+			// — Pikalytics reports a Mega-holding member by its built species + held Mega Stone, same
+			// as a real set, so the sprite needs the same swap-in or it renders as the pre-Mega forme.
+			const { species: resolvedSpecies } = resolveSpeedSpectrumSpecies({ species: p.name, item: p.item });
+			return `<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(resolvedSpecies) : '')}"></span>`;
+		}).join('');
 
 		const author = match.author || match.authorId || 'Unknown';
 		const placement = ordinalLabel(match.tournamentRanking);
@@ -3812,10 +3798,14 @@
 			// own item badge) rather than "@ Item" text, since the item is a property of this
 			// specific Pokémon, same as its species — showing it as a badge on the sprite keeps it
 			// visually tied to the right icon instead of floating as a separate text line.
+			// Same Mega-Stone-holder resolution as the user's own roster (resolveSpeedSpectrumSpecies)
+			// — the item badge still shows the held Mega Stone itself (same convention as the Speed
+			// comparison popup's own mega column headers), only the sprite swaps to the Mega forme.
+			const { species: resolvedSpecies } = resolveSpeedSpectrumSpecies({ species: p.name, item: p.item });
 			const itemBadge = (p.item && window.Dex) ?
 				`<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(p.item))}"></span>` : '';
 			const sprite = `<span class="cf-speedcmp-sprite">` +
-				`<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(p.name) : '')}"></span>` +
+				`<span class="picon" style="${escapeHTML(window.Dex ? window.Dex.getPokemonIcon(resolvedSpecies) : '')}"></span>` +
 				itemBadge +
 				`</span>`;
 			const abilityText = p.ability ? `<em>${escapeHTML(p.ability)}</em>` : '';
