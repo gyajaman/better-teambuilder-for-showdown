@@ -1005,12 +1005,16 @@
 	 *  Both kept structured (not pre-formatted text) so buildTeamThreatTooltipHTML's table can
 	 *  render each move's own type icon next to its name, not just describe it in prose.
 	 *
-	 *  Then up to two `{kind: 'stat', text}` entries (physical, then special). A stat reason only
-	 *  appears when the threat also has a real move of the matching category
-	 *  (threatHasMoveOfCategory) backing the raw number up. Any of
-	 *  `threat.atk`/`threat.spa`/`threat.baseSpeed` being null (computeThreatOffense couldn't derive
-	 *  a real stat — no spread data for this species) simply skips the reason(s) that depend on
-	 *  it rather than guessing.
+	 *  Then up to two `{kind: 'stat', text}` entries (physical, then special) — `text` already
+	 *  abbreviated ("High Atk vs Low Def"/"High SpA vs Low SpD", not the spelled-out stat names)
+	 *  since buildTeamThreatTooltipHTML renders these in the tooltip's own title next to the
+	 *  counter's name, muted, the same treatment buildSpeedComparisonTooltipHTML's own
+	 *  cf-speedcmp-evinfo already gives ally/foe EV info there — a title badge has to stay short,
+	 *  not a table cell with room to spell everything out. A stat reason only appears when the
+	 *  threat also has a real move of the matching category (threatHasMoveOfCategory) backing the
+	 *  raw number up. Any of `threat.atk`/`threat.spa`/`threat.baseSpeed` being null
+	 *  (computeThreatOffense couldn't derive a real stat — no spread data for this species) simply
+	 *  skips the reason(s) that depend on it rather than guessing.
 	 *
 	 *  Finally, at most one `{kind: 'wall', text}` entry (computeThreatHasNoAnswer) when the
 	 *  member's own real moveset has zero answers to the threat at all — a fundamentally
@@ -1028,11 +1032,11 @@
 		for (const r of moveReasons) reasons.push({ kind: 'move', move: r.move, type: r.type, percent: r.percent });
 		if (threat.atk && defender.def && (threat.atk / defender.def) >= TEAM_THREATS_STAT_RATIO_THRESHOLD &&
 			threatHasMoveOfCategory(threat.moves, 'Physical')) {
-			reasons.push({ kind: 'stat', text: 'High Attack vs Low Defense' });
+			reasons.push({ kind: 'stat', text: 'High Atk vs Low Def' });
 		}
 		if (threat.spa && defender.spd && (threat.spa / defender.spd) >= TEAM_THREATS_STAT_RATIO_THRESHOLD &&
 			threatHasMoveOfCategory(threat.moves, 'Special')) {
-			reasons.push({ kind: 'stat', text: 'High Special Attack vs Low Special Defense' });
+			reasons.push({ kind: 'stat', text: 'High SpA vs Low SpD' });
 		}
 		if (computeThreatHasNoAnswer(defender, threat)) {
 			reasons.push({ kind: 'wall', text: 'Nothing on this set threatens it back' });
@@ -3673,32 +3677,52 @@
 	}
 
 	/** Biggest Threats hover tooltip content, for a single (team member, counter) pair — a table,
-	 *  one row per computeThreatReasons() entry (buildTeamThreatReasonCellHTML), which reads as a
-	 *  real table row far more naturally than as prose (a move reason needs its own type-icon/
-	 *  name/percent cells). Scoped to exactly one counter now — the row it's hovered from already
-	 *  shows which member this is about, so there's no need to repeat a member sprite or juggle
-	 *  several members' reasons in one tooltip the way an earlier, aggregated design had to.
+	 *  one row per non-stat computeThreatReasons() entry (buildTeamThreatReasonCellHTML), which
+	 *  reads as a real table row far more naturally than as prose (a move reason needs its own
+	 *  type-icon/name/percent cells). Scoped to exactly one counter now — the row it's hovered
+	 *  from already shows which member this is about, so there's no need to repeat a member
+	 *  sprite or juggle several members' reasons in one tooltip the way an earlier, aggregated
+	 *  design had to.
+	 *
+	 *  `kind: 'stat'` reasons don't get a row at all — they render in the title itself, right
+	 *  next to the counter's own name, muted (`.cf-speedcmp-evinfo`, the exact same treatment
+	 *  buildSpeedComparisonTooltipHTML already gives ally/foe EV info in its own title): a raw
+	 *  stat mismatch reads as a quick aside about the matchup, not a fact that needs its own
+	 *  full table row the way a real move does, and keeping it out of the table leaves that
+	 *  entirely for actual actionable moves. `computeThreatReasons` already hands these back
+	 *  pre-abbreviated ("High Atk vs Low Def") specifically so this title stays short — a fixed-
+	 *  width tooltip (cf-teamthreats-tooltip, style.css) is what actually keeps this capped, not
+	 *  the abbreviation alone, but a long spelled-out stat name would still wrap the title across
+	 *  more lines than necessary.
 	 *
 	 *  `counter.priorityMoves` (computeThreatPriorityMoves) renders as its own rows
 	 *  (buildThreatPriorityRowHTML), in the *same* table as the reason rows rather than a
-	 *  visually separate block — but ordered in among them by the same "most-concrete-first"
-	 *  rule computeThreatReasons' own doc comment lays out for speed/move/stat: priority sits
-	 *  after the speed/move reasons (never mixed into those — a priority row and an "Outspeeds"
-	 *  row never share a row) but *before* the stat reasons, since a real move that hits first is
-	 *  still a more concrete fact than a raw stat-mismatch fallback. The "No specific reason
-	 *  found." placeholder only shows when there's truly nothing to say about this counter at
-	 *  all — no reasons *and* no priority moves. */
+	 *  visually separate block, after them — a real move that hits first is still a more
+	 *  concrete fact than a raw stat-mismatch aside, but that comparison is moot now that stat
+	 *  reasons aren't rows to order against at all. The "No specific reason found." placeholder
+	 *  only shows when there's truly nothing to say about this counter anywhere — no table rows
+	 *  *and* no stat note in the title either; a counter whose only real reason is a stat
+	 *  mismatch gets just the title, no empty table underneath it. */
 	function buildTeamThreatTooltipHTML(counter) {
 		const priorityMoves = counter.priorityMoves || [];
 		const leadReasons = counter.reasons.filter((r) => r.kind !== 'stat');
 		const statReasons = counter.reasons.filter((r) => r.kind === 'stat');
+		const statNoteHTML = statReasons.length ?
+			` <span class="cf-speedcmp-evinfo">(${statReasons.map((r) => escapeHTML(r.text)).join(', ')})</span>` : '';
 		const rowsHTML = leadReasons.map((r) => `<tr>${buildTeamThreatReasonCellHTML(r)}</tr>`).join('') +
-			priorityMoves.map(buildThreatPriorityRowHTML).join('') +
-			statReasons.map((r) => `<tr>${buildTeamThreatReasonCellHTML(r)}</tr>`).join('');
-		const rows = rowsHTML ||
-			'<tr><td class="cf-teamthreats-reason cf-teamthreats-reason-none">No specific reason found.</td></tr>';
-		return `<div class="cf-tooltip cf-teamthreats-tooltip"><h2>${escapeHTML(counter.pokemon)}</h2>` +
-			`<table class="cf-teamthreats-table"><tbody>${rows}</tbody></table></div>`;
+			priorityMoves.map(buildThreatPriorityRowHTML).join('');
+
+		let tableHTML;
+		if (rowsHTML) {
+			tableHTML = `<table class="cf-teamthreats-table"><tbody>${rowsHTML}</tbody></table>`;
+		} else if (!statReasons.length) {
+			tableHTML = '<table class="cf-teamthreats-table"><tbody>' +
+				'<tr><td class="cf-teamthreats-reason cf-teamthreats-reason-none">No specific reason found.</td></tr>' +
+				'</tbody></table>';
+		} else {
+			tableHTML = '';
+		}
+		return `<div class="cf-tooltip cf-teamthreats-tooltip"><h2>${escapeHTML(counter.pokemon)}${statNoteHTML}</h2>${tableHTML}</div>`;
 	}
 
 	/** "1st"/"2nd"/"3rd"/"4th"/"11th"/"21st"/... from a plain placement number —

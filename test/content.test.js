@@ -2501,7 +2501,7 @@ describe('computeThreatPriorityMoves', () => {
 	it('ignores stat-kind reasons for dedup purposes — they have no `.move` to collide with', () => {
 		mockThreatsDex();
 		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
-		const reasons = [{ kind: 'stat', text: 'High Attack vs Low Defense' }];
+		const reasons = [{ kind: 'stat', text: 'High Atk vs Low Def' }];
 		expect(computeThreatPriorityMoves(threat, reasons)).toEqual([
 			{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 },
 		]);
@@ -2519,7 +2519,7 @@ describe('computeThreatReasons', () => {
 		const reasons = computeThreatReasons(threat, defender);
 		expect(reasons).toEqual([
 			{ kind: 'move', move: 'Water Spout', type: 'Water', percent: 90 },
-			{ kind: 'stat', text: 'High Special Attack vs Low Special Defense' },
+			{ kind: 'stat', text: 'High SpA vs Low SpD' },
 		]);
 	});
 
@@ -2534,7 +2534,7 @@ describe('computeThreatReasons', () => {
 		const defender = { types: ['weak'], def: 100, spd: 50, speed: 100 };
 		expect(computeThreatReasons(threat, defender)).toEqual([
 			{ kind: 'speed', move: 'Water Spout', type: 'Water', percent: 90, viaScarf: false },
-			{ kind: 'stat', text: 'High Special Attack vs Low Special Defense' },
+			{ kind: 'stat', text: 'High SpA vs Low SpD' },
 		]);
 	});
 
@@ -2962,8 +2962,8 @@ describe('buildTeamThreatReasonCellHTML', () => {
 	});
 
 	it('renders a plain stat reason with no icon', () => {
-		const html = buildTeamThreatReasonCellHTML({ kind: 'stat', text: 'High Attack vs Low Defense' });
-		expect(html).toContain('High Attack vs Low Defense');
+		const html = buildTeamThreatReasonCellHTML({ kind: 'stat', text: 'High Atk vs Low Def' });
+		expect(html).toContain('High Atk vs Low Def');
 		expect(html).toContain('cf-teamthreats-reason-stat');
 	});
 
@@ -3016,21 +3016,57 @@ describe('buildThreatPriorityRowHTML', () => {
 describe('buildTeamThreatTooltipHTML', () => {
 	afterEach(() => { delete window.Dex; });
 
-	it('renders a table with one row per reason, for a single (member, counter) pair', () => {
+	it('renders a table row for a real (move/speed/wall) reason, for a single (member, counter) pair', () => {
+		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
+		const counter = {
+			pokemon: 'Staraptor',
+			rank: 1,
+			reasons: [{ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 80 }],
+		};
+		const html = buildTeamThreatTooltipHTML(counter);
+		expect(html).toContain('Staraptor');
+		expect(html).toContain('cf-teamthreats-table');
+		expect(html).toContain('Brave Bird');
+	});
+
+	it('renders a stat reason in the title next to the name, muted, instead of as a table row', () => {
 		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
 		const counter = {
 			pokemon: 'Staraptor',
 			rank: 1,
 			reasons: [
 				{ kind: 'move', move: 'Brave Bird', type: 'Flying', percent: 80 },
-				{ kind: 'stat', text: 'High Attack vs Low Defense' },
+				{ kind: 'stat', text: 'High Atk vs Low Def' },
 			],
 		};
 		const html = buildTeamThreatTooltipHTML(counter);
-		expect(html).toContain('Staraptor');
-		expect(html).toContain('cf-teamthreats-table');
-		expect(html).toContain('Brave Bird');
-		expect(html).toContain('High Attack vs Low Defense');
+		// Same muted-title-badge class buildSpeedComparisonTooltipHTML already uses for its own
+		// ally/foe EV info, reused here rather than a bespoke class.
+		expect(html).toContain('<h2>Staraptor <span class="cf-speedcmp-evinfo">(High Atk vs Low Def)</span></h2>');
+		// Not duplicated as its own table row alongside the real move reason.
+		const rowCount = (html.match(/<tr>/g) || []).length;
+		expect(rowCount).toBe(1);
+	});
+
+	it('joins two stat reasons (physical and special) in the same title badge', () => {
+		const counter = {
+			pokemon: 'Basculegion',
+			rank: 1,
+			reasons: [
+				{ kind: 'stat', text: 'High Atk vs Low Def' },
+				{ kind: 'stat', text: 'High SpA vs Low SpD' },
+			],
+		};
+		const html = buildTeamThreatTooltipHTML(counter);
+		expect(html).toContain('<span class="cf-speedcmp-evinfo">(High Atk vs Low Def, High SpA vs Low SpD)</span>');
+	});
+
+	it('shows the title-only stat note with no table underneath at all, when a stat mismatch is the counter\'s only real reason', () => {
+		const counter = { pokemon: 'Basculegion', rank: 1, reasons: [{ kind: 'stat', text: 'High Atk vs Low Def' }] };
+		const html = buildTeamThreatTooltipHTML(counter);
+		expect(html).toContain('High Atk vs Low Def');
+		expect(html).not.toContain('<table');
+		expect(html).not.toContain('No specific reason found.');
 	});
 
 	it('shows "No specific reason found." rather than an empty table when there are no reasons', () => {
@@ -3058,19 +3094,21 @@ describe('buildTeamThreatTooltipHTML', () => {
 		expect(aquaJetIdx).toBeGreaterThan(waveCrashIdx);
 	});
 
-	it('orders priority rows before stat reasons, even though stat reasons are listed first in `reasons`', () => {
+	it('renders priority rows in the table even when the only `reasons` entry is a stat mismatch (title-only, no competing row to order against)', () => {
 		window.Dex = { getTypeIcon: (type) => `<img alt="${type}">` };
 		const counter = {
 			pokemon: 'Basculegion',
 			rank: 1,
-			reasons: [{ kind: 'stat', text: 'High Attack vs Low Defense' }],
+			reasons: [{ kind: 'stat', text: 'High Atk vs Low Def' }],
 			priorityMoves: [{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 }],
 		};
 		const html = buildTeamThreatTooltipHTML(counter);
 		const aquaJetIdx = html.indexOf('Aqua Jet');
-		const statIdx = html.indexOf('High Attack vs Low Defense');
+		const statIdx = html.indexOf('High Atk vs Low Def');
 		expect(aquaJetIdx).toBeGreaterThan(-1);
-		expect(aquaJetIdx).toBeLessThan(statIdx);
+		expect(statIdx).toBeGreaterThan(-1);
+		expect(statIdx).toBeLessThan(aquaJetIdx); // the title (with the stat note) comes before the table
+		expect(html).toContain('<table'); // a real priority row still gets a real table, unlike the stat-only case above
 	});
 
 	it('omits priority rows entirely when there are no qualifying priority moves', () => {
