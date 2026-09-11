@@ -2461,6 +2461,32 @@ describe('computeThreatPriorityMoves', () => {
 		]);
 	});
 
+	it('excludes every priority move against a real Armor Tail holder, even one that would otherwise hit for super-effective damage', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat, [], ['weak'], 'Armor Tail')).toEqual([]);
+	});
+
+	it('excludes every priority move against a real Dazzling holder', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat, [], ['neutral'], 'Dazzling')).toEqual([]);
+	});
+
+	it('excludes every priority move against a real Queenly Majesty holder', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat, [], ['neutral'], 'Queenly Majesty')).toEqual([]);
+	});
+
+	it('leaves an unrelated defensive ability alone — only the three real priority-blocking abilities gate this', () => {
+		mockThreatsDex();
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '90', type: 'Water' }], types: ['Water'] };
+		expect(computeThreatPriorityMoves(threat, [], ['neutral'], 'Intimidate')).toEqual([
+			{ move: 'Aqua Jet', type: 'Water', percent: 90, priority: 1 },
+		]);
+	});
+
 	it('checks STAB against the move\'s real effective type via threat.ability, same as every other reason', () => {
 		mockThreatsDex();
 		// Pixilate turns Quick Attack (a real +1 priority move, bare Normal) into Fairy — not

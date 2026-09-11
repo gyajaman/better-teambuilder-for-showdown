@@ -477,6 +477,16 @@
 	 *  on why usage alone was the wrong ranking), and showing a couple is worth the extra table
 	 *  rows; showing every qualifying move it has would just be a movepool dump, not a reason. */
 	const TEAM_THREATS_MAX_MOVE_REASONS = 2;
+	/** Real abilities that block an opposing positive-priority move outright — confirmed against
+	 *  data/abilities.ts's own onFoeTryMove hooks: Armor Tail, Dazzling, and Queenly Majesty all
+	 *  share the identical implementation (`move.priority > 0.1`, no type check at all — this
+	 *  isn't a type-chart effect, so it's not a fourth entry in DEFENSIVE_ABILITY_IMMUNITIES/
+	 *  DEFENSIVE_ABILITY_TYPE_MULTIPLIERS, both declared separately near applyDefensiveAbility
+	 *  further down). Used by computeThreatPriorityMoves only — the ordinary >=2x supereffective
+	 *  check (computeThreatMoveReasons) never involves priority at all, so this table has nothing
+	 *  to add there. Not attempting Mold Breaker/Teravolt/Turboblaze-style bypass — the same
+	 *  simplification applyDefensiveAbility already makes for every other defensive ability here. */
+	const PRIORITY_BLOCKING_ABILITIES = new Set(['armortail', 'dazzling', 'queenlymajesty']);
 
 	/** Whether `moveName` actually deals damage at all — Pikalytics' own per-move data (`{move,
 	 *  percent, type}`) carries a type for every move, Status moves included (Detect/Protect are
@@ -855,6 +865,10 @@
 	 *  `defenderTypes`/`defenderAbility` (both optional) default to a neutral matchup when
 	 *  omitted — typeEffectivenessMultiplier's own "no defender types, no penalty" default —
 	 *  same as every other call site in this file that can't always supply a real defender.
+	 *  `defenderAbility` also gates a real, unconditional block: Armor Tail/Dazzling/Queenly
+	 *  Majesty (PRIORITY_BLOCKING_ABILITIES) stop every opposing positive-priority move outright,
+	 *  no type check at all — checked before anything else here, since it makes the whole list
+	 *  empty regardless of what the threat's own moveset looks like.
 	 *
 	 *  `reasons` is this same counter's own computeThreatReasons() output (or `[]`/omitted) — a
 	 *  move that's STAB *and* already named by a speed/move reason there (both carry `.move`) is
@@ -871,6 +885,7 @@
 	 *  "don't let an unusual movepool flood the section" reason. */
 	function computeThreatPriorityMoves(threat, reasons, defenderTypes, defenderAbility) {
 		if (!window.Dex) return [];
+		if (PRIORITY_BLOCKING_ABILITIES.has(toIDSafe(defenderAbility))) return []; // Armor Tail/Dazzling/Queenly Majesty — every candidate here has priority > 0 by construction
 		const shownMoves = new Set((reasons || []).filter((r) => r.move).map((r) => r.move));
 		const candidates = [];
 		for (const m of (threat.moves || [])) {
