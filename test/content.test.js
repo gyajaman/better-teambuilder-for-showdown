@@ -2203,7 +2203,7 @@ describe('computeThreatMoveReasons', () => {
 
 	it('ignores a super-effective move below the commonly-used usage threshold', () => {
 		mockThreatsDex();
-		const moves = [{ move: 'Water Spout', percent: '10', type: 'Water' }]; // below 20%
+		const moves = [{ move: 'Water Spout', percent: '3', type: 'Water' }]; // below 5%
 		expect(computeThreatMoveReasons(moves, ['weak'])).toEqual([]);
 	});
 
@@ -2275,7 +2275,7 @@ describe('threatHasMoveOfCategory', () => {
 
 	it('is false when the only matching move is below the usage threshold', () => {
 		mockThreatsDex();
-		const moves = [{ move: 'Water Spout', percent: '5', type: 'Water' }];
+		const moves = [{ move: 'Water Spout', percent: '3', type: 'Water' }];
 		expect(threatHasMoveOfCategory(moves, 'Special')).toBe(false);
 	});
 
@@ -2351,7 +2351,7 @@ describe('computeThreatSpeedReason', () => {
 
 	it('returns null when the only backing move is below the commonly-used usage threshold', () => {
 		mockThreatsDex();
-		const threat = { moves: [{ move: 'Water Spout', percent: '10', type: 'Water' }], baseSpeed: 150, scarfSpeed: null };
+		const threat = { moves: [{ move: 'Water Spout', percent: '3', type: 'Water' }], baseSpeed: 150, scarfSpeed: null };
 		expect(computeThreatSpeedReason(threat, { types: ['neutral'], speed: 100 })).toBeNull();
 	});
 
@@ -2455,7 +2455,7 @@ describe('computeThreatPriorityMoves', () => {
 
 	it('returns [] when the only priority+STAB move is below the commonly-used usage threshold', () => {
 		mockThreatsDex();
-		const threat = { moves: [{ move: 'Aqua Jet', percent: '10', type: 'Water' }], types: ['Water'] };
+		const threat = { moves: [{ move: 'Aqua Jet', percent: '3', type: 'Water' }], types: ['Water'] };
 		expect(computeThreatPriorityMoves(threat)).toEqual([]);
 	});
 

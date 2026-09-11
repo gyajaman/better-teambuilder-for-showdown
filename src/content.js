@@ -460,10 +460,12 @@
 	/** How popular a threat's own move has to be (Pikalytics' real per-move usage percent,
 	 *  same field buildMovesSection/buildSpeciesPreviewTooltipHTML already read) before
 	 *  computeThreatMoveReason below is willing to call it "commonly runs" — low enough to
-	 *  catch a real secondary option, high enough that a 3%-usage tech pick doesn't get quoted
+	 *  catch a real secondary option, high enough that a 1-2%-usage tech pick doesn't get quoted
 	 *  as if it were the norm. A starting guess, not a researched number, same honesty as
-	 *  CF_SETTINGS.scarfThresholdPercent's own doc comment about its default. */
-	const TEAM_THREATS_MOVE_USAGE_MIN_PERCENT = 20;
+	 *  CF_SETTINGS.scarfThresholdPercent's own doc comment about its default. Lowering this alone
+	 *  never widens how many moves actually get shown — TEAM_THREATS_MAX_MOVE_REASONS below still
+	 *  clamps that independently. */
+	const TEAM_THREATS_MOVE_USAGE_MIN_PERCENT = 5;
 	/** How much higher a threat's real computed offensive stat has to be than the defending
 	 *  team member's real computed defensive stat before computeThreatReasons below calls it
 	 *  out as a stat-based reason (as opposed to genuinely comparable stats that just happen to
