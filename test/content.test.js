@@ -13,7 +13,7 @@ const {
 	formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 	normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 	teamCoverageMoves, typeEffectivenessMultiplier, bestTeamCoverageReasons, coverageTierClass,
-	topSpeedItemBadge, aggregateTopTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
+	topSpeedItemBadge, coverageDefenderTypes, aggregateTopTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
 	pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
 	buildMovesSection, buildAbilitiesSection, buildNaturesSection, buildItemsSection,
 	buildSpreadsSection, buildTeammatesSection,
@@ -67,11 +67,28 @@ function mockBattleDex() {
 	const items = {
 		'choice scarf': { exists: true, name: 'Choice Scarf' },
 		'blastoisinite': { exists: true, name: 'Blastoisinite', megaStone: { Blastoise: 'Blastoise-Mega' } },
+		// Real Mega Pinsir: its own fixed ability (Aerilate) is genuinely different from base
+		// Pinsir's own (Hyper Cutter/Mold Breaker) — for proving teamCoverageMoves resolves a
+		// Mega build's own real ability, not the base forme's/set's chosen one, before computing
+		// a move's effective type.
+		'pinsirite': { exists: true, name: 'Pinsirite', megaStone: { Pinsir: 'Pinsir-Mega' } },
+		// Real Mega Ampharos: Electric/Dragon, genuinely different from base Ampharos' own plain
+		// Electric typing — for proving coverageDefenderTypes resolves a Popular row's own real
+		// Mega types instead of Pikalytics' always-base-forme mon.types.
+		'ampharosite': { exists: true, name: 'Ampharosite', megaStone: { Ampharos: 'Ampharos-Mega' } },
 	};
 	const species = {
 		'blastoise-mega': {
 			exists: true, name: 'Blastoise-Mega', battleOnly: true, requiredItem: 'Blastoisinite', baseSpecies: 'Blastoise',
 			baseStats: { hp: 79, atk: 103, def: 120, spa: 135, spd: 115, spe: 78 },
+		},
+		'pinsir-mega': {
+			exists: true, name: 'Pinsir-Mega', forme: 'Mega', battleOnly: 'Pinsir', baseSpecies: 'Pinsir',
+			types: ['Bug', 'Flying'], abilities: { 0: 'Aerilate' },
+		},
+		'ampharos-mega': {
+			exists: true, name: 'Ampharos-Mega', forme: 'Mega', battleOnly: 'Ampharos', baseSpecies: 'Ampharos',
+			types: ['Electric', 'Dragon'], abilities: { 0: 'Mold Breaker' },
 		},
 	};
 	window.Dex = {
@@ -1612,6 +1629,46 @@ describe('teamCoverageMoves', () => {
 
 	it('returns an empty list without window.Dex', () => {
 		expect(teamCoverageMoves({ curSetList: [{ species: 'Incineroar', moves: ['Flare Blitz'] }] })).toEqual([]);
+	});
+
+	it('resolves a move\'s effective type through the member\'s own real chosen ability — Aerilate turns Fake Out into a real Flying-type hit for coverage, not the Normal type it\'s listed as', () => {
+		mockBattleDex();
+		const tbRoom = { curSetList: [{ species: 'Talonflame', ability: 'Aerilate', moves: ['Fake Out'] }] };
+		expect(teamCoverageMoves(tbRoom)).toEqual([
+			{ species: 'Talonflame', move: 'Fake Out', type: 'Flying' },
+		]);
+	});
+
+	it('resolves a real Mega build\'s own fixed ability before computing effective type — a common Mega Pinsir\'s real Aerilate applies even though the set\'s own chosen ability field is whatever the base forme was running', () => {
+		mockBattleDex();
+		const tbRoom = { curSetList: [{ species: 'Pinsir', item: 'Pinsirite', ability: 'Mold Breaker', moves: ['Fake Out'] }] };
+		expect(teamCoverageMoves(tbRoom)).toEqual([
+			{ species: 'Pinsir', move: 'Fake Out', type: 'Flying' },
+		]);
+	});
+});
+
+describe('coverageDefenderTypes', () => {
+	afterEach(() => { delete window.Dex; });
+
+	it('returns the Mega forme\'s own real types when the badge names a real Mega build with different types than base — Mega Ampharos (Electric/Dragon) vs. base Ampharos\' own plain Electric', () => {
+		mockBattleDex();
+		const mon = { types: ['Electric'] };
+		const badge = { item: 'Ampharosite', isMega: true, formeName: 'Ampharos-Mega' };
+		expect(coverageDefenderTypes(mon, badge)).toEqual(['Electric', 'Dragon']);
+	});
+
+	it('falls back to mon.types (Pikalytics\' own base-forme types) when there is no Mega badge at all', () => {
+		mockBattleDex();
+		const mon = { types: ['Electric'] };
+		expect(coverageDefenderTypes(mon, null)).toEqual(['Electric']);
+		expect(coverageDefenderTypes(mon, { item: 'Choice Scarf', isMega: false })).toEqual(['Electric']);
+	});
+
+	it('falls back to mon.types when the resolved Mega species has no types on record', () => {
+		mockBattleDex();
+		const mon = { types: ['Water'] };
+		expect(coverageDefenderTypes(mon, { item: 'Blastoisinite', isMega: true, formeName: 'Blastoise-Mega' })).toEqual(['Water']);
 	});
 });
 

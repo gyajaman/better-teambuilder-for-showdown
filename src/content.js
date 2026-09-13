@@ -204,17 +204,29 @@
 	 *  needs to know WHICH set's move reached the best multiplier, not just that some move of
 	 *  that type exists on the team somewhere, so the coverage hover tooltip can actually name it
 	 *  rather than just coloring a border. Reads straight from Dex.moves, not Pikalytics: this is
-	 *  about the *real* moves already on your own sets, not a usage statistic. */
+	 *  about the *real* moves already on your own sets, not a usage statistic.
+	 *
+	 *  `type` is each move's real *effective* type (effectiveMoveType), not its bare Pikalytics-
+	 *  listed one — a Mega Pinsir/Mega Salamence's own real fixed ability (resolveMemberAbility,
+	 *  once resolveSpeedSpectrumSpecies identifies the set as a real Mega build) is genuinely
+	 *  Aerilate, turning a common Return/Double-Edge into a real Flying-type hit for coverage
+	 *  purposes, not the Normal type it's listed as; the same resolution already applies to an
+	 *  ordinary (non-Mega) member's own chosen ability (Pixilate, Refrigerate, Galvanize,
+	 *  Normalize, Liquid Voice) and to Weather Ball under a real weather-setting ability —
+	 *  everything effectiveMoveType itself already models for a threat's own offense
+	 *  (computeThreatOffense), applied here to the roster's side of the same question instead. */
 	function teamCoverageMoves(tbRoom) {
 		const moves = [];
 		if (!window.Dex) return moves;
 		(tbRoom.curSetList || []).forEach((set) => {
 			if (!set || !set.species || !set.moves) return;
+			const { species: resolvedSpecies, isMega } = resolveSpeedSpectrumSpecies(set);
+			const ability = resolveMemberAbility(set, resolvedSpecies, isMega);
 			set.moves.forEach((moveName) => {
 				if (!moveName) return;
 				const move = window.Dex.moves.get(moveName);
 				if (move && move.exists && move.type && move.category !== 'Status') {
-					moves.push({ species: set.species, move: moveName, type: move.type });
+					moves.push({ species: set.species, move: moveName, type: effectiveMoveType(moveName, move.type, ability) });
 				}
 			});
 		});
@@ -333,6 +345,29 @@
 			return { item: bestMega.item, isMega: true, formeName: bestMega.formeName };
 		}
 		return { item: scarf.item, isMega: false };
+	}
+
+	/** The real defensive types a "Popular" row's own coverage border/tooltip
+	 *  (bestTeamCoverageReasons) should actually be judged against — `mon.types` (Pikalytics' own
+	 *  per-species payload) is always the *base* species' types, since pikalytics.js's own
+	 *  resolveQuerySpecies queries every species under its base/battle-only name regardless of
+	 *  how it's commonly built. That's the wrong types list for a species commonly played as a
+	 *  Mega whose own real types differ from its base forme's — Mega Ampharos (Electric/Dragon vs
+	 *  base Ampharos' plain Electric), Mega Gyarados (Water/Dark vs base Water/Flying), Mega
+	 *  Sceptile (Grass/Dragon vs base plain Grass), and Mega Aggron (plain Steel vs base
+	 *  Steel/Rock — the rare case of *losing* a type) are all real, meaningfully different
+	 *  matchups from their base forme. `badge` is topSpeedItemBadge's own result (already computed
+	 *  by both call sites for the corner-badge/expected-Speed swap) — reused here rather than
+	 *  recomputed, and already carries `.isMega`/`.formeName` so this only has to do the
+	 *  window.Dex lookup itself. Falls back to `mon.types` whenever there's no real, common-enough
+	 *  Mega Stone at all (bare `badge` null/Scarf) or window.Dex can't resolve the Mega forme's own
+	 *  types for some reason. */
+	function coverageDefenderTypes(mon, badge) {
+		if (badge && badge.isMega && window.Dex) {
+			const megaData = window.Dex.species.get(badge.formeName);
+			if (megaData && megaData.exists && megaData.types) return megaData.types;
+		}
+		return mon.types;
 	}
 
 	/** How many Similar Teams matches are detail-fetched and rendered per page — the first page
@@ -1548,7 +1583,7 @@
 			formatSpeedEvText, speedStageMultiplier, applySpeedModifiers, speedCmpTooltipWidthClass,
 			normalizeMoveRowId, cycleSpeedOp, speedFilterActive, passesSpeedFilter, rawPrefixLengthForIdLength,
 			teamCoverageMoves, typeEffectivenessMultiplier, bestTeamCoverageReasons, coverageTierClass,
-			topSpeedItemBadge, aggregateTopTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
+			topSpeedItemBadge, coverageDefenderTypes, aggregateTopTeams, curRosterSpeciesOrder, alignSimilarTeamPokemon, ordinalLabel,
 			STAT_LABEL_BY_ID, STAT_IDS, STAT_LABELS,
 			CATEGORY_ORDER, DYNAMIC_CATEGORIES,
 			pikaSectionHTML, pikaRowAttrs, pikaRowDivHTML, iconOrSpacer,
@@ -4207,11 +4242,11 @@
 					}
 
 					if (entry.mon) {
-						const coverage = bestTeamCoverageReasons(coverageMoves, entry.mon.types);
+						const badge = topSpeedItemBadge(entry.mon, entry.name);
+						const coverage = bestTeamCoverageReasons(coverageMoves, coverageDefenderTypes(entry.mon, badge));
 						const tierCls = coverageTierClass(coverage && coverage.mult);
 						if (tierCls) boxCls += ' ' + tierCls;
 
-						const badge = topSpeedItemBadge(entry.mon, entry.name);
 						if (badge && window.Dex) {
 							badgeHTML = `<span class="itemicon cf-speedcmp-item-badge" style="${escapeHTML(window.Dex.getItemIcon(badge.item))}"></span>`;
 						}
@@ -4588,7 +4623,8 @@
 			if (!speciesName) return null;
 			const entry = lastSpeedTierList && lastSpeedTierList.find((e) => e.name === speciesName);
 			if (!entry || !entry.mon) return null;
-			const coverage = bestTeamCoverageReasons(teamCoverageMoves(tbRoom), entry.mon.types);
+			const badge = topSpeedItemBadge(entry.mon, speciesName);
+			const coverage = bestTeamCoverageReasons(teamCoverageMoves(tbRoom), coverageDefenderTypes(entry.mon, badge));
 			return buildSpeciesPreviewTooltipHTML(entry.mon, speciesName, coverage);
 		}
 		CF.buildAddPokemonPreviewTooltipHTML = buildAddPokemonPreviewTooltipHTML;
